@@ -250,6 +250,11 @@ namespace WordGit
 
         public static byte[] Snapshot(object value)
         {
+            return ReadDocx(SaveDocument(value));
+        }
+
+        public static string SaveDocument(object value)
+        {
             dynamic doc = value;
             var path = LocalPath(value, true);
             if (!(bool)doc.Saved)
@@ -258,20 +263,56 @@ namespace WordGit
                 doc.Save();
             }
             if (!(bool)doc.Saved) throw new InvalidOperationException("Word 尚未保存成功，未创建提交。");
-            return ReadDocx(path);
+            return path;
+        }
+
+        public static string FileChecksum(string path)
+        {
+            using (var sha = SHA256.Create())
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+        }
+
+        public static void ExtractToFile(GitHistory repo, string revision, string path)
+        {
+            using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                repo.ExtractTo(revision, stream);
+        }
+
+        public static void ValidateDocx(string path)
+        {
+            try
+            {
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
+                    if (zip.GetEntry("[Content_Types].xml") == null || zip.GetEntry("word/document.xml") == null)
+                        throw new InvalidDataException("文件不是可读取的 Word .docx。");
+            }
+            catch (InvalidDataException)
+            {
+                throw new InvalidDataException("文件不是可读取的 Word .docx。");
+            }
         }
 
         public static byte[] ReadDocx(string path)
         {
+            byte[] bytes;
             using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-            using (var copy = new MemoryStream())
             {
-                input.CopyTo(copy);
-                using (var zip = new ZipArchive(copy, ZipArchiveMode.Read, true))
-                    if (zip.GetEntry("[Content_Types].xml") == null || zip.GetEntry("word/document.xml") == null)
-                        throw new InvalidDataException("文件不是可读取的 Word .docx。");
-                return copy.ToArray();
+                if (input.Length > Int32.MaxValue) throw new InvalidDataException("文件过大，当前版本无法处理。");
+                bytes = new byte[(int)input.Length];
+                var offset = 0;
+                while (offset < bytes.Length)
+                {
+                    var read = input.Read(bytes, offset, bytes.Length - offset);
+                    if (read <= 0) throw new EndOfStreamException("文件在读取期间被修改。");
+                    offset += read;
+                }
             }
+            using (var zip = new ZipArchive(new MemoryStream(bytes, false), ZipArchiveMode.Read))
+                if (zip.GetEntry("[Content_Types].xml") == null || zip.GetEntry("word/document.xml") == null)
+                    throw new InvalidDataException("文件不是可读取的 Word .docx。");
+            return bytes;
         }
 
         public static void WriteNew(string path, byte[] bytes)
@@ -296,17 +337,57 @@ namespace WordGit
             return Review(original, null, current, false, null);
         }
 
+        public object ReviewFiles(GitHistory repo, string originalRevision, string revisedRevision, bool merge, string author = null)
+        {
+            var folder = AppPaths.NewSession();
+            var leftFile = Path.Combine(folder, "基准版本.docx");
+            var rightFile = Path.Combine(folder, "修订版本.docx");
+            ExtractToFile(repo, originalRevision, leftFile);
+            ExtractToFile(repo, revisedRevision, rightFile);
+            return ReviewStaged(folder, leftFile, rightFile, merge, author);
+        }
+
+        public object CompareCurrentExtracted(GitHistory repo, string originalRevision, object current)
+        {
+            var folder = AppPaths.NewSession();
+            var leftFile = Path.Combine(folder, "基准版本.docx");
+            var rightFile = Path.Combine(folder, "当前稿.xml");
+            ExtractToFile(repo, originalRevision, leftFile);
+            File.WriteAllText(rightFile, (string)((dynamic)current).WordOpenXML, new System.Text.UTF8Encoding(false));
+            return ReviewStaged(folder, leftFile, rightFile, false, null);
+        }
+
+        public object MergeExtracted(GitHistory repo, string originalRevision, string revisedRevision, string externalPath)
+        {
+            var folder = AppPaths.NewSession();
+            var leftFile = Path.Combine(folder, "基准版本.docx");
+            var rightFile = Path.Combine(folder, "修订版本.docx");
+            ExtractToFile(repo, originalRevision, leftFile);
+            if (externalPath == null) ExtractToFile(repo, revisedRevision, rightFile);
+            else
+            {
+                ValidateDocx(externalPath);
+                File.Copy(externalPath, rightFile);
+            }
+            return ReviewStaged(folder, leftFile, rightFile, true, null);
+        }
+
         private object Review(byte[] original, byte[] revised, object current, bool merge, string author)
         {
             var folder = AppPaths.NewSession();
             var leftFile = Path.Combine(folder, "基准版本.docx");
             var rightFile = Path.Combine(folder, current == null ? "修订版本.docx" : "当前稿.xml");
+            WriteNew(leftFile, original);
+            if (current == null) WriteNew(rightFile, revised);
+            else File.WriteAllText(rightFile, (string)((dynamic)current).WordOpenXML, new System.Text.UTF8Encoding(false));
+            return ReviewStaged(folder, leftFile, rightFile, merge, author);
+        }
+
+        private object ReviewStaged(string folder, string leftFile, string rightFile, bool merge, string author)
+        {
             dynamic left = null, right = null;
             try
             {
-                WriteNew(leftFile, original);
-                if (current == null) WriteNew(rightFile, revised);
-                else File.WriteAllText(rightFile, (string)((dynamic)current).WordOpenXML, new System.Text.UTF8Encoding(false));
                 left = Open(leftFile, false, false);
                 right = Open(rightFile, false, false);
                 if (!merge)
@@ -347,6 +428,32 @@ namespace WordGit
             return Review(targetChanges, sourceChanges, true);
         }
 
+        public object ReviewBranchesExtracted(GitHistory repo, string basisRevision, string targetRevision, string incomingRevision, string targetBranch = "当前分支", string sourceBranch = "来源分支")
+        {
+            if (repo.SnapshotChecksum(basisRevision) == repo.SnapshotChecksum(targetRevision))
+                return ReviewFiles(repo, targetRevision, incomingRevision, true);
+            var folder = AppPaths.NewSession();
+            var targetFile = Path.Combine(folder, "分支修订-当前.docx");
+            var sourceFile = Path.Combine(folder, "分支修订-来源.docx");
+            SaveBranchRevisionsToFile(repo, basisRevision, targetRevision, targetBranch, targetFile);
+            SaveBranchRevisionsToFile(repo, basisRevision, incomingRevision, sourceBranch, sourceFile);
+            return ReviewStaged(folder, targetFile, sourceFile, true, null);
+        }
+
+        private void SaveBranchRevisionsToFile(GitHistory repo, string basisRevision, string versionRevision, string author, string outputPath)
+        {
+            object document = null;
+            try
+            {
+                document = ReviewFiles(repo, basisRevision, versionRevision, false, author);
+                ((dynamic)document).SaveAs2(FileName: outputPath, FileFormat: 16, AddToRecentFiles: false);
+            }
+            finally
+            {
+                CloseReviewInput(document);
+            }
+        }
+
         private byte[] SaveBranchRevisions(byte[] basis, byte[] version, string author)
         {
             var folder = AppPaths.NewSession();
@@ -371,15 +478,18 @@ namespace WordGit
             var path = LocalPath(source);
             EnsureReplaceable(path);
             if ((bool)((dynamic)source).ReadOnly) throw new InvalidOperationException("当前文档只读，请使用「另存旧版」。");
-            var oldBytes = repo.Extract(revision);
-            var current = Snapshot(source);
-            if (current.SequenceEqual(oldBytes)) return "当前稿已经与所选旧版一致。";
+            SaveDocument(source);
+            var currentHash = FileChecksum(path);
+            var oldHash = repo.SnapshotChecksum(revision);
+            if (currentHash == oldHash) return "当前稿已经与所选旧版一致。";
             var branch = repo.ActiveBranch();
             var head = repo.Head();
-            head = repo.Commit(current, "恢复前保存当前稿", author, head, branch) ?? head;
+            head = repo.CommitFile(path, "恢复前保存当前稿", author, head, branch) ?? head;
+            var staged = Path.Combine(AppPaths.NewSession(), "恢复版本.docx");
+            ExtractToFile(repo, revision, staged);
             string saved = null;
-            ReplaceWorkingCopy(path, current, oldBytes,
-                () => saved = repo.Commit(oldBytes, "恢复版本 " + revision.Substring(0, 8), author, head, branch));
+            ReplaceWorkingCopy(path, currentHash, staged, oldHash,
+                () => saved = repo.CommitFile(path, "恢复版本 " + revision.Substring(0, 8), author, head, branch));
             return saved == null ? "已恢复旧版。" : "已恢复并创建新提交 " + saved.Substring(0, 8) + "。";
         }
 
@@ -391,6 +501,50 @@ namespace WordGit
                 Environment.GetEnvironmentVariable("OneDriveCommercial"), Environment.GetEnvironmentVariable("OneDriveConsumer") })
                 if (!String.IsNullOrEmpty(folder) && path.StartsWith(folder.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("为避免覆盖共编修改，请在 OneDrive 同步目录之外的本地副本上切换、恢复或合并分支。");
+        }
+
+        public void ReplaceWorkingCopy(string path, string currentHash, string replacementFile, string replacementHash, Action publish)
+        {
+            EnsureReplaceable(path);
+            dynamic doc = null;
+            foreach (var candidate in word.Documents)
+                if (String.Equals((string)((dynamic)candidate).FullName, path, StringComparison.OrdinalIgnoreCase)) { doc = candidate; break; }
+            if (doc != null && ((bool)doc.ReadOnly || !(bool)doc.Saved))
+                throw new InvalidOperationException("当前稿有未保存的修改，或处于只读状态。请先处理后重试。");
+            if (FileChecksum(path) != currentHash)
+                throw new InvalidOperationException("磁盘上的当前稿已变化，未替换文件。");
+            if (currentHash == replacementHash) { publish(); return; }
+            var folderPath = Path.GetDirectoryName(path);
+            var staged = Path.Combine(folderPath, ".wordgit-restore-" + Guid.NewGuid().ToString("N") + ".tmp");
+            var backup = staged + ".bak";
+            File.Copy(replacementFile, staged);
+            if (FileChecksum(staged) != replacementHash)
+            {
+                TryRemove(staged);
+                throw new InvalidDataException("替换内容在操作期间发生变化，未覆盖当前稿。");
+            }
+            var closed = false;
+            try
+            {
+                if (doc != null) { doc.Close(SaveChanges: 0); closed = true; }
+                if (FileChecksum(path) != currentHash)
+                    throw new InvalidOperationException("磁盘文件在操作期间发生变化，未覆盖。请重新打开后重试。");
+                File.Replace(staged, path, backup);
+                try { publish(); }
+                catch
+                {
+                    if (FileChecksum(path) != replacementHash)
+                        throw new IOException("当前稿在操作期间被其他程序修改，原稿备份保留在：" + backup);
+                    File.Replace(backup, path, null);
+                    throw;
+                }
+                TryRemove(backup);
+            }
+            finally
+            {
+                TryRemove(staged);
+                if (closed) Open(path, false);
+            }
         }
 
         public void ReplaceWorkingCopy(string path, byte[] current, byte[] replacement, Action publish)

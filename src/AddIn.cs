@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 [assembly: ComVisible(false)]
-[assembly: System.Reflection.AssemblyVersion("0.9.5.0")]
+[assembly: System.Reflection.AssemblyVersion("0.9.6.0")]
 
 namespace WordGit
 {
@@ -229,15 +229,14 @@ namespace WordGit
         private void PreviewVersion(string historyPath, GitHistory repo, string revision)
         {
             var preview = Path.Combine(AppPaths.NewSession(), Path.GetFileNameWithoutExtension(historyPath) + "-" + revision.Substring(0, 8) + ".docx");
-            WordDocuments.WriteNew(preview, repo.Extract(revision));
+            WordDocuments.ExtractToFile(repo, revision, preview);
             word.Open(preview, true);
         }
 
         private void CompareVersions(object document, GitHistory repo, string basis, string other)
         {
-            var original = repo.Extract(basis);
-            if (other == null) word.CompareCurrent(original, document);
-            else word.Review(original, repo.Extract(other), false);
+            if (other == null) word.CompareCurrentExtracted(repo, basis, document);
+            else word.ReviewFiles(repo, basis, other, false);
         }
 
         private string Author { get { return (string)application.UserName; } }
@@ -261,14 +260,14 @@ namespace WordGit
             var target = review == null ? Path.GetFileName(path) : Path.GetFileName(review.Original);
             var message = Dialogs.Ask(word.Owner, "提交到「" + target + "」 · " + branch, review == null ? "" : "合并审阅稿");
             if (message == null) return;
-            var snapshot = WordDocuments.Snapshot(document);
+            var savedPath = WordDocuments.SaveDocument(document);
             var author = Author;
             committing = true;
             Dialogs.ShowBackgroundOperation(word.Owner, "提交版本 · " + target, async () =>
             {
                 var id = await System.Threading.Tasks.Task.Run(() =>
                 {
-                    using (repo.Lock()) return repo.Commit(snapshot, message, author, head, branch);
+                    using (repo.Lock()) return repo.CommitFile(savedPath, message, author, head, branch);
                 });
                 if (review != null && id != null) review.Save(path, id);
                 return id == null ? "文件内容与最新提交一致。" : "已提交 " + id.Substring(0, 8) +
@@ -353,7 +352,7 @@ namespace WordGit
                     {
                         if (save.ShowDialog(word.Owner) != DialogResult.OK) return true;
                         if (File.Exists(save.FileName)) throw new IOException("请选择一个新文件名，避免覆盖已有文件。");
-                        WordDocuments.WriteNew(save.FileName, repo.Extract(basis.Id));
+                        WordDocuments.ExtractToFile(repo, basis.Id, save.FileName);
                         word.Open(save.FileName, false);
                     }
                     break;
@@ -362,17 +361,17 @@ namespace WordGit
                         using (repo.Lock()) Notice(word.Restore(document, repo, basis.Id, Author));
                     break;
                 case HistoryAction.Merge:
-                    byte[] external = null;
+                    string externalPath = null;
                     if (other == null)
                     {
                         using (var open = new OpenFileDialog { Filter = "Word 审阅稿 (*.docx)|*.docx", Title = "选择返回的 Word 审阅稿" })
                         {
                             if (open.ShowDialog(word.Owner) != DialogResult.OK) return true;
-                            external = WordDocuments.ReadDocx(open.FileName);
+                            externalPath = open.FileName;
                         }
                     }
                     var head = repo.Head();
-                    dynamic result = word.Review(repo.Extract(basis.Id), external ?? repo.Extract(other.Id), true);
+                    dynamic result = word.MergeExtracted(repo, basis.Id, other == null ? null : other.Id, externalPath);
                     var resultPath = Path.Combine(AppPaths.NewSession(), Path.GetFileNameWithoutExtension(historyPath) + "-合并稿.docx");
                     result.SaveAs2(FileName: resultPath, FileFormat: 16, AddToRecentFiles: false);
                     new PendingReview { Original = historyPath, Branch = repo.ActiveBranch() }.Save(resultPath, head);
@@ -399,18 +398,20 @@ namespace WordGit
             WordDocuments.EnsureReplaceable(path);
             var targetTip = repo.BranchTip(target);
             if (targetTip == null) throw new InvalidOperationException("找不到目标分支。");
-            if (!(bool)((dynamic)document).Saved || !WordDocuments.ReadDocx(path).SequenceEqual(repo.Extract(expected)))
+            if (!(bool)((dynamic)document).Saved || WordDocuments.FileChecksum(path) != repo.SnapshotChecksum(expected))
             {
                 var answer = MessageBox.Show(word.Owner, "当前稿有未提交的修改。是否先提交到「" + from + "」再切换？",
                     "WordGit", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (answer != DialogResult.Yes) return;
                 var message = Dialogs.Ask(word.Owner, "切换前提交到「" + from + "」", "切换前保存当前稿");
                 if (message == null) return;
-                var current = WordDocuments.Snapshot(document);
-                using (repo.Lock()) expected = repo.Commit(current, message, Author, expected, from) ?? expected;
+                WordDocuments.SaveDocument(document);
+                using (repo.Lock()) expected = repo.CommitFile(path, message, Author, expected, from) ?? expected;
             }
+            var staged = Path.Combine(AppPaths.NewSession(), "切换目标.docx");
+            WordDocuments.ExtractToFile(repo, targetTip, staged);
             using (repo.Lock())
-                word.ReplaceWorkingCopy(path, repo.Extract(expected), repo.Extract(targetTip),
+                word.ReplaceWorkingCopy(path, repo.SnapshotChecksum(expected), staged, repo.SnapshotChecksum(targetTip),
                     () => repo.Switch(from, expected, target, targetTip));
             Notice("已切换到「" + target + "」。");
         }
@@ -418,13 +419,13 @@ namespace WordGit
         private void StartBranchMerge(object document, string path, GitHistory repo, string branch, string tip, string source)
         {
             WordDocuments.EnsureReplaceable(path);
-            if (!(bool)((dynamic)document).Saved || !WordDocuments.ReadDocx(path).SequenceEqual(repo.Extract(tip)))
+            if (!(bool)((dynamic)document).Saved || WordDocuments.FileChecksum(path) != repo.SnapshotChecksum(tip))
                 throw new InvalidOperationException("请先提交当前分支的修改，再合并分支。");
             var sourceTip = repo.BranchTip(source);
             if (sourceTip == null) throw new InvalidOperationException("找不到来源分支。");
             var basis = repo.MergeBase(tip, sourceTip);
             if (basis == sourceTip) { Notice("来源分支的提交已包含在当前分支。"); return; }
-            dynamic result = word.ReviewBranches(repo.Extract(basis), repo.Extract(tip), repo.Extract(sourceTip), branch, source);
+            dynamic result = word.ReviewBranchesExtracted(repo, basis, tip, sourceTip, branch, source);
             var resultPath = Path.Combine(AppPaths.NewSession(), Path.GetFileNameWithoutExtension(path) + "-分支合并稿.docx");
             result.SaveAs2(FileName: resultPath, FileFormat: 16, AddToRecentFiles: false);
             new PendingReview { Original = path, Branch = branch, SourceBranch = source, SourceTip = sourceTip }.Save(resultPath, tip);
@@ -439,17 +440,18 @@ namespace WordGit
                 throw new InvalidOperationException("来源分支已更新，请重新生成合并修订稿。");
             var message = Dialogs.Ask(word.Owner, "确认合并到「" + review.Branch + "」", "合并分支 " + review.SourceBranch);
             if (message == null) return;
-            var merged = WordDocuments.Snapshot(document);
+            WordDocuments.SaveDocument(document);
             var author = Author;
             committing = true;
             Dialogs.ShowBackgroundOperation(word.Owner, "合并提交 · " + Path.GetFileName(review.Original), async () =>
             {
-                var prepared = await System.Threading.Tasks.Task.Run(() => repo.PrepareSnapshot(merged));
+                var prepared = await System.Threading.Tasks.Task.Run(() => repo.ImportPlan(path, repo.PlanFile(path)));
+                var headHash = await System.Threading.Tasks.Task.Run(() => repo.SnapshotChecksum(review.Head));
                 string commit = null;
                 using (repo.Lock())
-                    word.ReplaceWorkingCopy(review.Original, repo.Extract(review.Head), merged,
-                        () => commit = repo.Commit(merged, message, author, review.Head, review.Branch,
-                            review.SourceBranch, review.SourceTip, prepared));
+                    word.ReplaceWorkingCopy(review.Original, headHash, path, prepared.Checksum,
+                        () => commit = repo.CommitPrepared(prepared, message, author, review.Head, review.Branch,
+                            review.SourceBranch, review.SourceTip));
                 review.SourceBranch = null;
                 review.SourceTip = null;
                 review.Save(path, commit);

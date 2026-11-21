@@ -291,6 +291,25 @@ namespace WordGit
                 " 不包含可识别的文档快照。请保留仓库并检查版本格式；此操作不会删除历史。");
         }
 
+        // Streaming counterpart of Extract: chunk data flows from git straight into the output
+        // stream (a temp file), so restoring a large document needs only a few megabytes of memory.
+        public void ExtractTo(string revision, Stream output)
+        {
+            revision = Id(revision);
+            var entry = Invoke(null, null, "cat-file", "blob", revision + ":" + DocumentSnapshot.ManifestFile);
+            if (entry.Code != 0)
+            {
+                var bytes = Extract(revision);
+                output.Write(bytes, 0, bytes.Length);
+                return;
+            }
+            var snapshot = DocumentSnapshot.Read(entry.Bytes);
+            var request = Utf8.GetBytes(String.Join("\n", snapshot.Objects.Select(id =>
+                revision + ":" + DocumentSnapshot.ChunksFolder + "/" + id)) + "\n");
+            InvokeWithOutput(request, null, System.Threading.Timeout.Infinite, false,
+                stream => snapshot.Restore(stream, output), "cat-file", "--batch");
+        }
+
         private byte[] ExtractExpanded(string revision, DocxMeta meta)
         {
             if (meta.Entries.Count == 0 || meta.Entries.Select(item => item.Name).Distinct(StringComparer.Ordinal).Count() != meta.Entries.Count)
@@ -329,35 +348,117 @@ namespace WordGit
             EnsureRepository();
             var chunks = DocumentSnapshot.Split(bytes);
             var objects = DocumentSnapshot.BlobObjects(chunks, Text(Run(null, null, "rev-parse", "--show-object-format")));
+            var sizes = chunks.Select(chunk => chunk.Count).ToArray();
+            ImportChunks(objects, sizes, MissingChunkIndexes(objects),
+                (stream, index) => { var chunk = chunks[index]; stream.Write(chunk.Array, chunk.Offset, chunk.Count); });
+            return StoreManifest(objects, sizes, bytes.Length, Sha(bytes));
+        }
+
+        // First streaming pass over the document file: computes the whole-file checksum and the
+        // content-defined chunk plan without retaining any chunk content in memory.
+        internal FileSnapshot PlanFile(string path)
+        {
+            EnsureRepository();
+            var format = Text(Run(null, null, "rev-parse", "--show-object-format"));
+            using (var stream = OpenShared(path))
+            {
+                var plan = DocumentSnapshot.Plan(stream, format);
+                var info = new FileInfo(path);
+                return new FileSnapshot { Plan = plan, WriteTimeUtc = info.LastWriteTimeUtc };
+            }
+        }
+
+        // Second pass: seeks to and reads only the chunks git does not have yet, streaming them
+        // into fast-import. The get-mark verification below proves every imported blob id matches
+        // the plan, which also detects the file changing mid-import.
+        internal PreparedSnapshot ImportPlan(string path, FileSnapshot file)
+        {
+            var plan = file.Plan;
+            var missing = MissingChunkIndexes(plan.Objects);
+            if (missing.Length > 0)
+            {
+                using (var stream = OpenShared(path))
+                {
+                    var info = new FileInfo(path);
+                    if (info.Length != plan.Length || info.LastWriteTimeUtc != file.WriteTimeUtc)
+                        throw new InvalidOperationException("文档在提交准备期间被修改，请重新提交。");
+                    var buffer = new byte[64 * 1024];
+                    try
+                    {
+                        ImportChunks(plan.Objects, plan.Sizes, missing, (target, index) =>
+                        {
+                            stream.Position = plan.Offsets[index];
+                            var remaining = plan.Sizes[index];
+                            while (remaining > 0)
+                            {
+                                var step = Math.Min(buffer.Length, remaining);
+                                var read = 0;
+                                while (read < step)
+                                {
+                                    var count = stream.Read(buffer, read, step - read);
+                                    if (count <= 0)
+                                        throw new InvalidOperationException("文档在提交准备期间被修改，请重新提交。");
+                                    read += count;
+                                }
+                                target.Write(buffer, 0, step);
+                                remaining -= step;
+                            }
+                        });
+                    }
+                    catch (InvalidDataException error)
+                    {
+                        var verify = new FileInfo(path);
+                        if (error.Message.Contains("数据块写入校验失败") &&
+                            (verify.Length != plan.Length || verify.LastWriteTimeUtc != file.WriteTimeUtc))
+                            throw new InvalidOperationException("文档在提交准备期间被修改，请重新提交。");
+                        throw;
+                    }
+                }
+            }
+            return StoreManifest(plan.Objects, plan.Sizes, plan.Length, plan.Checksum);
+        }
+
+        public PreparedSnapshot PrepareSnapshotFile(string path)
+        {
+            return ImportPlan(path, PlanFile(path));
+        }
+
+        private int[] MissingChunkIndexes(string[] objects)
+        {
             var unique = objects.Select((id, index) => new { Id = id, Index = index }).GroupBy(item => item.Id)
                 .Select(group => group.First()).ToArray();
             var check = Text(Run(Utf8.GetBytes(String.Join("\n", unique.Select(item => item.Id)) + "\n"),
                 null, "cat-file", "--batch-check")).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             if (check.Length != unique.Length) throw new InvalidDataException("无法确认已保存的数据块。");
-            var missing = unique.Where((item, index) => check[index] == item.Id + " missing").ToArray();
-            if (missing.Length > 0)
+            return unique.Where((item, index) => check[index] == item.Id + " missing").Select(item => item.Index).ToArray();
+        }
+
+        private void ImportChunks(string[] objects, int[] sizes, int[] missing, Action<Stream, int> writeChunk)
+        {
+            if (missing.Length == 0) return;
+            var imported = Checked(InvokeWithInput(stream =>
             {
-                var imported = Checked(InvokeWithInput(stream =>
+                for (var i = 0; i < missing.Length; i++)
                 {
-                    for (var i = 0; i < missing.Length; i++)
-                    {
-                        var chunk = chunks[missing[i].Index];
-                        var mark = (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                        var header = Utf8.GetBytes("blob\nmark :" + mark + "\ndata " +
-                            chunk.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\n");
-                        stream.Write(header, 0, header.Length);
-                        stream.Write(bytes, chunk.Offset, chunk.Count);
-                        var tail = Utf8.GetBytes("\nget-mark :" + mark + "\n");
-                        stream.Write(tail, 0, tail.Length);
-                    }
-                    var done = Utf8.GetBytes("done\n");
-                    stream.Write(done, 0, done.Length);
-                }, null, System.Threading.Timeout.Infinite, true, "-c", "pack.threads=1",
-                    "fast-import", "--quiet", "--done"));
-                var written = Text(imported).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Select(Id);
-                if (!written.SequenceEqual(missing.Select(item => item.Id))) throw new InvalidDataException("数据块写入校验失败。");
-            }
-            var manifest = DocumentSnapshot.Manifest(bytes, chunks, objects);
+                    var mark = (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var header = Utf8.GetBytes("blob\nmark :" + mark + "\ndata " +
+                        sizes[missing[i]].ToString(System.Globalization.CultureInfo.InvariantCulture) + "\n");
+                    stream.Write(header, 0, header.Length);
+                    writeChunk(stream, missing[i]);
+                    var tail = Utf8.GetBytes("\nget-mark :" + mark + "\n");
+                    stream.Write(tail, 0, tail.Length);
+                }
+                var done = Utf8.GetBytes("done\n");
+                stream.Write(done, 0, done.Length);
+            }, null, System.Threading.Timeout.Infinite, true, "-c", "pack.threads=1",
+                "fast-import", "--quiet", "--done"));
+            var written = Text(imported).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Select(Id);
+            if (!written.SequenceEqual(missing.Select(index => objects[index]))) throw new InvalidDataException("数据块写入校验失败。");
+        }
+
+        private PreparedSnapshot StoreManifest(string[] objects, int[] sizes, long totalLength, string checksum)
+        {
+            var manifest = DocumentSnapshot.Manifest(totalLength, checksum, sizes, objects);
             var manifestId = Id(Text(Run(manifest, null, "hash-object", "-w", "--no-filters", "--stdin")));
             var entries = String.Join("\n", objects.Distinct().OrderBy(id => id, StringComparer.Ordinal)
                 .Select(id => "100644 blob " + id + "\t" + id)) + "\n";
@@ -365,7 +466,12 @@ namespace WordGit
             var rootEntries = "040000 tree " + chunksTree + "\t" + DocumentSnapshot.ChunksFolder + "\n" +
                 "100644 blob " + manifestId + "\t" + DocumentSnapshot.ManifestFile + "\n";
             var tree = Id(Text(Run(Utf8.GetBytes(rootEntries), null, "mktree")));
-            return new PreparedSnapshot(tree, Sha(bytes));
+            return new PreparedSnapshot(tree, checksum);
+        }
+
+        private static FileStream OpenShared(string path)
+        {
+            return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         }
 
         private void EnsureRepository()
@@ -388,7 +494,6 @@ namespace WordGit
             if (String.IsNullOrWhiteSpace(message) || message.IndexOf('\0') >= 0) throw new ArgumentException("请填写有效的提交说明。");
             EnsureRepository();
             branch = branch ?? ActiveBranch();
-            var reference = BranchRef(branch);
             if (ActiveBranch() != branch || BranchTip(branch) != expectedHead ||
                 (sourceBranch != null && (sourceBranch == branch || BranchTip(sourceBranch) != sourceTip)))
                 throw new InvalidOperationException("分支或版本历史已变化。请刷新后再操作。");
@@ -396,6 +501,46 @@ namespace WordGit
             if (sourceBranch == null && expectedHead != null && checksum == SnapshotChecksum(expectedHead)) return null;
             prepared = prepared ?? PrepareSnapshot(bytes);
             if (prepared.Checksum != checksum) throw new InvalidDataException("待提交的文档与分块快照不一致。");
+            return FinishCommit(prepared, message, author, expectedHead, branch, sourceBranch, sourceTip);
+        }
+
+        // Streaming counterpart of Commit: the document is read from disk in bounded buffers
+        // instead of being loaded into memory first.
+        public string CommitFile(string path, string message, string author, string expectedHead,
+            string branch = null, string sourceBranch = null, string sourceTip = null, FileSnapshot planned = null)
+        {
+            if (String.IsNullOrWhiteSpace(message) || message.IndexOf('\0') >= 0) throw new ArgumentException("请填写有效的提交说明。");
+            EnsureRepository();
+            branch = branch ?? ActiveBranch();
+            if (ActiveBranch() != branch || BranchTip(branch) != expectedHead ||
+                (sourceBranch != null && (sourceBranch == branch || BranchTip(sourceBranch) != sourceTip)))
+                throw new InvalidOperationException("分支或版本历史已变化。请刷新后再操作。");
+            var file = planned ?? PlanFile(path);
+            if (sourceBranch == null && expectedHead != null && file.Plan.Checksum == SnapshotChecksum(expectedHead)) return null;
+            var prepared = ImportPlan(path, file);
+            return FinishCommit(prepared, message, author, expectedHead, branch, sourceBranch, sourceTip);
+        }
+
+        // Commits an already-prepared snapshot (e.g. imported from another path) without
+        // reading any document bytes again. Callers must hold the repository lock.
+        internal string CommitPrepared(PreparedSnapshot prepared, string message, string author, string expectedHead,
+            string branch = null, string sourceBranch = null, string sourceTip = null)
+        {
+            if (prepared == null) throw new ArgumentException("无法读取文档数据。");
+            if (String.IsNullOrWhiteSpace(message) || message.IndexOf('\0') >= 0) throw new ArgumentException("请填写有效的提交说明。");
+            EnsureRepository();
+            branch = branch ?? ActiveBranch();
+            if (ActiveBranch() != branch || BranchTip(branch) != expectedHead ||
+                (sourceBranch != null && (sourceBranch == branch || BranchTip(sourceBranch) != sourceTip)))
+                throw new InvalidOperationException("分支或版本历史已变化。请刷新后再操作。");
+            if (sourceBranch == null && expectedHead != null && prepared.Checksum == SnapshotChecksum(expectedHead)) return null;
+            return FinishCommit(prepared, message, author, expectedHead, branch, sourceBranch, sourceTip);
+        }
+
+        private string FinishCommit(PreparedSnapshot prepared, string message, string author, string expectedHead,
+            string branch, string sourceBranch, string sourceTip)
+        {
+            var reference = BranchRef(branch);
             var args = new List<string> { "commit-tree", Id(prepared.Tree) };
             if (expectedHead != null) args.AddRange(new[] { "-p", Id(expectedHead) });
             if (sourceBranch != null)
@@ -456,7 +601,7 @@ namespace WordGit
             return InvokeWithInput(writer, identity, timeout, lowPriority, args);
         }
 
-        private Result InvokeWithInput(Action<Stream> input, string identity, int timeout, bool lowPriority, params string[] args)
+        private ProcessStartInfo CreateInfo(string identity, bool redirectInput, params string[] args)
         {
             var command = new List<string>();
             command.AddRange(new[] { "-c", "core.longpaths=true" });
@@ -466,7 +611,7 @@ namespace WordGit
             {
                 WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true,
-                RedirectStandardInput = input != null, StandardErrorEncoding = Encoding.UTF8
+                RedirectStandardInput = redirectInput, StandardErrorEncoding = Encoding.UTF8
             };
             foreach (var key in info.EnvironmentVariables.Keys.Cast<string>().Where(key => key.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToList())
                 info.EnvironmentVariables.Remove(key);
@@ -480,13 +625,23 @@ namespace WordGit
                 info.EnvironmentVariables["GIT_AUTHOR_EMAIL"] = "wordgit@local.invalid";
                 info.EnvironmentVariables["GIT_COMMITTER_EMAIL"] = "wordgit@local.invalid";
             }
+            return info;
+        }
+
+        private static void TryLowerPriority(Process process)
+        {
+            try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
+            catch (System.ComponentModel.Win32Exception) { }
+            catch (InvalidOperationException) { }
+        }
+
+        private Result InvokeWithInput(Action<Stream> input, string identity, int timeout, bool lowPriority, params string[] args)
+        {
+            var info = CreateInfo(identity, input != null, args);
             using (var process = Process.Start(info))
             using (var stdout = new MemoryStream())
             {
-                if (lowPriority)
-                    try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
-                    catch (System.ComponentModel.Win32Exception) { }
-                    catch (InvalidOperationException) { }
+                if (lowPriority) TryLowerPriority(process);
                 var read = process.StandardOutput.BaseStream.CopyToAsync(stdout);
                 var errors = process.StandardError.ReadToEndAsync();
                 var write = input == null ? Task.FromResult(true) : Task.Run(() =>
@@ -502,8 +657,61 @@ namespace WordGit
                 }
                 Task.WaitAll(read, errors);
                 if (process.ExitCode == 0) write.GetAwaiter().GetResult();
+                // Surface writer errors that are not a consequence of git failing (a broken pipe
+                // is just the downstream effect of git exiting; our own errors must not be lost).
+                else if (write.IsFaulted && !(write.Exception.InnerException is IOException)) write.GetAwaiter().GetResult();
                 else if (write.IsFaulted) GC.KeepAlive(write.Exception);
                 return new Result { Code = process.ExitCode, Bytes = stdout.ToArray(), Error = errors.Result };
+            }
+        }
+
+        // Like InvokeWithInput, but stdout is streamed to a reader callback instead of being
+        // buffered into memory. If the reader reports a data problem, git is stopped and the
+        // reader's error is thrown (it is more informative than git's exit code).
+        private void InvokeWithOutput(byte[] input, string identity, int timeout, bool lowPriority,
+            Action<Stream> reader, params string[] args)
+        {
+            var info = CreateInfo(identity, input != null, args);
+            using (var process = Process.Start(info))
+            {
+                if (lowPriority) TryLowerPriority(process);
+                var errors = process.StandardError.ReadToEndAsync();
+                var write = input == null ? Task.FromResult(true) : Task.Run(() =>
+                {
+                    using (var stream = process.StandardInput.BaseStream) stream.Write(input, 0, input.Length);
+                    return true;
+                });
+                Exception readerError = null;
+                var read = Task.Run(() =>
+                {
+                    try { reader(process.StandardOutput.BaseStream); }
+                    catch (Exception error) { readerError = error; }
+                });
+                var exited = Task.Run(() => { process.WaitForExit(); return true; });
+                if (Task.WaitAny(new Task[] { read, exited }, timeout) < 0)
+                {
+                    process.Kill();
+                    process.WaitForExit();
+                    throw new TimeoutException("Git 操作超时。");
+                }
+                if (readerError != null)
+                {
+                    try { process.Kill(); }
+                    catch (InvalidOperationException) { }
+                    process.WaitForExit();
+                    Task.WaitAll(errors);
+                    throw readerError;
+                }
+                if (!process.WaitForExit(timeout))
+                {
+                    process.Kill();
+                    process.WaitForExit();
+                    throw new TimeoutException("Git 操作超时。");
+                }
+                Task.WaitAll(read, errors);
+                if (readerError != null) throw readerError;
+                if (process.ExitCode != 0) throw new InvalidOperationException("Git 操作失败：" + errors.Result.Trim());
+                write.GetAwaiter().GetResult();
             }
         }
 
@@ -522,5 +730,13 @@ namespace WordGit
         }
 
         private sealed class Result { public int Code; public byte[] Bytes; public string Error; }
+    }
+
+    // A planned chunked snapshot of a document file, plus the file stamp used to prove the file
+    // did not change between the planning pass and the import pass.
+    internal sealed class FileSnapshot
+    {
+        public SnapshotPlan Plan;
+        public DateTime WriteTimeUtc;
     }
 }

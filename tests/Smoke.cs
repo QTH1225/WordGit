@@ -105,9 +105,124 @@ namespace WordGit
                 catch (IOException) { Require(File.ReadAllBytes(first).SequenceEqual(data1), "Existing file modified"); }
                 VerifyLegacyFormats(root);
                 VerifyCompression(root);
+                VerifyStreaming(root);
                 Console.WriteLine("PASS: Git history, exact DOCX restoration, branches, merge, working-copy state and lossless history compression.");
             }
             finally { try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        }
+
+        private static void VerifyStreaming(string root)
+        {
+            // Streaming chunk planning must produce output byte-identical to the in-memory path.
+            var image = new byte[192 * 1024];
+            new Random(919).NextBytes(image);
+            var samples = new[] { Fixture("流式分块"), Fixture("带图片", image), new byte[] { 1, 2, 3, 4, 5 } };
+            foreach (var bytes in samples)
+            {
+                var chunks = DocumentSnapshot.Split(bytes);
+                var objects = DocumentSnapshot.BlobObjects(chunks, "sha256");
+                using (var stream = new MemoryStream(bytes, false))
+                {
+                    var plan = DocumentSnapshot.Plan(stream, "sha256");
+                    Require(plan.Length == bytes.Length && plan.Checksum == GitHistory.Sha(bytes) &&
+                        plan.Objects.SequenceEqual(objects) &&
+                        plan.Sizes.SequenceEqual(chunks.Select(chunk => chunk.Count)) &&
+                        plan.Offsets.SequenceEqual(chunks.Select(chunk => (long)chunk.Offset)),
+                        "Streaming plan differs from in-memory split");
+                    Require(DocumentSnapshot.Manifest(plan.Length, plan.Checksum, plan.Sizes, plan.Objects)
+                        .SequenceEqual(DocumentSnapshot.Manifest(bytes, chunks, objects)), "Streaming manifest differs");
+                }
+            }
+
+            // File-based commits produce the same git trees as memory-based commits.
+            var path = Path.Combine(root, "流式提交.docx");
+            var bytes1 = Fixture("流式第一版", image);
+            WordDocuments.WriteNew(path, bytes1);
+            var repo = new GitHistory(path, root);
+            var first = repo.CommitFile(path, "流式第一版", "测试", null);
+            Require(first != null && repo.Extract(first).SequenceEqual(bytes1), "File commit lost bytes");
+            var memoryRepo = new GitHistory(Path.Combine(root, "内存对照.docx"), root);
+            var memoryFirst = memoryRepo.Commit(bytes1, "内存版", "测试", null);
+            var treeOf = new Func<GitHistory, string, string>((repository, commit) => Encoding.UTF8.GetString(
+                CompatibilityGit(repository.RepositoryPath, null, "rev-parse", commit + "^{tree}")).Trim());
+            Require(treeOf(repo, first) == treeOf(memoryRepo, memoryFirst),
+                "File and memory commits produced different trees");
+            Require(repo.CommitFile(path, "无变化", "测试", first) == null, "Unchanged file committed");
+
+            // Streamed extraction restores exact bytes for every committed version.
+            var bytes2 = Fixture("流式第二版：修改了试验条件", image);
+            File.WriteAllBytes(path, bytes2);
+            var second = repo.CommitFile(path, "第二版", "测试", first);
+            foreach (var pair in new[] {
+                new KeyValuePair<string, byte[]>(first, bytes1), new KeyValuePair<string, byte[]>(second, bytes2) })
+                using (var output = new MemoryStream())
+                {
+                    repo.ExtractTo(pair.Key, output);
+                    Require(output.ToArray().SequenceEqual(pair.Value), "Streamed extract changed bytes");
+                }
+
+            // A file changed between planning and import must abort with a clear error and no ref change.
+            // The plan must contain chunks the repository does not have yet, otherwise import is a no-op.
+            var image2 = new byte[192 * 1024];
+            new Random(777).NextBytes(image2);
+            var bytes3 = Fixture("第三版：又修改了试验方案", image2);
+            File.WriteAllBytes(path, bytes3);
+            var planned = repo.PlanFile(path);
+            var forged = new FileInfo(path).LastWriteTimeUtc;
+            File.WriteAllBytes(path, Fixture("被篡改，长度明显不同的另一个版本……", image));
+            var rejected = false;
+            try { repo.ImportPlan(path, planned); }
+            catch (InvalidOperationException error) { Require(error.Message.Contains("被修改"), "Unexpected change error"); rejected = true; }
+            Require(rejected, "Modified file was imported");
+
+            // Same-length tampering hidden behind a forged timestamp is caught by the get-mark verification.
+            var tampered = (byte[])bytes3.Clone();
+            tampered[tampered.Length - 10] ^= 0xFF;
+            File.WriteAllBytes(path, tampered);
+            File.SetLastWriteTimeUtc(path, forged);
+            rejected = false;
+            try { repo.ImportPlan(path, planned); }
+            catch (InvalidDataException error) { Require(error.Message.Contains("校验失败"), "Unexpected verify error"); rejected = true; }
+            Require(rejected, "Forged-timestamp tamper was imported");
+            File.WriteAllBytes(path, bytes2);
+            Require(repo.Head() == second, "Rejected import changed the branch");
+
+            // Streaming restore rejects truncated or corrupt batch data.
+            var manifestBytes = CompatibilityGit(repo.RepositoryPath, null, "cat-file", "blob",
+                second + ":" + DocumentSnapshot.ManifestFile);
+            var snapshot = DocumentSnapshot.Read(manifestBytes);
+            var request = Encoding.UTF8.GetBytes(String.Join("\n",
+                snapshot.Objects.Select(id => second + ":" + DocumentSnapshot.ChunksFolder + "/" + id)) + "\n");
+            var batch = CompatibilityGit(repo.RepositoryPath, request, "cat-file", "--batch");
+            using (var output = new MemoryStream())
+            {
+                snapshot.Restore(new MemoryStream(batch, false), output);
+                Require(output.ToArray().SequenceEqual(bytes2), "Streaming restore changed bytes");
+            }
+            rejected = false;
+            try { snapshot.Restore(new MemoryStream(batch.Take(batch.Length - 1).ToArray(), false), new MemoryStream()); }
+            catch (InvalidDataException) { rejected = true; }
+            Require(rejected, "Truncated batch accepted");
+            var corrupt = (byte[])batch.Clone();
+            corrupt[0] = (byte)(corrupt[0] == '0' ? '1' : '0');
+            rejected = false;
+            try { snapshot.Restore(new MemoryStream(corrupt, false), new MemoryStream()); }
+            catch (InvalidDataException) { rejected = true; }
+            Require(rejected, "Corrupt batch accepted");
+
+            // A multi-chunk document exercises bounded-memory streaming end to end.
+            var bigImage = new byte[3 * 1024 * 1024];
+            new Random(313).NextBytes(bigImage);
+            var bigBytes = Fixture("大文档流式提交", bigImage);
+            var bigPath = Path.Combine(root, "大文档.docx");
+            WordDocuments.WriteNew(bigPath, bigBytes);
+            var bigRepo = new GitHistory(bigPath, root);
+            var bigCommit = bigRepo.CommitFile(bigPath, "大文档", "测试", null);
+            var bigOut = Path.Combine(root, "大文档-取回.docx");
+            using (var output = new FileStream(bigOut, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                bigRepo.ExtractTo(bigCommit, output);
+            Require(File.ReadAllBytes(bigOut).SequenceEqual(bigBytes), "Large document changed through streaming roundtrip");
+            Console.WriteLine("PASS: streaming plan, file commit, streamed extract, change detection and corruption rejection.");
         }
 
         private static void VerifyCompression(string root)
@@ -200,6 +315,11 @@ namespace WordGit
             var seed = repository.Commit(firstBytes, "初始化", "测试", null);
             var whole = CompatibilityCommit(repository, new Dictionary<string, byte[]> { { "document.docx", firstBytes } }, seed, true);
             Require(repository.Extract(whole).SequenceEqual(firstBytes), "Whole DOCX compatibility");
+            using (var output = new MemoryStream())
+            {
+                repository.ExtractTo(whole, output);
+                Require(output.ToArray().SequenceEqual(firstBytes), "Whole DOCX changed through streamed extract");
+            }
             var original = Fixture("旧拆包版：中英文");
             var parts = DocxFormat.Read(original);
             parts.Add(new DocxPart { Name = "word/media/图片 数据.bin", Bytes = new byte[] { 0, 10, 13, 255, 3, 7 } });
@@ -211,6 +331,11 @@ namespace WordGit
             var actual = DocxFormat.Read(extracted).ToDictionary(part => part.Name);
             Require(actual.Count == parts.Count && parts.All(part => actual[part.Name].Bytes.SequenceEqual(part.Bytes)),
                 "Expanded historical parts changed");
+            using (var output = new MemoryStream())
+            {
+                repository.ExtractTo(expanded, output);
+                Require(output.ToArray().SequenceEqual(extracted), "Expanded DOCX changed through streamed extract");
+            }
             var nextBytes = Fixture("新分块版");
             var next = repository.Commit(nextBytes, "继续提交", "测试", expanded);
             Require(repository.Extract(next).SequenceEqual(nextBytes) && repository.History().Any(item => item.Id == expanded),
