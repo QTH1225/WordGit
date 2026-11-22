@@ -49,7 +49,7 @@ namespace WordGit
             Console.OutputEncoding = Encoding.UTF8;
             var root = Path.Combine(Path.GetTempPath(), "wg-r-" + Guid.NewGuid().ToString("N").Substring(0,12));
             Directory.CreateDirectory(root);
-            try { Run(root); }
+            try { using (TestConsole.Utf8InputWithPreamble()) Run(root); }
             catch (Exception error) { Console.Error.WriteLine(error); Environment.ExitCode = 1; }
             finally {
                 foreach (var file in Directory.GetFiles(root, "*", SearchOption.AllDirectories))

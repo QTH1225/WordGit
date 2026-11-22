@@ -18,7 +18,7 @@ namespace WordGit
         private static void Main()
         {
             Console.OutputEncoding = Encoding.UTF8;
-            try { Run(); }
+            try { using (TestConsole.Utf8InputWithPreamble()) Run(); }
             catch (Exception error)
             {
                 Console.Error.WriteLine(error.GetType().Name + ": " + error.Message);
@@ -520,6 +520,7 @@ namespace WordGit
             info.EnvironmentVariables["GIT_AUTHOR_EMAIL"] = "test@wordgit.local";
             info.EnvironmentVariables["GIT_COMMITTER_NAME"] = "Compatibility test";
             info.EnvironmentVariables["GIT_COMMITTER_EMAIL"] = "test@wordgit.local";
+            GitProcess.SuppressStandardInputPreamble();
             using (var process = System.Diagnostics.Process.Start(info))
             using (var output = new MemoryStream())
             {

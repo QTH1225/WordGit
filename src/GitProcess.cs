@@ -255,6 +255,20 @@ namespace WordGit
             }
         }
 
+        // Process.Start wraps a redirected stdin in a StreamWriter that uses Console.InputEncoding and
+        // flushes its preamble at once. Under a UTF-8 code page (65001: CI runners, or Windows' "UTF-8
+        // for worldwide language support") that puts a BOM in front of every git input, e.g.
+        // "fatal: unsupported command: ﻿blob" from fast-import. .NET Framework has no
+        // StandardInputEncoding, so the cached console encoding is swapped for one without a preamble.
+        // Input is always written as raw bytes to BaseStream, so the encoding itself is never used.
+        internal static void SuppressStandardInputPreamble()
+        {
+            if (Console.InputEncoding.GetPreamble().Length == 0) return;
+            var field = typeof(Console).GetField("_inputEncoding", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            if (field == null) throw new InvalidOperationException("无法关闭 Git 输入的 BOM 前缀，请将系统区域设置中的 UTF-8 选项关闭后重试。");
+            field.SetValue(null, new UTF8Encoding(false));
+        }
+
         private static Task Pump(StreamReader reader, Action<string> chunk)
         {
             return Task.Run(() =>
@@ -282,6 +296,7 @@ namespace WordGit
 
             internal static ProcessTree Start(ProcessStartInfo info)
             {
+                if (info.RedirectStandardInput) SuppressStandardInputPreamble();
                 var process = Process.Start(info);
                 var job = CreateJobObject(IntPtr.Zero, null);
                 if (job != IntPtr.Zero && !AssignProcessToJobObject(job, process.Handle))

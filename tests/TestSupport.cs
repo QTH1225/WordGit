@@ -48,6 +48,32 @@ namespace WordGit
         }
     }
 
+    internal static class TestConsole
+    {
+        // Behave like a UTF-8 console code page (65001, as on CI runners), whose encoding has a BOM
+        // preamble, so the stdin handling for git is exercised on every machine. Restored on dispose.
+        public static IDisposable Utf8InputWithPreamble()
+        {
+            var previous = Console.InputEncoding;
+            try { Console.InputEncoding = new UTF8Encoding(true); }
+            catch (IOException) { return new Restore(null); }
+            if (Console.InputEncoding.GetPreamble().Length == 0)
+                throw new InvalidOperationException("Test console did not adopt a UTF-8 encoding with a preamble");
+            return new Restore(previous);
+        }
+
+        private sealed class Restore : IDisposable
+        {
+            private readonly Encoding previous;
+            public Restore(Encoding previous) { this.previous = previous; }
+            public void Dispose()
+            {
+                if (previous == null) return;
+                try { Console.InputEncoding = previous; } catch (IOException) { }
+            }
+        }
+    }
+
     internal static class TestFiles
     {
         public static string Temporary(byte[] bytes)
