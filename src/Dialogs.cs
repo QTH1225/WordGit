@@ -387,29 +387,20 @@ namespace WordGit
             }
         }
 
-        public static void ShowHistoryCompression(IWin32Window owner, string filename, Func<RepackResult> repack)
+        public static void ShowBackgroundOperation(IWin32Window owner, string title, Func<Task<string>> operation, Action finished = null,
+            string initialStatus = null)
         {
-            ShowBackgroundOperation(owner, "优化仓库存储 · " + filename, async () =>
-            {
-                var result = await Task.Run(repack);
-                return "存储优化完成。" + Environment.NewLine + "Git 对象占用  " +
-                    FormatSize(result.BeforeBytes) + " → " + FormatSize(result.AfterBytes);
-            });
-        }
-
-        public static void ShowBackgroundOperation(IWin32Window owner, string title, Func<Task<string>> operation, Action finished = null)
-        {
-            ShowBackgroundOperation(owner, title, cancellation => operation(), false, finished);
+            ShowBackgroundOperation(owner, title, cancellation => operation(), false, finished, initialStatus);
         }
 
         public static void ShowBackgroundOperation(IWin32Window owner, string title, Func<System.Threading.CancellationToken, Task<string>> operation,
-            Action finished = null)
+            Action finished = null, string initialStatus = null)
         {
-            ShowBackgroundOperation(owner, title, operation, true, finished);
+            ShowBackgroundOperation(owner, title, operation, true, finished, initialStatus);
         }
 
         private static void ShowBackgroundOperation(IWin32Window owner, string title,
-            Func<System.Threading.CancellationToken, Task<string>> operation, bool cancellable, Action finished)
+            Func<System.Threading.CancellationToken, Task<string>> operation, bool cancellable, Action finished, string initialStatus)
         {
             var dialog = new Form
             {
@@ -426,7 +417,7 @@ namespace WordGit
             dialog.Controls.Add(layout);
             var status = new TextBox
             {
-                Text = "正在后台处理，可继续编辑正文。", Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None,
+                Text = initialStatus ?? "正在后台处理，可继续编辑正文。", Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None,
                 Dock = DockStyle.Fill, BackColor = SystemColors.Control, ForeColor = SystemColors.ControlText,
                 ScrollBars = ScrollBars.Vertical, TabStop = false
             };
@@ -449,6 +440,7 @@ namespace WordGit
             layout.Controls.Add(actions, 0, 2);
             dialog.Shown += async (sender, args) =>
             {
+                UiThread.EnsureContext();
                 try
                 {
                     var result = await operation(cancellation.Token);
@@ -461,6 +453,7 @@ namespace WordGit
                 }
                 catch (Exception error)
                 {
+                    AppPaths.LogError(title + ": " + error);
                     if (!dialog.IsDisposed) status.Text = "操作未完成。" + Environment.NewLine + error.Message;
                 }
                 finally
@@ -471,18 +464,13 @@ namespace WordGit
                         cancel.Enabled = false;
                         close.Enabled = true;
                     }
-                    if (finished != null) finished();
+                    if (finished != null)
+                        try { finished(); }
+                        catch (Exception error) { AppPaths.LogError(title + " (finish): " + error); }
                 }
             };
             dialog.FormClosed += (sender, args) => { cancellation.Cancel(); cancellation.Dispose(); };
             dialog.Show(owner);
-        }
-
-        private static string FormatSize(long bytes)
-        {
-            if (bytes >= 1000000) return (bytes / 1000000d).ToString("N2") + " MB";
-            if (bytes >= 1000) return (bytes / 1000d).ToString("N2") + " KB";
-            return bytes.ToString("N0") + " 字节";
         }
     }
 }

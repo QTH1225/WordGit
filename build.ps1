@@ -7,37 +7,28 @@ if (-not (Test-Path -LiteralPath $compiler)) { throw '需要 Windows .NET Framew
 $bin = Join-Path $PSScriptRoot 'bin'
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
 $sources = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'src') -Filter '*.cs' | Select-Object -ExpandProperty FullName)
+$support = Join-Path $PSScriptRoot 'tests\TestSupport.cs'
 $references = @('System.Windows.Forms.dll','System.Drawing.dll','System.IO.Compression.dll','Microsoft.CSharp.dll','System.Net.Http.dll','System.Web.Extensions.dll')
 $options = @('/nologo','/codepage:65001','/langversion:5','/optimize+') + @($references | ForEach-Object { "/reference:$_" })
 & $compiler @options /target:library "/out:$bin\WordGit.dll" @sources
 if ($LASTEXITCODE -ne 0) { throw '插件构建失败。' }
 Write-Output "$bin\WordGit.dll"
+
+# Each test program is built from all sources plus the shared test helpers. Every requested
+# program runs even if an earlier one fails, and the failures are reported together.
+$failures = New-Object System.Collections.Generic.List[string]
+function Invoke-TestProgram([string]$Name, [string]$Label, [string[]]$Arguments = @(), [string[]]$Extra = @()) {
+    $exe = Join-Path $bin ('WordGit.' + $Name + '.exe')
+    & $compiler @options @Extra /target:exe "/out:$exe" @sources $support (Join-Path $PSScriptRoot ('tests\' + $Name + '.cs'))
+    if ($LASTEXITCODE -ne 0) { $failures.Add($Label + '（构建）'); return }
+    & $exe @Arguments
+    if ($LASTEXITCODE -ne 0) { $failures.Add($Label) }
+}
 if ($Test) {
-    $testSource = Join-Path $PSScriptRoot 'tests\Smoke.cs'
-    & $compiler @options /target:exe "/out:$bin\WordGit.Smoke.exe" @sources $testSource
-    if ($LASTEXITCODE -ne 0) { throw '测试构建失败。' }
-    & "$bin\WordGit.Smoke.exe"
-    if ($LASTEXITCODE -ne 0) { throw '测试失败。' }
-    & $compiler @options /target:exe "/out:$bin\WordGit.UpdatesSmoke.exe" @sources (Join-Path $PSScriptRoot 'tests\UpdatesSmoke.cs')
-    if ($LASTEXITCODE -ne 0) { throw '更新检查测试构建失败。' }
-    & "$bin\WordGit.UpdatesSmoke.exe"
-    if ($LASTEXITCODE -ne 0) { throw '更新检查测试失败。' }
-    & $compiler @options /target:exe "/out:$bin\WordGit.RemoteSmoke.exe" @sources (Join-Path $PSScriptRoot 'tests\RemoteSmoke.cs')
-    if ($LASTEXITCODE -ne 0) { throw '远程同步测试构建失败。' }
-    & "$bin\WordGit.RemoteSmoke.exe"
-    if ($LASTEXITCODE -ne 0) { throw '远程同步测试失败。' }
+    Invoke-TestProgram 'Smoke' '核心历史测试'
+    Invoke-TestProgram 'UpdatesSmoke' '更新检查测试'
+    Invoke-TestProgram 'RemoteSmoke' '远程同步测试'
 }
-if ($WordTest) {
-    $testSource = Join-Path $PSScriptRoot 'tests\WordSmoke.cs'
-    & $compiler @options /debug:pdbonly /target:exe "/out:$bin\WordGit.WordSmoke.exe" @sources $testSource
-    if ($LASTEXITCODE -ne 0) { throw 'Word 测试构建失败。' }
-    & "$bin\WordGit.WordSmoke.exe"
-    if ($LASTEXITCODE -ne 0) { throw 'Word 实机测试失败。' }
-}
-if ($UiTest) {
-    $testSource = Join-Path $PSScriptRoot 'tests\UiSmoke.cs'
-    & $compiler @options /target:exe "/out:$bin\WordGit.UiSmoke.exe" @sources $testSource
-    if ($LASTEXITCODE -ne 0) { throw '界面测试构建失败。' }
-    & "$bin\WordGit.UiSmoke.exe" $bin
-    if ($LASTEXITCODE -ne 0) { throw '界面布局测试失败。' }
-}
+if ($WordTest) { Invoke-TestProgram 'WordSmoke' 'Word 实机测试' -Extra @('/debug:pdbonly') }
+if ($UiTest) { Invoke-TestProgram 'UiSmoke' '界面布局测试' -Arguments @($bin) }
+if ($failures.Count -gt 0) { throw ('测试失败：' + ($failures -join '、')) }

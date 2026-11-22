@@ -44,7 +44,7 @@ namespace WordGit
                 table.Cell(1, 1).Range.Text = "龄期";
                 table.Cell(1, 2).Range.Text = "试件";
                 source.SaveAs2(FileName: sourcePath, FileFormat: 16, AddToRecentFiles: false);
-                var original = WordDocuments.Snapshot((object)source);
+                var original = TestFiles.Snapshot((object)source);
                 var repo = new GitHistory(sourcePath, root);
                 var first = repo.Commit(original, "初稿", "测试", null);
                 source.TrackRevisions = true;
@@ -75,19 +75,19 @@ namespace WordGit
                 }
                 word.GoToReviewItem((object)source, reviewItems.Single(item => item.IsComment));
                 var existingRevisions = (int)source.Revisions.Count;
-                dynamic liveComparison = word.CompareCurrent(original, (object)source);
+                dynamic liveComparison = word.CompareCurrentExtracted(repo, first, (object)source);
                 Require((int)liveComparison.Revisions.Count > 0 && (int)liveComparison.Tables.Count == 1 &&
                     ((string)liveComparison.Content.Text).Contains("当前还有未保存修改"), "Live Word comparison missed the unsaved edits");
                 Require(((string)liveComparison.Sections[1].Headers[1].Range.Text).Contains("保留的分节页眉") &&
                     Math.Abs((float)liveComparison.PageSetup.TopMargin - 55f) < 0.1f, "Live comparison lost header or margins");
                 liveComparison.Close(SaveChanges: 0);
                 source.Activate();
-                liveComparison = word.CompareCurrent(original, (object)source);
+                liveComparison = word.CompareCurrentExtracted(repo, first, (object)source);
                 Require((int)liveComparison.Revisions.Count > 0, "Repeated comparison with revisions failed");
                 liveComparison.Close(SaveChanges: 0);
                 Require(WordDocuments.ReviewItems((object)source).Count == reviewItems.Count, "Comparison changed the review list");
                 Require((int)source.Revisions.Count == existingRevisions && (int)source.Comments.Count == 1, "Comparison changed source revisions or comments");
-                Require(!(bool)source.Saved && WordDocuments.ReadDocx(sourcePath).SequenceEqual(original),
+                Require(!(bool)source.Saved && TestFiles.ReadDocx(sourcePath).SequenceEqual(original),
                     "Comparison saved or modified the source document");
                 source.AcceptAllRevisions();
                 Require(WordDocuments.ReviewItems((object)source).All(item => item.IsComment),
@@ -98,14 +98,20 @@ namespace WordGit
                 Require(staleRejected, "A stale revision navigated to another change");
                 source.Close(SaveChanges: 0);
                 source = word.Open(sourcePath, false);
+                // A saved draft is compared from its file instead of a WordOpenXML string.
+                dynamic savedComparison = word.CompareCurrentExtracted(repo, first, (object)source);
+                Require((int)savedComparison.Revisions.Count == 0 && (int)savedComparison.Tables.Count == 1 && (bool)source.Saved,
+                    "Comparing the saved draft with its own commit reported changes");
+                savedComparison.Close(SaveChanges: 0);
+                source.Activate();
                 var returnPath = Path.Combine(root, "导师返稿.docx");
-                WordDocuments.WriteNew(returnPath, original);
+                TestFiles.WriteNew(returnPath, original);
                 dynamic returned = word.Open(returnPath, false, false);
                 returned.TrackRevisions = true;
                 returned.Range(0, 0).InsertBefore("审阅补充\r");
-                var revised = WordDocuments.Snapshot((object)returned);
+                var revised = TestFiles.Snapshot((object)returned);
                 returned.Revisions.AcceptAll();
-                var cleanRevision = WordDocuments.Snapshot((object)returned);
+                var cleanRevision = TestFiles.Snapshot((object)returned);
                 returned.Close(SaveChanges: 0);
                 dynamic comparison = word.Review(repo.Extract(first), cleanRevision, false);
                 Require(comparison.Revisions.Count > 0 && comparison.Tables.Count == 1, "Compare results");
@@ -117,31 +123,32 @@ namespace WordGit
                 Require(((string)merge.Content.Text).Contains("审阅补充"), "Accept changes");
                 var mergePath = Path.Combine(root, "合并结果.docx");
                 merge.SaveAs2(FileName: mergePath, FileFormat: 16, AddToRecentFiles: false);
-                var mergeBytes = WordDocuments.Snapshot((object)merge);
+                var mergeBytes = TestFiles.Snapshot((object)merge);
                 var merged = repo.Commit(mergeBytes, "提交合并稿", "测试", first);
-                Require(repo.Extract(merged).SequenceEqual(mergeBytes) && WordDocuments.ReadDocx(sourcePath).SequenceEqual(original), "Merge must not overwrite original");
+                Require(repo.Extract(merged).SequenceEqual(mergeBytes) && TestFiles.ReadDocx(sourcePath).SequenceEqual(original), "Merge must not overwrite original");
                 source.Range(0, 0).InsertBefore("待恢复文本\r");
                 word.Restore(source, repo, first, "测试");
-                Require(WordDocuments.ReadDocx(sourcePath).SequenceEqual(original) && repo.History().Count == 4, "Restore must preserve source bytes and history");
+                Require(TestFiles.ReadDocx(sourcePath).SequenceEqual(original) && repo.History().Count == 4, "Restore must preserve source bytes and history");
                 var targetTip = repo.Head();
                 repo.CreateBranch("导师意见", first);
-                word.ReplaceWorkingCopy(sourcePath, original, original,
+                word.ReplaceWorkingCopy(repo, sourcePath, original, original,
                     () => repo.Switch("main", targetTip, "导师意见", first));
                 dynamic active = word.Current();
                 active.Range(0, 0).InsertBefore("分支补充\r");
-                var branchBytes = WordDocuments.Snapshot((object)active);
+                var branchBytes = TestFiles.Snapshot((object)active);
                 var side = repo.Commit(branchBytes, "导师分支", "测试", first, "导师意见");
-                word.ReplaceWorkingCopy(sourcePath, branchBytes, original,
+                word.ReplaceWorkingCopy(repo, sourcePath, branchBytes, original,
                     () => repo.Switch("导师意见", side, "main", targetTip));
-                Require(WordDocuments.ReadDocx(sourcePath).SequenceEqual(original), "Branch checkout changed DOCX bytes");
+                Require(TestFiles.ReadDocx(sourcePath).SequenceEqual(original) && !File.Exists(WorkingCopyJournal.PathFor(repo)),
+                    "Branch checkout changed DOCX bytes or left its journal");
                 active = word.Current();
                 var last = (int)active.Content.End - 1;
                 active.Range(last, last).InsertAfter("\r主分支备注");
-                var targetBytes = WordDocuments.Snapshot((object)active);
+                var targetBytes = TestFiles.Snapshot((object)active);
                 var target = repo.Commit(targetBytes, "主分支修改", "测试", targetTip, "main");
                 var common = repo.MergeBase(target, side);
                 Console.WriteLine("Running native review for diverged branches…");
-                dynamic resolved = word.ReviewBranches(repo.Extract(common), targetBytes, branchBytes);
+                dynamic resolved = word.ReviewBranchesExtracted(repo, common, target, side);
                 Require(resolved.Revisions.Count > 0 && resolved.Tables.Count == 1, "Branch merge missing revisions or table");
                 resolved.Revisions.AcceptAll();
                 var body = (string)resolved.Content.Text;
@@ -150,12 +157,12 @@ namespace WordGit
                 Require(Math.Abs((float)resolved.PageSetup.TopMargin - 55f) < 0.1f, "Branch merge changed the original margin");
                 var verified = Path.Combine(root, "已审阅合并稿.docx");
                 resolved.SaveAs2(FileName: verified, FileFormat: 16, AddToRecentFiles: false);
-                var verifiedBytes = WordDocuments.Snapshot((object)resolved);
+                var verifiedBytes = TestFiles.Snapshot((object)resolved);
                 string mergeCommit = null;
-                word.ReplaceWorkingCopy(sourcePath, targetBytes, verifiedBytes,
+                word.ReplaceWorkingCopy(repo, sourcePath, targetBytes, verifiedBytes,
                     () => mergeCommit = repo.Commit(verifiedBytes, "合并两个分支", "测试", target, "main", "导师意见", side));
                 Require(repo.Head() == mergeCommit && repo.History().First().Parents.SequenceEqual(new[] { target, side }) &&
-                    WordDocuments.ReadDocx(sourcePath).SequenceEqual(verifiedBytes), "Confirmed branch merge was not applied");
+                    TestFiles.ReadDocx(sourcePath).SequenceEqual(verifiedBytes), "Confirmed branch merge was not applied");
                 Console.WriteLine("PASS: native Word compare, review merge, exact restoration and branch checkout, and divergent branch merge retaining both changes, table and header.");
             }
             catch (Exception error)
@@ -220,7 +227,7 @@ namespace WordGit
                 comment.Author = "合作者乙";
                 WordDocuments.SaveDocument(bDoc);
                 bDoc.Close(SaveChanges: 0);
-                var rawRemote = WordDocuments.ReadDocx(bPath);
+                var rawRemote = TestFiles.ReadDocx(bPath);
                 dynamic rawPreview = word.Open(bPath, true, false);
                 var rawAuthors = WordDocuments.ReviewItems((object)rawPreview).Where(item => !item.IsComment).Select(item => item.Author).Distinct().ToArray();
                 var rawCommentAuthor = WordDocuments.Comments((object)rawPreview).Single(item => item.Text.Contains("统计建议")).Author;
@@ -249,7 +256,7 @@ namespace WordGit
                 var mergedHash = WordDocuments.FileChecksum(mergedFile);
                 string merged = null;
                 using (a.Lock())
-                    word.ReplaceWorkingCopy(aPath, aHash, mergedFile, mergedHash,
+                    word.ReplaceWorkingCopy(a, aPath, aHash, mergedFile, mergedHash,
                         () => merged = a.CommitFile(aPath, "确认远程修订", "甲", local, "main", state.RemoteReference, remote));
                 Require(a.History().Single(row => row.Id == merged).Parents.SequenceEqual(new[] { local, remote }) &&
                     a.Extract(remote).SequenceEqual(rawRemote), "Remote merge lost either parent or raw peer revision");
@@ -260,7 +267,7 @@ namespace WordGit
                 bDoc = word.Open(bPath, false, false);
                 var peerHash = WordDocuments.FileChecksum(bPath);
                 using (b.Lock())
-                    word.ReplaceWorkingCopy(bPath, peerHash, peerStaged, mergedHash,
+                    word.ReplaceWorkingCopy(b, bPath, peerHash, peerStaged, mergedHash,
                         () => b.FastForwardRemote("main", remote, peerState.RemoteReference, merged));
                 Require(b.Head() == merged && WordDocuments.FileChecksum(bPath) == mergedHash && server.Head() == merged,
                     "Merged document did not round-trip through the remote");
@@ -280,7 +287,7 @@ namespace WordGit
                 var refused = false;
                 try {
                     using (a.Lock())
-                        word.ReplaceWorkingCopy(aPath, mergedHash, staged, nextHash,
+                        word.ReplaceWorkingCopy(a, aPath, mergedHash, staged, nextHash,
                             () => a.FastForwardRemote("main", merged, state.RemoteReference, next));
                 } catch (InvalidOperationException) { refused = true; }
                 Require(refused && a.Head() == merged && WordDocuments.FileChecksum(aPath) == mergedHash &&
@@ -288,7 +295,7 @@ namespace WordGit
                 aDoc.Close(SaveChanges: 0);
                 aDoc = word.Open(aPath, false, false);
                 using (a.Lock())
-                    word.ReplaceWorkingCopy(aPath, mergedHash, staged, nextHash,
+                    word.ReplaceWorkingCopy(a, aPath, mergedHash, staged, nextHash,
                         () => a.FastForwardRemote("main", merged, state.RemoteReference, next));
                 Require(a.Head() == next && WordDocuments.FileChecksum(aPath) == nextHash &&
                     a.Extract(remote).SequenceEqual(rawRemote), "Clean remote pull lost history or document bytes");
@@ -356,7 +363,7 @@ namespace WordGit
                 WordDocuments.SaveDocument(teacher);
                 Require((int)teacher.Revisions.Count > 0, "Teacher revision fixture has no tracked changes");
                 teacher.Close(SaveChanges: 0);
-                var raw = WordDocuments.ReadDocx(teacherPath);
+                var raw = TestFiles.ReadDocx(teacherPath);
                 dynamic sourcePreview = word.Open(teacherPath, true, false);
                 var originalComment = WordDocuments.Comments((object)sourcePreview).Single(item => item.Text.Contains("核对"));
                 var originalAuthors = WordDocuments.ReviewItems((object)sourcePreview).Where(item => !item.IsComment).Select(item => item.Author).Distinct().ToArray();
@@ -398,13 +405,13 @@ namespace WordGit
                 var mergedHash = WordDocuments.FileChecksum(mergedPath);
                 string merged = null;
                 using (repository.Lock())
-                    word.ReplaceWorkingCopy(path, targetHash, mergedPath, mergedHash,
+                    word.ReplaceWorkingCopy(repository, path, targetHash, mergedPath, mergedHash,
                         () => merged = repository.CommitFile(path, "确认老师一审", "作者", target,
                             "main", "review/导师一审", imported));
                 Require(repository.Head() == merged && repository.History().Single(row => row.Id == merged).Parents.SequenceEqual(new[] { target, imported }) &&
                     WordDocuments.FileChecksum(path) == mergedHash, "Imported review did not create a two-parent merge");
                 repository.Repack();
-                Require(repository.Extract(imported).SequenceEqual(raw) && WordDocuments.ReadDocx(teacherPath).SequenceEqual(raw),
+                Require(repository.Extract(imported).SequenceEqual(raw) && TestFiles.ReadDocx(teacherPath).SequenceEqual(raw),
                     "Review source or its commit changed after merging/repacking");
                 Console.WriteLine("PASS: imported raw teacher DOCX, comments-only review, original authors and revisions, native accept/reject, current edits, image/table/header/margin and traceable merge.");
             }
@@ -419,7 +426,7 @@ namespace WordGit
             document.Content.Text = "保留正文\r删除后接受\r删除后拒绝\r格式测试\r";
             document.Sections[1].Headers[1].Range.Text = "页眉原文";
             document.SaveAs2(FileName: path, FileFormat: 16, AddToRecentFiles: false);
-            var original = WordDocuments.ReadDocx(path);
+            var original = TestFiles.ReadDocx(path);
             document.TrackRevisions = true;
             document.TrackFormatting = true;
             document.Range(0, 0).InsertBefore("新增后接受\r");
@@ -476,7 +483,7 @@ namespace WordGit
             }
             Require(!((string)document.Sections[1].Headers[1].Range.Text).Contains("页眉新增"), "Reject header revision");
             Require(WordDocuments.ReviewItems((object)document).All(item => item.IsComment) && (int)document.Comments.Count == 1 &&
-                !(bool)document.Saved && WordDocuments.ReadDocx(path).SequenceEqual(original), "Review actions saved the file or changed comments");
+                !(bool)document.Saved && TestFiles.ReadDocx(path).SequenceEqual(original), "Review actions saved the file or changed comments");
             document.Close(SaveChanges: 0);
             document = word.Open(path, true, false);
             var readOnlyRejected = false;

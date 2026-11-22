@@ -17,6 +17,8 @@ namespace WordGit
         public Func<WorkingCopyState> WorkingState;
         public Func<bool> IsSaved;
         public Func<List<DocumentReviewItem>> LoadReviewItems;
+        // Cheap change detector for the review list; null means "always reload".
+        public Func<string> ReviewSignature;
         public Action<DocumentReviewItem> NavigateReviewItem;
         public Func<DocumentReviewItem, bool, bool> ResolveReviewItem;
         public bool CanResolveRevisions;
@@ -62,6 +64,10 @@ namespace WordGit
         private List<DocumentReviewItem> commentItems = new List<DocumentReviewItem>();
         private List<DocumentReviewItem> allReviewItems = new List<DocumentReviewItem>();
         private int commentPoll;
+        private string reviewSignature;
+        // Polling cadence on the 1.2 s timer: compare the signature every ~5 s, and rebuild the
+        // list (which repaginates in Word) only when it changed or every ~30 s as a fallback.
+        private const int SignatureTicks = 4, ForcedReviewTicks = 25;
         private readonly DataGridView graph = new DataGridView
         {
             Dock = DockStyle.Fill, BackgroundColor = SystemColors.Window, BorderStyle = BorderStyle.FixedSingle,
@@ -210,7 +216,7 @@ namespace WordGit
             {
                 if (!Visible || resolvingRevision || loading) return;
                 UpdateWorkingState();
-                if (++commentPoll % 4 == 0) ReloadComments();
+                PollReviewItems();
             };
             var remoteFrame = new GroupBox { Text = "远程协作", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Dock = DockStyle.Fill, Margin = new Padding(0, 2, 0, 8), Padding = new Padding(8, 6, 8, 8) };
@@ -406,8 +412,35 @@ namespace WordGit
             var pending = ReloadAsync();
         }
 
+        // Stops all background polling; the task pane hosting this control is going away.
+        internal void Detach()
+        {
+            workingTimer.Stop();
+            ++reloadGeneration;
+            ++graphGeneration;
+            data = null;
+            load = null;
+            loadAsync = null;
+        }
+
+        private void PollReviewItems()
+        {
+            ++commentPoll;
+            if (commentPoll % SignatureTicks != 0) return;
+            if (commentPoll % ForcedReviewTicks != 0 && data != null && data.ReviewSignature != null)
+            {
+                string signature;
+                try { signature = data.ReviewSignature(); }
+                catch (COMException) { return; }
+                catch (InvalidComObjectException) { return; }
+                if (signature == reviewSignature && reviewItemsCurrent) return;
+            }
+            ReloadComments();
+        }
+
         internal async Task ReloadAsync()
         {
+            UiThread.EnsureContext();
             if (IsDisposed || Disposing || (load == null && loadAsync == null)) return;
             var generation = ++reloadGeneration;
             ++graphGeneration;
@@ -456,6 +489,7 @@ namespace WordGit
             catch (Exception error)
             {
                 if (!CurrentLoad(generation)) return;
+                AppPaths.LogError("history pane load: " + error);
                 data = null;
                 branch.Text = "当前分支  —";
                 filename.Text = "";
@@ -504,9 +538,12 @@ namespace WordGit
         {
             try
             {
+                // Read the signature first, so edits made while the list is built trigger a reload.
+                var signature = data == null || data.ReviewSignature == null ? null : data.ReviewSignature();
                 var entries = data == null || data.LoadReviewItems == null ? new List<DocumentReviewItem>() :
                     data.LoadReviewItems().OrderBy(entry => entry.Page).ThenBy(entry => entry.ScopeStart)
                         .ThenBy(entry => entry.IsComment ? 0 : 1).ToList();
+                reviewSignature = signature;
                 var unchanged = entries.Count == allReviewItems.Count && entries.Zip(allReviewItems,
                     (left, right) => left.Key == right.Key && left.Text == right.Text && left.Author == right.Author &&
                         left.Page == right.Page && left.ScopeStart == right.ScopeStart && left.ScopeEnd == right.ScopeEnd &&
@@ -627,6 +664,7 @@ namespace WordGit
 
         internal async void UpdateWorkingState()
         {
+            UiThread.EnsureContext();
             if (workingQuery || loading) return;
             var request = data;
             var generation = reloadGeneration;
@@ -655,6 +693,12 @@ namespace WordGit
             catch (IOException) { text = "暂无法读取修改状态"; }
             catch (UnauthorizedAccessException) { text = "暂无法读取修改状态"; }
             catch (InvalidOperationException) { text = "暂无法读取修改状态"; }
+            catch (Exception error)
+            {
+                // async void: anything that escapes would surface in Word's message loop.
+                AppPaths.LogError("working state: " + error);
+                text = "暂无法读取修改状态";
+            }
             finally { workingQuery = false; }
             if (!CurrentLoad(generation) || data != request || working.Text == text) return;
             working.Text = text;
@@ -668,6 +712,7 @@ namespace WordGit
 
         private async Task LoadGraphAsync(string[] keep)
         {
+            UiThread.EnsureContext();
             var request = data;
             if (request == null) return;
             var generation = ++graphGeneration;
@@ -688,6 +733,7 @@ namespace WordGit
             catch (Exception error)
             {
                 if (IsDisposed || Disposing || generation != graphGeneration || data != request) return;
+                AppPaths.LogError("history graph: " + error);
                 ShowGraph(new List<Revision>(), new string[0]);
                 graphError = error.Message;
                 status.Text = error.Message;

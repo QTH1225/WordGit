@@ -125,10 +125,16 @@ namespace WordGit
         {
             var refs = RemoteBranches();
             if (refs.Length == 0) return;
+            ArchiveTips(refs.ToDictionary(reference => reference, reference => BranchTip(reference)));
+        }
+
+        private void ArchiveTips(IDictionary<string, string> tips)
+        {
+            if (tips.Count == 0) return;
             var prefix = BackupRoot + DateTime.UtcNow.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) +
                 "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + "/";
-            RefTransaction(null, refs.Select(reference =>
-                "create " + prefix + reference.Substring(RemotePrefix.Length) + " " + BranchTip(reference)).ToArray());
+            RefTransaction(null, tips.Select(pair =>
+                "create " + prefix + pair.Key.Substring(RemotePrefix.Length) + " " + Id(pair.Value)).ToArray());
         }
 
         private string[] BackupRefs()
@@ -174,9 +180,16 @@ namespace WordGit
         internal RemoteState FetchRemote(bool allowLocal = false, CancellationToken cancellation = default(CancellationToken))
         {
             NormalizeRemoteUrl(RemoteUrl, allowLocal);
-            ArchiveRemoteTips();
-            NetworkRun(allowLocal, cancellation, "fetch", "--no-prune", "--no-tags", "--no-recurse-submodules", "origin",
+            var before = RemoteBranches().ToDictionary(reference => reference, reference => BranchTip(reference));
+            NetworkRun(allowLocal, cancellation, "-c", "transfer.fsckObjects=true", "-c", "fetch.fsckObjects=true",
+                "fetch", "--progress", "--no-prune", "--no-tags", "--no-recurse-submodules", "origin",
                 "+refs/heads/*:refs/remotes/origin/*");
+            // Only a forced (non-fast-forward) remote update can hide commits we already fetched;
+            // those old tips are kept under refs/wordgit/remote-backup so they stay in the history.
+            var rewritten = before.Where(pair => pair.Value != null)
+                .Where(pair => { var now = BranchTip(pair.Key); return now != pair.Value && (now == null || !IsAncestor(pair.Value, now)); })
+                .ToDictionary(pair => pair.Key, pair => pair.Value);
+            ArchiveTips(rewritten);
             CleanRemoteBackups();
             return SyncState();
         }
@@ -187,7 +200,8 @@ namespace WordGit
             if (!state.Linked || state.LocalTip == null) throw new InvalidOperationException("请先关联仓库并提交当前稿。");
             NormalizeRemoteUrl(state.Url, allowLocal);
             // A normal push refuses a non-fast-forward update on the server.
-            NetworkRun(allowLocal, cancellation, "push", "--porcelain", "origin", BranchRef(state.LocalBranch) + ":" + BranchRef(state.RemoteBranch));
+            NetworkRun(allowLocal, cancellation, "push", "--progress", "--porcelain", "origin",
+                BranchRef(state.LocalBranch) + ":" + BranchRef(state.RemoteBranch));
             return SyncState();
         }
 
@@ -217,17 +231,21 @@ namespace WordGit
             var stagedDocument = Path.Combine(Path.GetDirectoryName(documentPath), "wordgit-" + Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
-                var staged = new GitHistory(temporary, destination.git, null);
+                var staged = new GitHistory(temporary, destination.git.Executable, null);
                 staged.EnsureRepository();
                 RunBranch(staged, remoteBranch);
                 staged.ConfigureRemote(url, remoteBranch, allowLocal);
                 var state = staged.FetchRemote(allowLocal, cancellation);
                 if (state.RemoteTip == null) throw new InvalidOperationException("远程没有所选分支，请确认分支名或先由另一位作者推送版本。");
-                WordDocuments.ExtractToFile(staged, state.RemoteTip, stagedDocument);
-                WordDocuments.ValidateDocx(stagedDocument);
+                using (var output = new FileStream(stagedDocument, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    staged.ExtractTo(state.RemoteTip, output);
+                DocxFormat.ValidateFile(stagedDocument);
                 staged.RefTransaction(null, "create " + BranchRef(remoteBranch) + " " + state.RemoteTip);
                 Directory.Move(temporary, destination.root);
                 File.Move(stagedDocument, documentPath);
+                // Content written by collaborators is treated like a download, so Word opens it
+                // in Protected View when the user later opens the file directly.
+                ZoneMarker.MarkFromInternet(documentPath);
                 return destination;
             }
             finally
@@ -262,34 +280,60 @@ namespace WordGit
             var options = new[] { "-c", "core.hooksPath=NUL", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
                 "-c", "push.followTags=false", "-c", "push.recurseSubmodules=no", "-c", "remote.origin.mirror=false",
                 "-c", "protocol.ext.allow=never", "-c", allowLocal ? "protocol.file.allow=always" : "protocol.file.allow=never" };
-            var info = CreateInfo(null, false, options.Concat(command).ToArray());
+            var info = git.CreateInfo(null, false, options.Concat(command));
             // Restore the user's Git credential/proxy configuration only for network operations.
             info.EnvironmentVariables.Remove("GIT_CONFIG_NOSYSTEM");
             info.EnvironmentVariables.Remove("GIT_CONFIG_GLOBAL");
             info.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-            info.EnvironmentVariables["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes";
-            using (var process = Process.Start(info))
+            ConfigureSsh(info);
+            git.RunNetwork(info, cancellation, GitProcess.NetworkIdleTimeout);
+        }
+
+        // Keeps a user's own SSH setup (plink, a specific key, a custom known_hosts). Otherwise ssh
+        // must never wait for terminal input, and a first connection records GitHub's host key.
+        private void ConfigureSsh(System.Diagnostics.ProcessStartInfo info)
+        {
+            foreach (var name in new[] { "GIT_SSH_COMMAND", "GIT_SSH", "GIT_SSH_VARIANT" })
             {
-                var output = process.StandardOutput.ReadToEndAsync();
-                var errors = process.StandardError.ReadToEndAsync();
-                using (cancellation.Register(() => { try { process.Kill(); } catch (InvalidOperationException) { } }))
+                var value = Environment.GetEnvironmentVariable(name);
+                if (!String.IsNullOrEmpty(value)) info.EnvironmentVariables[name] = value;
+            }
+            if (info.EnvironmentVariables.ContainsKey("GIT_SSH_COMMAND") || info.EnvironmentVariables.ContainsKey("GIT_SSH")) return;
+            var configured = git.InvokeWithUserConfig("config", "--get", "core.sshCommand");
+            if (configured.Code == 0 && configured.Bytes.Length > 0) return;
+            info.EnvironmentVariables["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new";
+        }
+    }
+
+    // Writes the Windows "mark of the web" so Office treats a file like a download.
+    internal static class ZoneMarker
+    {
+        internal static void MarkFromInternet(string path)
+        {
+            try
+            {
+                using (var handle = CreateFile(path + ":Zone.Identifier", 0x40000000, 0, IntPtr.Zero, 2, 0x80, IntPtr.Zero))
                 {
-                    if (!process.WaitForExit(180000))
+                    if (handle.IsInvalid) return;
+                    using (var stream = new FileStream(handle, FileAccess.Write))
                     {
-                        process.Kill();
-                        process.WaitForExit();
-                        throw new TimeoutException("远程 Git 操作超时，请检查网络或完成 Git for Windows 登录后重试。");
+                        var bytes = System.Text.Encoding.ASCII.GetBytes("[ZoneTransfer]\r\nZoneId=3\r\n");
+                        stream.Write(bytes, 0, bytes.Length);
                     }
                 }
-                Task.WaitAll(output, errors);
-                cancellation.ThrowIfCancellationRequested();
-                if (process.ExitCode != 0)
-                {
-                    var detail = errors.Result.Trim();
-                    if (detail.Length > 1600) detail = detail.Substring(detail.Length - 1600);
-                    throw new InvalidOperationException("远程 Git 操作未完成。推送被拒绝时请先获取并拉取；认证失败时请完成 Git for Windows 登录。\n" + detail);
-                }
             }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
+
+        internal static bool IsMarked(string path)
+        {
+            using (var handle = CreateFile(path + ":Zone.Identifier", 0x80000000, 1, IntPtr.Zero, 3, 0x80, IntPtr.Zero))
+                return !handle.IsInvalid;
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share,
+            IntPtr security, uint disposition, uint flags, IntPtr template);
     }
 }

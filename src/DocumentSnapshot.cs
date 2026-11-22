@@ -18,12 +18,12 @@ namespace WordGit
         private const int MaximumChunk = 256 * 1024;
         private static readonly ulong[] Gear = CreateGear();
         private static readonly Encoding Utf8 = new UTF8Encoding(false, true);
-        public readonly int Length;
+        public readonly long Length;
         public readonly string Checksum;
         public readonly string[] Objects;
         public readonly int[] Sizes;
 
-        private DocumentSnapshot(int length, string checksum, string[] objects, int[] sizes)
+        private DocumentSnapshot(long length, string checksum, string[] objects, int[] sizes)
         {
             Length = length;
             Checksum = checksum;
@@ -31,15 +31,8 @@ namespace WordGit
             Sizes = sizes;
         }
 
-        public static List<ArraySegment<byte>> Split(byte[] bytes)
-        {
-            using (var stream = new MemoryStream(bytes, false))
-                return CutChunks(stream, bytes.Length, null, null)
-                    .Select(chunk => new ArraySegment<byte>(bytes, checked((int)chunk.Offset), chunk.Length)).ToList();
-        }
-
-        // Streaming counterpart of Split: reads the document sequentially and keeps only a bounded
-        // per-chunk buffer, so planning a large document needs only a few megabytes of memory.
+        // Reads the document sequentially and keeps only a bounded per-chunk buffer, so planning
+        // a large document needs only a few megabytes of memory.
         public static SnapshotPlan Plan(Stream stream, string objectFormat)
         {
             if (objectFormat != "sha1" && objectFormat != "sha256") throw new InvalidOperationException("不支持此 Git 对象格式。");
@@ -65,9 +58,9 @@ namespace WordGit
 
         private struct ChunkSlice { public long Offset; public int Length; }
 
-        // Single chunking implementation shared by Split and Plan. Reads the stream segment by
-        // segment in ascending order; onChunk (when given) receives each finished chunk's content
-        // from a reusable buffer and overall (when given) hashes every byte in file order.
+        // Reads the stream segment by segment in ascending order; onChunk (when given) receives each
+        // finished chunk's content from a reusable buffer and overall (when given) hashes every byte
+        // in file order.
         private static List<ChunkSlice> CutChunks(Stream stream, long length, HashAlgorithm overall, Action<byte[], int> onChunk)
         {
             var boundaries = ZipBoundaries(stream, length);
@@ -175,16 +168,6 @@ namespace WordGit
             catch (ArgumentException) { return fallback; }
         }
 
-        public static string[] BlobObjects(IList<ArraySegment<byte>> chunks, string objectFormat)
-        {
-            if (objectFormat != "sha1" && objectFormat != "sha256") throw new InvalidOperationException("不支持此 Git 对象格式。");
-            var objects = new string[chunks.Count];
-            using (var hash = objectFormat == "sha1" ? (HashAlgorithm)SHA1.Create() : SHA256.Create())
-                for (var i = 0; i < chunks.Count; i++)
-                    objects[i] = BlobId(hash, chunks[i].Array, chunks[i].Offset, chunks[i].Count);
-            return objects;
-        }
-
         private static string BlobId(HashAlgorithm hash, byte[] content, int offset, int count)
         {
             hash.Initialize();
@@ -192,12 +175,6 @@ namespace WordGit
             hash.TransformBlock(header, 0, header.Length, header, 0);
             hash.TransformFinalBlock(content, offset, count);
             return BitConverter.ToString(hash.Hash).Replace("-", "").ToLowerInvariant();
-        }
-
-        public static byte[] Manifest(byte[] bytes, IList<ArraySegment<byte>> chunks, string[] objects)
-        {
-            return Manifest(bytes.Length, GitHistory.Sha(bytes),
-                chunks.Select(chunk => chunk.Count).ToArray(), objects);
         }
 
         public static byte[] Manifest(long length, string checksum, int[] sizes, string[] objects)
@@ -212,9 +189,9 @@ namespace WordGit
         public static DocumentSnapshot Read(byte[] bytes)
         {
             var lines = Utf8.GetString(bytes).TrimEnd('\n').Split('\n');
-            int length;
+            long length;
             if (lines.Length < 4 || lines[0] != Format ||
-                !Int32.TryParse(lines[1], NumberStyles.None, CultureInfo.InvariantCulture, out length) || length < 4 ||
+                !Int64.TryParse(lines[1], NumberStyles.None, CultureInfo.InvariantCulture, out length) || length < 4 ||
                 !Regex.IsMatch(lines[2], @"\A[a-f0-9]{64}\z"))
                 throw new InvalidDataException("文档分块清单无效。");
             var objects = new string[lines.Length - 3];
@@ -234,32 +211,8 @@ namespace WordGit
             return new DocumentSnapshot(length, lines[2], objects, sizes);
         }
 
-        public byte[] Restore(byte[] batch)
-        {
-            var result = new byte[Length];
-            var position = 0;
-            var written = 0;
-            for (var i = 0; i < Objects.Length; i++)
-            {
-                var end = Array.IndexOf(batch, (byte)'\n', position);
-                if (end < 0 || end - position > 100) throw new InvalidDataException("无法读取历史数据块。");
-                var header = Encoding.ASCII.GetString(batch, position, end - position);
-                var expected = Objects[i] + " blob " + Sizes[i].ToString(CultureInfo.InvariantCulture);
-                if (header != expected) throw new InvalidDataException("历史数据块标识或长度校验失败。");
-                position = end + 1;
-                if (batch.Length - position <= Sizes[i] || batch[position + Sizes[i]] != (byte)'\n')
-                    throw new InvalidDataException("历史数据块不完整。");
-                Buffer.BlockCopy(batch, position, result, written, Sizes[i]);
-                position += Sizes[i] + 1;
-                written += Sizes[i];
-            }
-            if (position != batch.Length || GitHistory.Sha(result) != Checksum)
-                throw new InvalidDataException("历史文档校验失败。");
-            return result;
-        }
-
-        // Streaming counterpart of Restore(byte[]): verifies and writes each chunk as it arrives,
-        // so memory stays bounded no matter how large the restored document is.
+        // Verifies and writes each chunk as it arrives, so memory stays bounded no matter how large
+        // the restored document is.
         public void Restore(Stream batch, Stream output)
         {
             var buffer = new byte[64 * 1024];

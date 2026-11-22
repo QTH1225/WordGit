@@ -90,7 +90,14 @@ namespace WordGit
         private void Prune()
         {
             foreach (var handle in panes.Where(entry => entry.Value.Control.IsDisposed || !IsWindow(new IntPtr(entry.Key))).Select(entry => entry.Key).ToArray())
+            {
+                var pane = panes[handle];
                 panes.Remove(handle);
+                // Stop the pane's timers and drop its document references before the host goes.
+                if (!pane.Control.IsDisposed) pane.Control.Detach();
+                Delete(pane.Native);
+                WordDocuments.Release((object)pane.Native);
+            }
         }
 
         private static void Delete(object pane)

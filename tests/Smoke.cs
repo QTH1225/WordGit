@@ -37,10 +37,10 @@ namespace WordGit
             var data2 = Fixture("新版：修改了试验条件");
             try
             {
-                WordDocuments.WriteNew(first, data1);
+                TestFiles.WriteNew(first, data1);
                 var repo = new GitHistory(first, root);
                 Require(repo.Head() == null && repo.History().Count == 0, "Empty repository");
-                var initial = repo.Commit(WordDocuments.ReadDocx(first), "初稿", "张三", null);
+                var initial = repo.Commit(TestFiles.ReadDocx(first), "初稿", "张三", null);
                 var updated = repo.Commit(data2, "导师审阅版", "张三", initial);
                 var history = repo.History();
                 Require(history.Count == 2 && history[0].Id == updated && history[0].Subject == "导师审阅版" && history[0].Author == "张三", "History or UTF-8 mismatch");
@@ -88,7 +88,7 @@ namespace WordGit
                     "Deleting a merged branch changed the active branch or lost its commits");
 
                 var saved = true;
-                WordDocuments.WriteNew(second, data1);
+                TestFiles.WriteNew(second, data1);
                 var working = new WorkingCopy(second, () => saved, () => repo.SnapshotChecksum(merge));
                 Require(working.State() == WorkingCopyState.Clean, "Clean working copy shown as modified");
                 saved = false;
@@ -101,13 +101,15 @@ namespace WordGit
                 Require(working.State() == WorkingCopyState.Clean, "Working status did not recover after restoring the committed file");
                 Require(new WorkingCopy(second, () => true, null).State() == WorkingCopyState.NoCommit, "Missing first commit was not recognized");
                 Require(new GitHistory(second, root).History().Count == 0, "Unrelated file shares history");
-                try { WordDocuments.WriteNew(first, data2); throw new Exception("Existing file overwritten"); }
+                try { TestFiles.WriteNew(first, data2); throw new Exception("Existing file overwritten"); }
                 catch (IOException) { Require(File.ReadAllBytes(first).SequenceEqual(data1), "Existing file modified"); }
                 VerifyLegacyFormats(root);
                 VerifyCompression(root);
                 VerifyStreaming(root);
                 VerifyReviewImport(root);
                 VerifyHousekeeping(root);
+                VerifyRobustness(root);
+                VerifyJournalRecovery(root);
                 Console.WriteLine("PASS: Git history, exact DOCX restoration, branches, merge, working-copy state and lossless history compression.");
             }
             finally { try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
@@ -134,6 +136,14 @@ namespace WordGit
             File.SetLastWriteTimeUtc(oldLeftover, DateTime.UtcNow.AddDays(-2));
             WordDocuments.CleanRestoreLeftovers(folder);
             Require(!File.Exists(oldLeftover) && File.Exists(newLeftover), "Restore leftover cleanup removed the wrong files");
+            var recentBackup = Path.Combine(folder, ".wordgit-restore-recent.tmp.bak");
+            var expiredBackup = Path.Combine(folder, ".wordgit-restore-expired.tmp.bak");
+            File.WriteAllText(recentBackup, "keep");
+            File.WriteAllText(expiredBackup, "drop");
+            File.SetLastWriteTimeUtc(recentBackup, DateTime.UtcNow.AddDays(-2));
+            File.SetLastWriteTimeUtc(expiredBackup, DateTime.UtcNow.AddDays(-40));
+            WordDocuments.CleanRestoreLeftovers(folder);
+            Require(File.Exists(recentBackup) && !File.Exists(expiredBackup), "Restore backups were not kept for a month");
 
             var logFile = Path.Combine(root, "logs", "wordgit.log");
             AppPaths.AppendLog(logFile, "first entry");
@@ -142,36 +152,184 @@ namespace WordGit
             var text = File.ReadAllText(logFile);
             Require(text.Contains("second entry") && !text.Contains("first entry") &&
                 File.ReadAllText(logFile + ".1").Contains("first entry"), "Log rotation lost or mixed entries");
-            Console.WriteLine("PASS: session/restore-leftover cleanup and log rotation.");
+            var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            AppPaths.AppendLog(logFile, "failed at " + profile.ToUpperInvariant() + "\\Documents\\论文.docx");
+            text = File.ReadAllText(logFile);
+            Require(text.Contains("%USERPROFILE%\\Documents\\论文.docx") && text.IndexOf(profile, StringComparison.OrdinalIgnoreCase) < 0,
+                "Log kept the user profile path");
+            Console.WriteLine("PASS: session/restore-leftover cleanup, backup retention, log rotation and redaction.");
+        }
+
+        private static void VerifyRobustness(string root)
+        {
+            var path = Path.Combine(root, "健壮性.docx");
+            var rootBytes = Fixture("根版本");
+            File.WriteAllBytes(path, rootBytes);
+            var repo = new GitHistory(path, root);
+            var rootCommit = repo.CommitFile(path, "根", "测试", null);
+
+            // Messages written by other Git clients may not be UTF-8; the history must still load.
+            var tree = Encoding.ASCII.GetString(CompatibilityGit(repo.RepositoryPath, null, "rev-parse", rootCommit + "^{tree}")).Trim();
+            var foreign = Encoding.ASCII.GetString(CompatibilityGit(repo.RepositoryPath,
+                new byte[] { 0x47, 0x42, 0x4B, 0xD6, 0xD0, 0xCE, 0xC4, 0xFF, 0x0A }, "commit-tree", tree, "-p", rootCommit, "-F", "-")).Trim();
+            CompatibilityGit(repo.RepositoryPath, null, "update-ref", "refs/heads/foreign", foreign);
+            Require(repo.History().Any(item => item.Id == foreign && item.Subject.StartsWith("GBK", StringComparison.Ordinal)),
+                "A non-UTF-8 commit message broke the history");
+
+            // Criss-cross merges have two merge bases; merging must still work.
+            var a1 = repo.Commit(Fixture("甲侧"), "甲", "测试", rootCommit, "main");
+            repo.CreateBranch("side", rootCommit);
+            repo.Switch("main", a1, "side", rootCommit);
+            var b1 = repo.Commit(Fixture("乙侧"), "乙", "测试", rootCommit, "side");
+            repo.CreateBranch("a-pin", a1);
+            var m2 = repo.Commit(Fixture("乙合并甲"), "乙合并", "测试", b1, "side", "a-pin", a1);
+            repo.Switch("side", m2, "main", a1);
+            repo.CreateBranch("b-pin", b1);
+            var m1 = repo.Commit(Fixture("甲合并乙"), "甲合并", "测试", a1, "main", "b-pin", b1);
+            var bases = Encoding.ASCII.GetString(CompatibilityGit(repo.RepositoryPath, null, "merge-base", "--all", m1, m2))
+                .Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var basis = repo.MergeBase(m1, m2);
+            Require(bases.Length == 2 && (basis == a1 || basis == b1), "Criss-cross history had no usable merge base");
+            var crossedBytes = Fixture("交叉合并");
+            var crossed = repo.Commit(crossedBytes, "交叉合并", "测试", m1, "main", "side", m2);
+            Require(repo.History().Single(item => item.Id == crossed).Parents.SequenceEqual(new[] { m1, m2 }), "Criss-cross merge failed");
+
+            foreach (var name in new[] { "CON", "review/nul", "aux.txt", "draft.", "a|b", "COM1/x" })
+            {
+                var refused = false;
+                try { repo.CreateBranch(name, rootCommit); } catch (ArgumentException) { refused = true; }
+                Require(refused && repo.BranchTip("main") == crossed, "Windows-reserved branch name accepted: " + name);
+            }
+
+            // Password-protected documents are OLE files; they are refused before anything is stored.
+            var encrypted = Path.Combine(root, "加密.docx");
+            File.WriteAllBytes(encrypted, new byte[] { 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0, 0, 0 });
+            var rejected = false;
+            try { repo.CommitFile(encrypted, "加密", "测试", crossed); }
+            catch (InvalidDataException error) { rejected = error.Message.Contains("加密"); }
+            Require(rejected && repo.Head() == crossed, "An encrypted document was committed");
+
+            // A version that fails verification never appears under the chosen export name.
+            var good = Fixture("导出检查");
+            var badParts = LegacyDocx.Read(good);
+            var badMeta = LegacyDocx.MetaText(badParts).Replace(TestFiles.Sha(badParts[0].Bytes), new string('0', 64));
+            var badFiles = badParts.ToDictionary(part => part.Name, part => part.Bytes);
+            badFiles.Add(DocxFormat.MetaName, Encoding.UTF8.GetBytes(badMeta));
+            var corrupt = CompatibilityCommit(repo, badFiles, crossed, false);
+            var export = Path.Combine(root, "导出结果.docx");
+            rejected = false;
+            try { WordDocuments.ExtractToFile(repo, corrupt, export); } catch (InvalidDataException) { rejected = true; }
+            Require(rejected && !File.Exists(export) && Directory.GetFiles(root, "导出结果.docx*").Length == 0,
+                "A failed export left a damaged or temporary file");
+            WordDocuments.ExtractToFile(repo, crossed, export);
+            Require(File.ReadAllBytes(export).SequenceEqual(crossedBytes), "Export changed document bytes");
+
+            // Full maintenance drops long-unreachable objects but keeps recent ones, such as a
+            // chunk written by a commit that has not published its branch yet.
+            var stale = Encoding.ASCII.GetString(CompatibilityGit(repo.RepositoryPath, Encoding.UTF8.GetBytes("过期的孤立对象"),
+                "hash-object", "-w", "--stdin")).Trim();
+            var fresh = Encoding.ASCII.GetString(CompatibilityGit(repo.RepositoryPath, Encoding.UTF8.GetBytes("刚写入的孤立对象"),
+                "hash-object", "-w", "--stdin")).Trim();
+            var staleFile = Path.Combine(repo.RepositoryPath, "objects", stale.Substring(0, 2), stale.Substring(2));
+            File.SetAttributes(staleFile, FileAttributes.Normal);
+            File.SetLastWriteTimeUtc(staleFile, DateTime.UtcNow.AddDays(-30));
+            File.SetAttributes(staleFile, FileAttributes.ReadOnly);
+            repo.Repack();
+            Require(!ObjectExists(repo, stale) && ObjectExists(repo, fresh) &&
+                repo.Extract(crossed).SequenceEqual(crossedBytes) && repo.Extract(foreign).SequenceEqual(rootBytes),
+                "Maintenance kept an expired object or dropped a recent or reachable one");
+            Console.WriteLine("PASS: non-UTF-8 history, criss-cross merge base, reserved branch names, encrypted input, atomic export and object expiry.");
+        }
+
+        private static bool ObjectExists(GitHistory repo, string id)
+        {
+            try { CompatibilityGit(repo.RepositoryPath, null, "cat-file", "-e", id); return true; }
+            catch (InvalidOperationException) { return false; }
+        }
+
+        private static void VerifyJournalRecovery(string root)
+        {
+            var path = Path.Combine(root, "中断恢复.docx");
+            var original = Fixture("切换前的稿件");
+            var replacement = Fixture("切换目标分支的稿件");
+            File.WriteAllBytes(path, original);
+            var repo = new GitHistory(path, root);
+            var head = repo.CommitFile(path, "原稿", "测试", null);
+            var backup = path + ".journal-test.bak";
+
+            // Crash after the swap, before refs moved: the original content comes back.
+            File.WriteAllBytes(backup, original);
+            WorkingCopyJournal.Write(repo, new WorkingCopyJournal.Entry { Document = path, Backup = backup,
+                OriginalHash = TestFiles.Sha(original), ReplacementHash = TestFiles.Sha(replacement), References = repo.ReferenceState() });
+            File.WriteAllBytes(path, replacement);
+            var message = WorkingCopyJournal.Recover(repo);
+            Require(message != null && File.ReadAllBytes(path).SequenceEqual(original) && !File.Exists(WorkingCopyJournal.PathFor(repo)),
+                "An unpublished replacement was not rolled back");
+
+            // Crash after refs were published: the new content stays and the backup is dropped.
+            File.WriteAllBytes(backup, original);
+            WorkingCopyJournal.Write(repo, new WorkingCopyJournal.Entry { Document = path, Backup = backup,
+                OriginalHash = TestFiles.Sha(original), ReplacementHash = TestFiles.Sha(replacement), References = repo.ReferenceState() });
+            File.WriteAllBytes(path, replacement);
+            var published = repo.CommitFile(path, "已发布", "测试", head);
+            Require(WorkingCopyJournal.Recover(repo) == null && File.ReadAllBytes(path).SequenceEqual(replacement) &&
+                !File.Exists(backup) && repo.Head() == published, "A published replacement was rolled back");
+
+            // Startup recovery scans every repository; a locked document keeps its record for later.
+            File.WriteAllBytes(backup, replacement);
+            WorkingCopyJournal.Write(repo, new WorkingCopyJournal.Entry { Document = path, Backup = backup,
+                OriginalHash = TestFiles.Sha(replacement), ReplacementHash = TestFiles.Sha(original), References = repo.ReferenceState() });
+            File.WriteAllBytes(path, original);
+            var notices = new List<string>();
+            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                WorkingCopyJournal.RecoverAll(root, notices.Add);
+            Require(notices.Count == 1 && File.Exists(WorkingCopyJournal.PathFor(repo)), "A locked document lost its recovery record");
+            notices.Clear();
+            WorkingCopyJournal.RecoverAll(root, notices.Add);
+            Require(notices.Count == 1 && File.ReadAllBytes(path).SequenceEqual(replacement) && !File.Exists(WorkingCopyJournal.PathFor(repo)),
+                "Startup recovery did not finish once the document was closed");
+            Console.WriteLine("PASS: interrupted working-copy replacement rolled back, kept when published, and retried after a lock.");
         }
 
         private static void VerifyStreaming(string root)
         {
-            // Streaming chunk planning must produce output byte-identical to the in-memory path.
+            // Chunk plans are deterministic, cover the file exactly and name each chunk by its Git blob id.
             var image = new byte[192 * 1024];
             new Random(919).NextBytes(image);
             var samples = new[] { Fixture("流式分块"), Fixture("带图片", image), new byte[] { 1, 2, 3, 4, 5 } };
             foreach (var bytes in samples)
             {
-                var chunks = DocumentSnapshot.Split(bytes);
-                var objects = DocumentSnapshot.BlobObjects(chunks, "sha256");
-                using (var stream = new MemoryStream(bytes, false))
+                var planFile = TestFiles.Temporary(bytes);
+                try
                 {
-                    var plan = DocumentSnapshot.Plan(stream, "sha256");
-                    Require(plan.Length == bytes.Length && plan.Checksum == GitHistory.Sha(bytes) &&
-                        plan.Objects.SequenceEqual(objects) &&
-                        plan.Sizes.SequenceEqual(chunks.Select(chunk => chunk.Count)) &&
-                        plan.Offsets.SequenceEqual(chunks.Select(chunk => (long)chunk.Offset)),
-                        "Streaming plan differs from in-memory split");
-                    Require(DocumentSnapshot.Manifest(plan.Length, plan.Checksum, plan.Sizes, plan.Objects)
-                        .SequenceEqual(DocumentSnapshot.Manifest(bytes, chunks, objects)), "Streaming manifest differs");
+                    SnapshotPlan fromMemory, fromFile;
+                    using (var stream = new MemoryStream(bytes, false)) fromMemory = DocumentSnapshot.Plan(stream, "sha256");
+                    using (var stream = File.OpenRead(planFile)) fromFile = DocumentSnapshot.Plan(stream, "sha256");
+                    Require(fromMemory.Length == bytes.Length && fromMemory.Checksum == GitHistory.Sha(bytes) &&
+                        fromMemory.Objects.SequenceEqual(fromFile.Objects) && fromMemory.Offsets.SequenceEqual(fromFile.Offsets) &&
+                        fromMemory.Sizes.Sum() == bytes.Length && fromMemory.Offsets[0] == 0 &&
+                        fromMemory.Offsets.Zip(fromMemory.Sizes, (offset, size) => offset + size).Take(fromMemory.Sizes.Length - 1)
+                            .SequenceEqual(fromMemory.Offsets.Skip(1)), "Chunk plan is not deterministic or does not tile the file");
+                    for (var index = 0; index < fromMemory.Objects.Length; index++)
+                    {
+                        var chunk = new byte[fromMemory.Sizes[index]];
+                        Buffer.BlockCopy(bytes, (int)fromMemory.Offsets[index], chunk, 0, chunk.Length);
+                        var header = Encoding.ASCII.GetBytes("blob " + chunk.Length + "\0");
+                        using (var sha = System.Security.Cryptography.SHA256.Create())
+                            Require(GitHistory.Hex(sha.ComputeHash(header.Concat(chunk).ToArray())) == fromMemory.Objects[index],
+                                "Chunk id is not its Git blob id");
+                    }
                 }
+                finally { File.Delete(planFile); }
             }
+            var large = DocumentSnapshot.Manifest(5L * 1024 * 1024 * 1024, GitHistory.Sha(new byte[0]),
+                Enumerable.Repeat(256 * 1024, 20480).ToArray(), Enumerable.Repeat(new string('a', 64), 20480).ToArray());
+            Require(DocumentSnapshot.Read(large).Length == 5L * 1024 * 1024 * 1024, "Manifest rejected a document over 2 GB");
 
             // File-based commits produce the same git trees as memory-based commits.
             var path = Path.Combine(root, "流式提交.docx");
             var bytes1 = Fixture("流式第一版", image);
-            WordDocuments.WriteNew(path, bytes1);
+            TestFiles.WriteNew(path, bytes1);
             var repo = new GitHistory(path, root);
             var first = repo.CommitFile(path, "流式第一版", "测试", null);
             Require(first != null && repo.Extract(first).SequenceEqual(bytes1), "File commit lost bytes");
@@ -249,7 +407,7 @@ namespace WordGit
             new Random(313).NextBytes(bigImage);
             var bigBytes = Fixture("大文档流式提交", bigImage);
             var bigPath = Path.Combine(root, "大文档.docx");
-            WordDocuments.WriteNew(bigPath, bigBytes);
+            TestFiles.WriteNew(bigPath, bigBytes);
             var bigRepo = new GitHistory(bigPath, root);
             var bigCommit = bigRepo.CommitFile(bigPath, "大文档", "测试", null);
             var bigOut = Path.Combine(root, "大文档-取回.docx");
@@ -332,7 +490,7 @@ namespace WordGit
             var reviewTip = repo.Commit(reviewBytes, "导师审阅", "WordGit 测试", first, "review");
             versions.Add(reviewTip, reviewBytes);
             var working = Fixture("尚未提交的编辑", image);
-            WordDocuments.WriteNew(path, working);
+            TestFiles.WriteNew(path, working);
 
             var result = repo.Repack();
             Console.WriteLine("Chunked storage before/after maintenance: " + result.BeforeBytes + " / " + result.AfterBytes);
@@ -351,8 +509,7 @@ namespace WordGit
 
         private static byte[] CompatibilityGit(string repository, byte[] input, params string[] arguments)
         {
-            var quote = (Func<string, string>)Delegate.CreateDelegate(typeof(Func<string, string>),
-                typeof(GitHistory).GetMethod("Quote", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static));
+            Func<string, string> quote = GitProcess.Quote;
             var info = new System.Diagnostics.ProcessStartInfo("git", "-c core.longpaths=true --git-dir=. " + String.Join(" ", arguments.Select(quote))) {
                 WorkingDirectory = repository, UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
             };
@@ -405,14 +562,14 @@ namespace WordGit
                 Require(output.ToArray().SequenceEqual(firstBytes), "Whole DOCX changed through streamed extract");
             }
             var original = Fixture("旧拆包版：中英文");
-            var parts = DocxFormat.Read(original);
+            var parts = LegacyDocx.Read(original);
             parts.Add(new DocxPart { Name = "word/media/图片 数据.bin", Bytes = new byte[] { 0, 10, 13, 255, 3, 7 } });
-            var meta = DocxFormat.MetaText(DocxFormat.Fingerprint(parts), parts);
+            var meta = LegacyDocx.MetaText(parts);
             var files = parts.ToDictionary(part => part.Name, part => part.Bytes);
             files.Add(DocxFormat.MetaName, Encoding.UTF8.GetBytes(meta));
             var expanded = CompatibilityCommit(repository, files, whole, true);
             var extracted = repository.Extract(expanded);
-            var actual = DocxFormat.Read(extracted).ToDictionary(part => part.Name);
+            var actual = LegacyDocx.Read(extracted).ToDictionary(part => part.Name);
             Require(actual.Count == parts.Count && parts.All(part => actual[part.Name].Bytes.SequenceEqual(part.Bytes)),
                 "Expanded historical parts changed");
             using (var output = new MemoryStream())
@@ -438,7 +595,7 @@ namespace WordGit
             Require(rejected, "Missing legacy part was ignored");
             repository.Repack();
             Require(repository.Extract(whole).SequenceEqual(firstBytes) &&
-                DocxFormat.Fingerprint(repository.Extract(expanded)).SequenceEqual(DocxFormat.Fingerprint(parts)) &&
+                LegacyDocx.Fingerprint(repository.Extract(expanded)).SequenceEqual(LegacyDocx.Fingerprint(parts)) &&
                 repository.Extract(next).SequenceEqual(nextBytes), "History maintenance changed mixed-format revisions");
             Console.WriteLine("PASS: whole DOCX, legacy expanded parts and chunked revisions in one history, migration, corruption detection and maintenance.");
         }

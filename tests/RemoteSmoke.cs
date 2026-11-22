@@ -15,7 +15,7 @@ namespace WordGit
 
         private static string Git(string folder, params string[] args)
         {
-            var info = new ProcessStartInfo((string)typeof(GitHistory).GetMethod("FindGit", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).Invoke(null, null), String.Join(" ", args.Select(arg => "\"" + arg.Replace("\"", "\\\"") + "\"")))
+            var info = new ProcessStartInfo(GitProcess.FindGit(), String.Join(" ", args.Select(arg => "\"" + arg.Replace("\"", "\\\"") + "\"")))
             { WorkingDirectory = folder, UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8 };
             info.EnvironmentVariables["GIT_CONFIG_NOSYSTEM"] = "1";
@@ -83,11 +83,14 @@ namespace WordGit
             Require(state.Ahead == 0 && state.Behind == 0 && state.RemoteTip == first, "Initial push did not update tracking state");
             var b = GitHistory.CloneRemote(server, "main", bPath, Path.Combine(root, "b"), true);
             Require(b.Head() == first && File.ReadAllBytes(bPath).SequenceEqual(aBytes), "Clone changed commit IDs or document bytes");
+            Require(ZoneMarker.IsMarked(bPath) && !ZoneMarker.IsMarked(aPath), "Cloned document was not marked as downloaded content");
             var bBytes = Fixture("乙新增");
             File.WriteAllBytes(bPath, bBytes);
             var second = b.CommitFile(bPath, "乙修改", "乙", first);
             b.PushRemote(true);
+            var backupsBefore = a.RemoteBackupNamespaces().Length;
             state = a.FetchRemote(true);
+            Require(a.RemoteBackupNamespaces().Length == backupsBefore, "A fast-forward fetch created a remote backup");
             Require(a.Head() == first && File.ReadAllBytes(aPath).SequenceEqual(aBytes) && state.Ahead == 0 && state.Behind == 1,
                 "Fetch overwrote the current document or computed wrong behind count");
             Require(a.History(state.RemoteReference).First().Id == second &&
@@ -127,7 +130,9 @@ namespace WordGit
             b.PushRemote(true);
             a.FetchRemote(true);
             Git(root, "--git-dir=" + server, "update-ref", "refs/heads/review/remote-only", first, side);
+            var beforeRewrite = a.RemoteBackupNamespaces().Length;
             a.FetchRemote(true);
+            Require(a.RemoteBackupNamespaces().Length == beforeRewrite + 1, "A forced remote update was not archived");
             Require(a.History().Any(row => row.Id == side) && a.Extract(side).SequenceEqual(sideBytes) &&
                 a.History().All(row => row.References.All(reference => !reference.StartsWith("refs/wordgit/"))),
                 "Remote rewrite erased previously fetched history or leaked archive labels");
