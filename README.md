@@ -1,4 +1,4 @@
-# WordGit 0.10.7
+# WordGit 0.11.0
 
 在 Windows 桌面版 Word 中提交版本、管理分支、查看历史，并通过 GitHub 同步稿件。文档预览、版本对比和合并审阅使用 Word 原生功能。
 
@@ -13,20 +13,74 @@
 | Git | [Git for Windows 2.51+](https://git-scm.com/install/windows) |
 | 运行时 | [.NET Framework 4.8+](https://dotnet.microsoft.com/download/dotnet-framework/net48) |
 
-1. 准备 `WordGit-0.10.7-Setup.exe` 安装包。
+1. 准备 `WordGit-0.11.0-Setup.exe` 安装包。
 2. 保存文档，关闭所有 Word 窗口。
 3. 运行安装程序，点击 **安装 / 更新**。
-4. 重新打开 Word，进入顶部 **WordGit** 选项卡。
+4. 重新打开 Word，进入顶部 **WordGit** 选项卡。没有出现时见下文 [在 Word 中载入插件](#在-word-中载入插件)。
 
-ZIP 包的用法相同：完整解压 `WordGit-0.10.7-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装、`Check.cmd` 检查环境。
+ZIP 包的用法相同：完整解压 `WordGit-0.11.0-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装、`Check.cmd` 检查环境。
 
 安装作用于当前 Windows 用户。升级时直接运行新版安装程序，已有提交、分支和审阅稿继续保留。卸载可从 Windows“已安装的应用”或安装程序进入，历史数据也会保留。
 
 当前已在 64 位 Word 实机验证；32 位 Word 的完整功能验证仍在补充。发布包的签名与兼容性状态见 [发布说明](docs/RELEASING.md)。
 
+## 在 Word 中载入插件
+
+WordGit 是 Word 的 COM 加载项，**不需要在 Word 里手动添加文件**：安装程序完成注册后，Word 每次启动都会自动载入它。
+
+### 载入方式
+
+安装程序只写当前用户（HKCU）的注册表，不需要管理员权限：
+
+| 注册项 | 作用 |
+| --- | --- |
+| `Software\Classes\CLSID\{C5707F76-F46F-4A11-800B-18E7D98377D3}` 与 `WordGit.Connect` | 把插件登记为 COM 组件，指向 `%LOCALAPPDATA%\WordGit\app\WordGit.<版本>.<哈希>.dll`。 |
+| `Software\Classes\CLSID\{F55EC3C1-B725-4ED8-9CA6-ED51D07C3361}` 与 `WordGit.HistoryPane` | 右侧“批注、修订与提交”窗格的控件。 |
+| `Software\Microsoft\Office\Word\Addins\WordGit.Connect` | 告诉 Word 有这个加载项；`LoadBehavior = 3` 表示 Word 启动时自动载入。 |
+
+安装程序会读取 `WINWORD.EXE` 判断 Word 是 32 位还是 64 位，再写入对应的注册表视图，所以两种 Word 使用同一个安装包。
+
+### 确认已经载入
+
+1. 安装完成后**完全关闭 Word 再重新打开**。仍在运行的 Word 不会载入新插件，可在任务管理器确认没有残留的 `WINWORD.EXE`。
+2. 顶部出现 **WordGit** 选项卡即表示载入成功。
+3. 也可以在 Word 中打开 **文件 → 选项 → 加载项**，“活动应用程序加载项”列表里应有 **WordGit**，类型为“COM 加载项”。
+
+### 没有看到 WordGit 选项卡时
+
+| 情况 | 处理 |
+| --- | --- |
+| 加载项被取消勾选 | **文件 → 选项 → 加载项**，底部“管理”选择 **COM 加载项** → **转到**，勾选 **WordGit** → **确定**。 |
+| 被 Word 自动禁用（Word 启动时崩溃或加载过慢后会这样做） | 同一页面“管理”选择 **禁用项目** → **转到**，选中 WordGit → **启用**，然后重启 Word，再按上一行勾选。 |
+| 环境不完整 | 双击 ZIP 包中的 `Check.cmd`，或在安装程序中点击“检查环境”，确认 Word、Git for Windows 与 .NET Framework 4.8；缺什么装什么，再重新运行安装程序。 |
+| 单位电脑开启了“要求应用程序加载项由受信任的发布者签名” | 当前安装包未做代码签名，会被该策略拦截（位置：**文件 → 选项 → 信任中心 → 信任中心设置 → 加载项**）。这项通常由管理员统一设置，需请管理员放行。 |
+| 以安全模式启动 Word（如 `winword /safe`） | 安全模式不载入任何加载项，请正常启动 Word。 |
+| 刚升级完 | 确认已关闭所有 Word 窗口后再运行新版安装程序；仍不出现时重新运行一次 **安装 / 更新**。 |
+
+不要在“COM 加载项”对话框中用 **添加** 按钮浏览 WordGit 的 DLL：.NET 编写的加载项需要上面的注册表登记，直接添加 DLL 文件无效。
+
+### 暂时停用与卸载
+
+- 暂时停用：在“COM 加载项”对话框中取消勾选 WordGit，Word 下次启动不再载入；重新勾选即可恢复。
+- 卸载：从 Windows“已安装的应用”找到 WordGit，或运行安装程序点击 **卸载**。卸载只删除插件文件和上述注册项，稿件、`repositories` 历史、`sessions` 审阅稿和日志都会保留。
+
+### 从源码载入
+
+开发者不需要安装包，在项目根目录依次运行：
+
+```powershell
+# 1. 编译插件，生成 bin\WordGit.dll
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+
+# 2. 关闭所有 Word 窗口后，注册到当前用户（与安装程序写入相同的注册项）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+`install.ps1` 面向 Windows PowerShell 5.1，用 `powershell.exe` 运行。重新编译后再运行一次 `install.ps1`，Word 下次启动就会载入新版本；`install.ps1 -Uninstall` 可撤销注册。
+
 ## 快速开始
 
-1. 将稿件保存为本地 `.docx`，例如 `D:\Manuscripts\paper.docx`。需要切换分支、原地恢复或合并时，使用 OneDrive 等同步目录之外的本地文件夹。
+1. 将稿件保存为本地 `.docx`，例如 `D:\Manuscripts\paper.docx`。WordGit 需要能直接读取的本地文件：OneDrive / SharePoint 中以网址打开的稿件，请打开同步到本机文件夹里的那份副本。需要切换分支、原地恢复或合并时，使用 OneDrive 等同步目录之外的本地文件夹。
 2. 点击 **WordGit → 提交版本**，填写提交说明。插件保存当前稿并创建提交。
 3. 点击 **提交图** 打开右侧窗格，选中历史版本后点击 **预览** 或 **对比当前稿**。
 4. 继续修改，在需要保留进展时再次提交。
@@ -123,7 +177,7 @@ ZIP 包的用法相同：完整解压 `WordGit-0.10.7-windows.zip`，运行其�
 
 双方都有新增提交时，在生成的 Word 合并稿中逐条审阅，完成后点击 **提交版本**。回到原稿推送，其他作者即可拉取确认后的结果。
 
-HTTPS 连接使用 Git for Windows 的凭据管理器，首次连接按提示登录；SSH 使用已配置的密钥。远程仓库需包含 WordGit 历史，供协作者通过插件还原稿件。网络操作进行中可随时点击 **取消**，不会留下半个版本；插件保留最近若干次获取前的远程备份，防止远程历史被改写后本地版本丢失。
+HTTPS 连接使用 Git for Windows 的凭据管理器，首次连接按提示登录；SSH 使用已配置的密钥，自己设置的 `core.sshCommand` 会被保留。远程仓库需包含 WordGit 历史，供协作者通过插件还原稿件。网络操作进行中可随时点击 **取消**，不会留下半个版本；长时间没有任何传输进展时会自动停止。远程历史被强制改写时，插件会保留改写前已下载的版本，防止本地版本丢失。
 
 ## 项目结构
 
@@ -136,6 +190,7 @@ WordGit/
 │  ├─ USAGE.md          完整使用流程
 │  ├─ DEVELOPMENT.md    构建、测试和开发说明
 │  └─ RELEASING.md      打包、发布与验证记录
+├─ .github/             CI、CodeQL、PR 与 Issue 模板
 ├─ build.ps1            编译插件并运行测试
 ├─ package.ps1          生成 EXE、ZIP 和 SHA-256 校验文件
 ├─ install.ps1          当前用户安装、升级和卸载
@@ -152,15 +207,18 @@ WordGit/
 
 | 文件 | 职责 |
 | --- | --- |
-| `AddIn.cs` | 插件入口、WordGit 功能区和各项操作的连接。 |
+| `AddIn.cs` | 插件入口、WordGit 功能区和各项操作的流程。 |
+| `Operations.cs` | 按稿件区分的后台操作状态、退出前等待，以及界面线程同步上下文。 |
 | `TaskPanes.cs`、`HistoryPane.cs`、`PaneLoadingFrame.cs`、`CommitGraph.cs` | 右侧窗格、加载框架、批注与修订列表、提交图。 |
-| `WordDocuments.cs` | Word 文档操作、原生对比与修订合并。 |
-| `GitHistory.cs` | 本地提交、分支、历史查询和版本取回。 |
+| `WordDocuments.cs` | Word 文档操作、原生对比与修订合并、替换当前稿。 |
+| `WorkingCopyJournal.cs` | 替换当前稿的意图记录；Word 中途退出后启动时自动还原或完成。 |
+| `GitHistory.cs` | 本地提交、分支、历史查询、版本取回和存储维护。 |
+| `GitProcess.cs` | 调用 git.exe：环境隔离、落盘同步、超时与整棵进程树的停止。 |
 | `RemoteSync.cs`、`RemoteDialog.cs` | 远程连接、克隆、获取、拉取和推送。 |
 | `ImportReviewDialog.cs` | 送审版本与老师返稿的选择、导入设置。 |
-| `DocumentSnapshot.cs`、`DocxFormat.cs` | 文档快照读写与历史格式兼容。 |
+| `DocumentSnapshot.cs`、`DocxFormat.cs` | 文档分块快照、DOCX 校验与旧历史格式读取。 |
 | `HistoryMaintenance.cs` | 空闲时自动整理仓库存储。 |
-| `Dialogs.cs` | 提交、分支和历史操作对话框。 |
+| `Dialogs.cs` | 提交、分支和历史操作对话框，后台操作进度窗口。 |
 | `AppInfo.cs`、`AboutDialog.cs`、`UpdateChecker.cs` | 版本信息、作者链接和更新检查。 |
 
 ## 数据位置与备份
@@ -170,9 +228,11 @@ WordGit/
 | `%LOCALAPPDATA%\WordGit\app` | 插件和安装维护程序。 |
 | `%LOCALAPPDATA%\WordGit\repositories` | 稿件的 Git 历史仓库。 |
 | `%LOCALAPPDATA%\WordGit\sessions` | 预览、对比和合并审阅文件；一天前的残留会自动清理。 |
-| `%LOCALAPPDATA%\WordGit\logs` | 出错记录 `wordgit.log`（超过 1 MB 自动轮转），反馈问题时请附上。 |
+| `%LOCALAPPDATA%\WordGit\logs` | 出错记录 `wordgit.log`（超过 1 MB 自动轮转），反馈问题时请附上。日志中的用户目录写作 `%USERPROFILE%`。 |
 
 历史按稿件的完整路径关联。稿件改名或移动后会对应新的历史位置，原历史仓库仍保留。
+
+切换分支、恢复旧版或拉取时，原稿会先备份到同一文件夹中的 `.wordgit-restore-*.tmp.bak`，成功后立即删除。如果 Word 在替换途中退出，下次启动时插件会自动还原原稿或完成操作；无法自动处理时会提示备份位置，这类备份保留 30 天。后台提交、推送等操作尚未完成时关闭 Word，Word 会等待它们结束。
 
 备份时关闭 Word，同时保存原稿和整个 `repositories` 文件夹；有未完成的合并审阅时，再保存 `sessions`。仓库存储由插件在后台自动整理，日常使用无需手动维护。
 
