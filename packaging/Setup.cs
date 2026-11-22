@@ -95,6 +95,9 @@ namespace WordGitSetup
                 RedirectStandardOutput = true, RedirectStandardError = true,
                 StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = Root
             };
+            // Started from a PowerShell 7 terminal, Setup inherits a module path whose 7.x modules
+            // Windows PowerShell 5.1 cannot load; without it, 5.1 uses its own defaults.
+            start.EnvironmentVariables.Remove("PSModulePath");
             using (var process = Process.Start(start))
             {
                 var output = process.StandardOutput.ReadToEndAsync();

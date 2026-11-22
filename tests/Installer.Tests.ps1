@@ -57,7 +57,15 @@ foreach ($file in $sentinels) {
 $historyBefore = Get-TestDataHashes (Join-Path $wordgitRoot 'repositories')
 $sessionsBefore = Get-TestDataHashes (Join-Path $wordgitRoot 'sessions')
 $identity = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $PackageRoot 'bin\WordGit.dll'))
-$registryName = 'Software\WordGit\InstallerTests\' + [Guid]::NewGuid().ToString('N')
+# install.ps1 registers fixed CLSIDs and ProgIDs; they must be the ones compiled into the plugin.
+$assembly = [Reflection.Assembly]::LoadFrom((Join-Path $PackageRoot 'bin\WordGit.dll'))
+foreach ($expected in @(@('WordGit.Connect', $WordGitConnectClsid, $WordGitConnectProgId), @('WordGit.HistoryPane', $WordGitPaneClsid, $WordGitPaneProgId))) {
+    $type = $assembly.GetType($expected[0], $true)
+    $progId = @($type.GetCustomAttributes([Runtime.InteropServices.ProgIdAttribute], $false))[0].Value
+    Assert-InstallTest ((('{' + $type.GUID.ToString().ToUpperInvariant() + '}') -eq $expected[1]) -and ($progId -eq $expected[2])) ('install.ps1 registers a different COM identity for ' + $expected[0])
+}
+$registryParent = 'Software\WordGit\InstallerTests'
+$registryName = $registryParent + '\' + [Guid]::NewGuid().ToString('N')
 try {
     $verify = Invoke-SetupProbe '/verify'
     Assert-InstallTest ($verify -match 'PASS') 'Standalone setup payload verification failed'
@@ -95,11 +103,19 @@ try {
             if ($base) { $base.Dispose() }
             if ($registryName -notmatch '^Software\\WordGit\\InstallerTests\\[a-f0-9]{32}$') { throw 'Unsafe test registry path' }
             $hive.DeleteSubKeyTree($registryName, $false)
+            # Remove the test container (and its parent) only when nothing else lives there.
+            foreach ($container in @($registryParent, 'Software\WordGit')) {
+                $key = $hive.OpenSubKey($container)
+                $empty = $key -and $key.SubKeyCount -eq 0 -and $key.ValueCount -eq 0
+                if ($key) { $key.Dispose() }
+                if ($empty) { $hive.DeleteSubKey($container, $false) }
+            }
             $hive.Dispose()
         }
     }
     Remove-WordGitFiles $app
     Assert-InstallTest (-not(Test-Path -LiteralPath $installed)) 'Uninstall left the installed plugin'
+    Assert-InstallTest (-not(Test-Path -LiteralPath $app)) 'Uninstall left an empty app folder'
     Assert-SameHashes $historyBefore (Get-TestDataHashes (Join-Path $wordgitRoot 'repositories')) 'Uninstall changed history'
     Assert-SameHashes $sessionsBefore (Get-TestDataHashes (Join-Path $wordgitRoot 'sessions')) 'Uninstall changed review drafts'
     $blocked = $false

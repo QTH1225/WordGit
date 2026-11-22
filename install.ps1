@@ -8,6 +8,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+# Must match the [Guid]/[ProgId] attributes in src/AddIn.cs and src/HistoryPane.cs;
+# tests/Installer.Tests.ps1 compares them with the built assembly.
+$WordGitConnectClsid = '{C5707F76-F46F-4A11-800B-18E7D98377D3}'
+$WordGitPaneClsid = '{F55EC3C1-B725-4ED8-9CA6-ED51D07C3361}'
+$WordGitConnectProgId = 'WordGit.Connect'
+$WordGitPaneProgId = 'WordGit.HistoryPane'
 
 function Get-WordGitRegistryViews {
     if ([Environment]::Is64BitOperatingSystem) { [Microsoft.Win32.RegistryView]::Registry64 }
@@ -117,11 +123,11 @@ function Register-WordGitClass($Base, [string]$ClassId, [string]$ProgId, [string
 }
 
 function Register-WordGitPlugin($Base, [string]$Assembly, [string]$Version, [string]$CodeBase) {
-    Register-WordGitClass $Base '{C5707F76-F46F-4A11-800B-18E7D98377D3}' 'WordGit.Connect' $Assembly $Version $CodeBase 'Both'
-    Register-WordGitClass $Base '{F55EC3C1-B725-4ED8-9CA6-ED51D07C3361}' 'WordGit.HistoryPane' $Assembly $Version $CodeBase 'Apartment'
-    $control = $Base.CreateSubKey('Software\Classes\CLSID\{F55EC3C1-B725-4ED8-9CA6-ED51D07C3361}\Control')
+    Register-WordGitClass $Base $WordGitConnectClsid $WordGitConnectProgId $Assembly $Version $CodeBase 'Both'
+    Register-WordGitClass $Base $WordGitPaneClsid $WordGitPaneProgId $Assembly $Version $CodeBase 'Apartment'
+    $control = $Base.CreateSubKey("Software\Classes\CLSID\$WordGitPaneClsid\Control")
     $control.Dispose()
-    $addin = 'Software\Microsoft\Office\Word\Addins\WordGit.Connect'
+    $addin = "Software\Microsoft\Office\Word\Addins\$WordGitConnectProgId"
     Set-WordGitRegistryValue $Base $addin 'FriendlyName' 'WordGit'
     Set-WordGitRegistryValue $Base $addin 'Description' 'Word 本地 Git 版本管理'
     Set-WordGitRegistryValue $Base $addin 'LoadBehavior' 3 'DWord'
@@ -129,11 +135,11 @@ function Register-WordGitPlugin($Base, [string]$Assembly, [string]$Version, [str
 
 function Remove-WordGitRegistration($Base) {
     foreach ($path in @(
-        'Software\Microsoft\Office\Word\Addins\WordGit.Connect',
-        'Software\Classes\CLSID\{C5707F76-F46F-4A11-800B-18E7D98377D3}',
-        'Software\Classes\WordGit.Connect',
-        'Software\Classes\CLSID\{F55EC3C1-B725-4ED8-9CA6-ED51D07C3361}',
-        'Software\Classes\WordGit.HistoryPane',
+        "Software\Microsoft\Office\Word\Addins\$WordGitConnectProgId",
+        "Software\Classes\CLSID\$WordGitConnectClsid",
+        "Software\Classes\$WordGitConnectProgId",
+        "Software\Classes\CLSID\$WordGitPaneClsid",
+        "Software\Classes\$WordGitPaneProgId",
         'Software\Microsoft\Windows\CurrentVersion\Uninstall\WordGit'
     )) { $Base.DeleteSubKeyTree($path, $false) }
 }
@@ -202,6 +208,9 @@ function Remove-WordGitFiles([string]$InstallDirectory) {
         catch [IO.IOException] { Write-Output '运行中的维护程序将在退出后清理。' }
         catch [UnauthorizedAccessException] { Write-Output '运行中的维护程序将在退出后清理。' }
     }
+    if (-not (Get-ChildItem -LiteralPath $destination -Force | Select-Object -First 1)) {
+        Remove-Item -LiteralPath $destination -Force
+    }
 }
 
 function Register-WordGitProgram($Base, [string]$InstallDirectory, [string]$Version) {
@@ -231,7 +240,7 @@ if ($Uninstall) {
         try { Remove-WordGitRegistration $base } finally { $base.Dispose() }
     }
     Remove-WordGitFiles $installDir
-    Write-Output '已卸载 WordGit。文档、repositories 历史仓库和 sessions 审阅稿均保留。'
+    Write-Output '已卸载 WordGit。文档、repositories 历史仓库、sessions 审阅稿和 logs 日志均保留。'
     return
 }
 $environmentInfo = Get-WordGitEnvironment
@@ -264,6 +273,9 @@ try {
 # Remove only obsolete versioned plugin binaries after registration succeeds.
 Get-ChildItem -LiteralPath $installDir -File | Where-Object {
     $_.Name -match '^WordGit\.\d+\.\d+\.\d+\.\d+\.[A-Fa-f0-9]{12}\.dll$' -and $_.FullName -ne $installed
-} | ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force } catch { Write-Output "保留仍在使用的旧组件：$($_.Name)" } }
+} | ForEach-Object {
+    $obsolete = $_.Name
+    try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch { Write-Output "保留仍在使用的旧组件：$obsolete" }
+}
 Write-Output '安装完成。重新打开 Word，即可在顶部看到 WordGit 选项卡。'
 Write-Output '升级保留原有版本历史。卸载入口位于 Windows 设置的应用列表中。'
