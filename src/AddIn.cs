@@ -1,11 +1,12 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 [assembly: ComVisible(false)]
-[assembly: System.Reflection.AssemblyVersion("0.10.5.0")]
+[assembly: System.Reflection.AssemblyVersion("0.10.7.0")]
 
 namespace WordGit
 {
@@ -69,6 +70,7 @@ namespace WordGit
             application = app;
             word = new WordDocuments(app);
             maintenance = new HistoryMaintenance(AppPaths.Repositories);
+            AppPaths.CleanSessions(1);
         }
 
         public void CTPFactoryAvailable(ICTPFactory factory) { panes = new TaskPanes(factory); }
@@ -178,9 +180,11 @@ namespace WordGit
         private void ShowPane(object window)
         {
             var handle = (int)((dynamic)window).Hwnd;
-            panes.Show(window, () =>
+            panes.Show(window, async () =>
             {
-                var data = LoadPane(DocumentForWindow(handle));
+                var data = await LoadPaneAsync(DocumentForWindow(handle));
+                if (!String.Equals(WordDocuments.LocalPath(DocumentForWindow(handle)), data.DocumentPath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("此窗口的文档已变化，请刷新提交图。");
                 data.NavigateReviewItem = item => Guard(() => word.GoToReviewItem(DocumentForWindow(handle), item));
                 data.ResolveReviewItem = (item, accept) =>
                 {
@@ -247,23 +251,30 @@ namespace WordGit
             throw new InvalidOperationException("此文档窗口已关闭。");
         }
 
-        private static HistoryPaneData LoadPane(object document)
+        private static async Task<HistoryPaneData> LoadPaneAsync(object document, string storage = null)
         {
+            // Capture Word COM values on its UI thread; only repository/file I/O runs in the worker.
             var path = WordDocuments.LocalPath(document);
             var historyPath = HistoryPath(path);
-            var repo = new GitHistory(historyPath);
-            var branch = repo.ActiveBranch();
-            var head = repo.BranchTip(branch);
-            var workingCopy = new WorkingCopy(path, () => (bool)((dynamic)document).Saved,
-                head == null ? (Func<string>)null : () => repo.SnapshotChecksum(head));
-            return new HistoryPaneData
+            var readOnly = (bool)((dynamic)document).ReadOnly;
+            var result = await Task.Run(() =>
             {
-                DocumentPath = path, HistoryPath = historyPath, Branch = branch,
-                Head = head, Branches = repo.Branches().Concat(repo.RemoteBranches()).ToArray(), Load = repo.History, WorkingState = workingCopy.State,
-                Remote = repo.SyncState(),
-                LoadReviewItems = () => WordDocuments.ReviewItems(document),
-                CanResolveRevisions = !(bool)((dynamic)document).ReadOnly
-            };
+                var repo = new GitHistory(historyPath, storage);
+                var remote = repo.SyncState();
+                var head = remote.LocalTip;
+                var workingCopy = new WorkingCopy(path, () => true,
+                    head == null ? (Func<string>)null : () => repo.SnapshotChecksum(head));
+                return new HistoryPaneData
+                {
+                    DocumentPath = path, HistoryPath = historyPath, Branch = remote.LocalBranch,
+                    Head = head, Branches = repo.Branches().Concat(repo.RemoteBranches()).ToArray(),
+                    Load = repo.History, WorkingState = workingCopy.State, Remote = remote
+                };
+            });
+            result.IsSaved = () => (bool)((dynamic)document).Saved;
+            result.LoadReviewItems = () => WordDocuments.ReviewItems(document);
+            result.CanResolveRevisions = !readOnly;
+            return result;
         }
 
         private static string HistoryPath(string documentPath)
@@ -529,12 +540,12 @@ namespace WordGit
                 options = picker.Options;
             }
             committing = true;
-            Dialogs.ShowBackgroundOperation(word.Owner, "关联远程仓库", async () => {
+            Dialogs.ShowBackgroundOperation(word.Owner, "关联远程仓库", async token => {
                 var result = await System.Threading.Tasks.Task.Run(() => {
                     using (repo.Lock())
                     {
                         repo.ConfigureRemote(options.Url, options.Branch);
-                        return repo.FetchRemote();
+                        return repo.FetchRemote(false, token);
                     }
                 });
                 return "仓库已关联。获取不会覆盖当前稿。" + Environment.NewLine + result.Caption;
@@ -552,8 +563,8 @@ namespace WordGit
             }
             WordDocuments.EnsureReplaceable(options.DocumentPath);
             committing = true;
-            Dialogs.ShowBackgroundOperation(word.Owner, "克隆远程稿件", async () => {
-                await System.Threading.Tasks.Task.Run(() => GitHistory.CloneRemote(options.Url, options.Branch, options.DocumentPath));
+            Dialogs.ShowBackgroundOperation(word.Owner, "克隆远程稿件", async token => {
+                await System.Threading.Tasks.Task.Run(() => GitHistory.CloneRemote(options.Url, options.Branch, options.DocumentPath, null, false, token));
                 word.Open(options.DocumentPath, false);
                 try { if (panes != null) ShowPane(application.ActiveWindow); }
                 catch (Exception error) { return "稿件与历史已克隆。侧栏未能打开：" + error.Message + Environment.NewLine + "可点击「提交图」重试。"; }
@@ -573,9 +584,9 @@ namespace WordGit
             var head = repo.Head();
             if (operation != SyncOperation.Fetch && head == null) throw new InvalidOperationException("请先提交当前稿，或使用「克隆稿件」。");
             committing = true;
-            Dialogs.ShowBackgroundOperation(word.Owner, operation == SyncOperation.Push ? "推送当前分支" : operation == SyncOperation.Pull ? "拉取远程版本" : "获取远程历史", async () => {
+            Dialogs.ShowBackgroundOperation(word.Owner, operation == SyncOperation.Push ? "推送当前分支" : operation == SyncOperation.Pull ? "拉取远程版本" : "获取远程历史", async token => {
                 var state = await System.Threading.Tasks.Task.Run(() => {
-                    using (repo.Lock()) return operation == SyncOperation.Push ? repo.PushRemote() : repo.FetchRemote();
+                    using (repo.Lock()) return operation == SyncOperation.Push ? repo.PushRemote(false, token) : repo.FetchRemote(false, token);
                 });
                 RefreshPane(path);
                 if (operation == SyncOperation.Push) return "已推送当前分支的已提交版本。" + Environment.NewLine + state.Caption;
@@ -642,6 +653,7 @@ namespace WordGit
             try { action(); }
             catch (Exception error)
             {
+                AppPaths.LogError(error.ToString());
                 try { MessageBox.Show(word.Owner, error.Message, "WordGit", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
                 catch { MessageBox.Show(error.Message, "WordGit", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             }

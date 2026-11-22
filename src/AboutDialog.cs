@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.Linq;
 using System.Threading;
@@ -49,7 +49,7 @@ namespace WordGit
             links.WrapContents = true;
             links.Controls.Add(Link("发布记录", AppInfo.ReleasesUrl));
             links.Controls.Add(Link("反馈问题", AppInfo.IssuesUrl));
-            links.Controls.Add(Link("许可证  GPL-3.0-only", AppInfo.ProjectUrl + "/blob/main/LICENSE"));
+            links.Controls.Add(Link("许可证  GPL-3.0-only", AppInfo.LicenseUrl));
             layout.Controls.Add(links, 0, 4);
             updateStatus.MinimumSize = new Size(0, 70);
             layout.Controls.Add(updateStatus, 0, 5);
@@ -74,7 +74,7 @@ namespace WordGit
         private LinkLabel Link(string text, string url)
         {
             var link = new LinkLabel { Text = text, AutoSize = true, Margin = new Padding(0, 4, 14, 7),
-                AccessibleName = text, MaximumSize = new Size(460, 0) };
+                AccessibleName = text, MaximumSize = new Size(460, 0), Tag = url };
             link.LinkClicked += (sender, args) => AppInfo.OpenLink(this, url);
             return link;
         }

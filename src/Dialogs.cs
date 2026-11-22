@@ -399,6 +399,18 @@ namespace WordGit
 
         public static void ShowBackgroundOperation(IWin32Window owner, string title, Func<Task<string>> operation, Action finished = null)
         {
+            ShowBackgroundOperation(owner, title, cancellation => operation(), false, finished);
+        }
+
+        public static void ShowBackgroundOperation(IWin32Window owner, string title, Func<System.Threading.CancellationToken, Task<string>> operation,
+            Action finished = null)
+        {
+            ShowBackgroundOperation(owner, title, operation, true, finished);
+        }
+
+        private static void ShowBackgroundOperation(IWin32Window owner, string title,
+            Func<System.Threading.CancellationToken, Task<string>> operation, bool cancellable, Action finished)
+        {
             var dialog = new Form
             {
                 Text = "WordGit · " + title,
@@ -406,6 +418,7 @@ namespace WordGit
                 ControlBox = false, ShowInTaskbar = false, ClientSize = new Size(460, 195),
                 Font = SystemFonts.MessageBoxFont, AutoScaleMode = AutoScaleMode.Font
             };
+            var cancellation = new System.Threading.CancellationTokenSource();
             var layout = DialogLayout.Stack(3);
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -424,15 +437,27 @@ namespace WordGit
             var close = DialogLayout.Button("关闭");
             close.Enabled = false;
             close.Click += (sender, args) => dialog.Close();
+            var cancel = DialogLayout.Button("取消");
+            cancel.Click += (sender, args) =>
+            {
+                cancel.Enabled = false;
+                status.Text = "正在取消…";
+                cancellation.Cancel();
+            };
             actions.Controls.Add(close);
+            if (cancellable) actions.Controls.Add(cancel);
             layout.Controls.Add(actions, 0, 2);
             dialog.Shown += async (sender, args) =>
             {
                 try
                 {
-                    var result = await operation();
+                    var result = await operation(cancellation.Token);
                     if (dialog.IsDisposed) return;
                     status.Text = result;
+                }
+                catch (OperationCanceledException)
+                {
+                    if (!dialog.IsDisposed) status.Text = "已取消。未完成的部分不会影响文档与历史。";
                 }
                 catch (Exception error)
                 {
@@ -443,11 +468,13 @@ namespace WordGit
                     if (!dialog.IsDisposed)
                     {
                         progress.Visible = false;
+                        cancel.Enabled = false;
                         close.Enabled = true;
                     }
                     if (finished != null) finished();
                 }
             };
+            dialog.FormClosed += (sender, args) => { cancellation.Cancel(); cancellation.Dispose(); };
             dialog.Show(owner);
         }
 

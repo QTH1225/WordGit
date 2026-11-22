@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -74,13 +73,13 @@ namespace WordGit
                     }
                     catch (Exception error)
                     {
-                        Trace.TraceWarning("WordGit background repack check: {0}", error.Message);
+                        AppPaths.LogError("background repack check: " + error);
                     }
                 }
             }
             catch (Exception error)
             {
-                Trace.TraceWarning("WordGit background maintenance: {0}", error.Message);
+                AppPaths.LogError("background maintenance: " + error);
             }
             finally { Interlocked.Exchange(ref running, 0); }
         }

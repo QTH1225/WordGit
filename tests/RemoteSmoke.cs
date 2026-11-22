@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -186,12 +186,26 @@ namespace WordGit
             Require(a.RemoteBranches().Length == 0 && a.Head() == concurrent &&
                 a.History().Any(row => row.Id == side) && a.Extract(side).SequenceEqual(sideBytes),
                 "Changing remote address lost old history or retained misleading tracking branches");
+            Require(a.RemoteBackupNamespaces().Length >= 1,
+                "URL change did not archive the previous remote tips");
             a.ConfigureRemote(server, "main", true);
+            var cancelled = new System.Threading.CancellationTokenSource();
+            cancelled.Cancel();
+            var cancelRejected = false;
+            try { a.FetchRemote(true, cancelled.Token); } catch (OperationCanceledException) { cancelRejected = true; }
+            Require(cancelRejected && a.Head() == concurrent, "Cancelled fetch was not reported or changed the local branch");
             a.FetchRemote(true);
+            for (var index = 0; index < 25; index++)
+                Git(root, "--git-dir=" + a.RepositoryPath, "update-ref",
+                    "refs/wordgit/remote-backup/legacy" + index.ToString("00") + "/main", first);
+            Require(a.RemoteBackupNamespaces().Contains("legacy00"), "Test failed to plant legacy backup refs");
+            a.FetchRemote(true);
+            Require(!a.RemoteBackupNamespaces().Contains("legacy00") && a.RemoteBackupNamespaces().Length <= 20,
+                "Legacy remote backups were not cleaned");
             a.Repack();
             Require(a.Extract(side).SequenceEqual(sideBytes) && a.Extract(first).SequenceEqual(aBytes) &&
                 a.Branches().Contains("保留的本地分支"), "Remote operations/repack lost existing versions or branches");
-            Console.WriteLine("PASS: two clients, link/clone/push/fetch/fast-forward/divergent merge, remote graph/counts, refused push, concurrent changes, unrelated history, archive retention and existing-history protection.");
+            Console.WriteLine("PASS: two clients, link/clone/push/fetch/fast-forward/divergent merge, remote graph/counts, refused push, concurrent changes, unrelated history, fetch cancellation, archive retention and existing-history protection.");
         }
     }
 }

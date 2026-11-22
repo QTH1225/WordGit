@@ -107,9 +107,42 @@ namespace WordGit
                 VerifyCompression(root);
                 VerifyStreaming(root);
                 VerifyReviewImport(root);
+                VerifyHousekeeping(root);
                 Console.WriteLine("PASS: Git history, exact DOCX restoration, branches, merge, working-copy state and lossless history compression.");
             }
             finally { try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        }
+
+        private static void VerifyHousekeeping(string root)
+        {
+            var sessions = Path.Combine(root, "sessions");
+            var stale = Directory.CreateDirectory(Path.Combine(sessions, "stale")).FullName;
+            var recent = Directory.CreateDirectory(Path.Combine(sessions, "recent")).FullName;
+            var pending = Directory.CreateDirectory(Path.Combine(sessions, "pending")).FullName;
+            File.WriteAllText(Path.Combine(pending, "合并稿.wordgit"), "state");
+            File.WriteAllText(Path.Combine(stale, "草稿.docx"), "temp");
+            Directory.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddDays(-3));
+            Directory.SetLastWriteTimeUtc(pending, DateTime.UtcNow.AddDays(-3));
+            Require(AppPaths.CleanSessions(sessions, 1) == 1 && !Directory.Exists(stale) &&
+                Directory.Exists(recent) && Directory.Exists(pending), "Session cleanup removed the wrong folders");
+
+            var folder = Directory.CreateDirectory(Path.Combine(root, "restore")).FullName;
+            var oldLeftover = Path.Combine(folder, ".wordgit-restore-old.tmp");
+            var newLeftover = Path.Combine(folder, ".wordgit-restore-new.tmp");
+            File.WriteAllText(oldLeftover, "old");
+            File.WriteAllText(newLeftover, "new");
+            File.SetLastWriteTimeUtc(oldLeftover, DateTime.UtcNow.AddDays(-2));
+            WordDocuments.CleanRestoreLeftovers(folder);
+            Require(!File.Exists(oldLeftover) && File.Exists(newLeftover), "Restore leftover cleanup removed the wrong files");
+
+            var logFile = Path.Combine(root, "logs", "wordgit.log");
+            AppPaths.AppendLog(logFile, "first entry");
+            AppPaths.AppendLog(logFile, new string('x', 1024 * 1024 + 1));
+            AppPaths.AppendLog(logFile, "second entry");
+            var text = File.ReadAllText(logFile);
+            Require(text.Contains("second entry") && !text.Contains("first entry") &&
+                File.ReadAllText(logFile + ".1").Contains("first entry"), "Log rotation lost or mixed entries");
+            Console.WriteLine("PASS: session/restore-leftover cleanup and log rotation.");
         }
 
         private static void VerifyStreaming(string root)

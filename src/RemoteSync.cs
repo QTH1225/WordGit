@@ -1,10 +1,11 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace WordGit
@@ -31,6 +32,9 @@ namespace WordGit
     internal sealed partial class GitHistory
     {
         internal const string RemotePrefix = "refs/remotes/origin/";
+        private const string BackupRoot = "refs/wordgit/remote-backup/";
+        // A run of timestamped backups protects against remote history rewrites; the cap prevents unbounded growth.
+        private const int BackupRetention = 20;
 
         internal static string ReferenceLabel(string reference)
         {
@@ -76,6 +80,7 @@ namespace WordGit
             if (old != null && !String.Equals(NormalizeRemoteUrl(old, allowLocal), url, StringComparison.OrdinalIgnoreCase))
             {
                 ArchiveRemoteTips();
+                CleanRemoteBackups();
                 var previous = RemoteBranches();
                 if (previous.Length > 0)
                     RefTransaction(null, previous.Select(oldReference => "delete " + oldReference + " " + BranchTip(oldReference)).ToArray());
@@ -102,7 +107,7 @@ namespace WordGit
             var merge = ConfigValue("branch." + local + ".merge");
             var branch = merge != null && merge.StartsWith(Heads, StringComparison.Ordinal) ? merge.Substring(Heads.Length) : local;
             var state = new RemoteState { Url = RemoteUrl, LocalBranch = local, RemoteBranch = branch,
-                LocalTip = Head(), RemoteReference = RemotePrefix + branch };
+                LocalTip = BranchTip(local), RemoteReference = RemotePrefix + branch };
             if (!state.Linked) return state;
             state.RemoteTip = BranchTip(state.RemoteReference);
             if (state.RemoteTip == null || state.LocalTip == null) return state;
@@ -120,27 +125,69 @@ namespace WordGit
         {
             var refs = RemoteBranches();
             if (refs.Length == 0) return;
-            var prefix = "refs/wordgit/remote-backup/" + Guid.NewGuid().ToString("N") + "/";
+            var prefix = BackupRoot + DateTime.UtcNow.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) +
+                "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + "/";
             RefTransaction(null, refs.Select(reference =>
                 "create " + prefix + reference.Substring(RemotePrefix.Length) + " " + BranchTip(reference)).ToArray());
         }
 
-        internal RemoteState FetchRemote(bool allowLocal = false)
+        private string[] BackupRefs()
+        {
+            return Text(Run(null, null, "for-each-ref", "--format=%(refname)", BackupRoot))
+                .Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        internal string[] RemoteBackupNamespaces()
+        {
+            return BackupRefs()
+                .Select(reference => reference.Substring(BackupRoot.Length).Split('/')[0])
+                .Distinct().ToArray();
+        }
+
+        // Keeps only the newest timestamped backups; GUID namespaces left by older versions always count as oldest.
+        private void CleanRemoteBackups()
+        {
+            var stale = BackupRefs()
+                .GroupBy(reference => reference.Substring(BackupRoot.Length).Split('/')[0])
+                .OrderByDescending(group => BackupSortKey(group.Key), StringComparer.Ordinal)
+                .Skip(BackupRetention)
+                .SelectMany(group => group)
+                .Select(reference => new { Reference = reference, Tip = RefTip(reference) })
+                .Where(item => item.Tip != null)
+                .ToArray();
+            if (stale.Length > 0)
+                RefTransaction(null, stale.Select(item => "delete " + item.Reference + " " + item.Tip).ToArray());
+        }
+
+        private static string BackupSortKey(string name)
+        {
+            return Regex.IsMatch(name, @"\A\d{8}") ? "1" + name : "0" + name;
+        }
+
+        private string RefTip(string reference)
+        {
+            var result = Invoke(null, null, "rev-parse", "--verify", "-q", reference);
+            if (result.Code == 1) return null;
+            return Text(result);
+        }
+
+        internal RemoteState FetchRemote(bool allowLocal = false, CancellationToken cancellation = default(CancellationToken))
         {
             NormalizeRemoteUrl(RemoteUrl, allowLocal);
             ArchiveRemoteTips();
-            NetworkRun(allowLocal, "fetch", "--no-prune", "--no-tags", "--no-recurse-submodules", "origin",
+            NetworkRun(allowLocal, cancellation, "fetch", "--no-prune", "--no-tags", "--no-recurse-submodules", "origin",
                 "+refs/heads/*:refs/remotes/origin/*");
+            CleanRemoteBackups();
             return SyncState();
         }
 
-        internal RemoteState PushRemote(bool allowLocal = false)
+        internal RemoteState PushRemote(bool allowLocal = false, CancellationToken cancellation = default(CancellationToken))
         {
             var state = SyncState();
             if (!state.Linked || state.LocalTip == null) throw new InvalidOperationException("请先关联仓库并提交当前稿。");
             NormalizeRemoteUrl(state.Url, allowLocal);
             // A normal push refuses a non-fast-forward update on the server.
-            NetworkRun(allowLocal, "push", "--porcelain", "origin", BranchRef(state.LocalBranch) + ":" + BranchRef(state.RemoteBranch));
+            NetworkRun(allowLocal, cancellation, "push", "--porcelain", "origin", BranchRef(state.LocalBranch) + ":" + BranchRef(state.RemoteBranch));
             return SyncState();
         }
 
@@ -156,7 +203,7 @@ namespace WordGit
         }
 
         internal static GitHistory CloneRemote(string url, string remoteBranch, string documentPath,
-            string storage = null, bool allowLocal = false)
+            string storage = null, bool allowLocal = false, CancellationToken cancellation = default(CancellationToken))
         {
             url = NormalizeRemoteUrl(url, allowLocal);
             documentPath = Path.GetFullPath(documentPath);
@@ -174,7 +221,7 @@ namespace WordGit
                 staged.EnsureRepository();
                 RunBranch(staged, remoteBranch);
                 staged.ConfigureRemote(url, remoteBranch, allowLocal);
-                var state = staged.FetchRemote(allowLocal);
+                var state = staged.FetchRemote(allowLocal, cancellation);
                 if (state.RemoteTip == null) throw new InvalidOperationException("远程没有所选分支，请确认分支名或先由另一位作者推送版本。");
                 WordDocuments.ExtractToFile(staged, state.RemoteTip, stagedDocument);
                 WordDocuments.ValidateDocx(stagedDocument);
@@ -209,7 +256,7 @@ namespace WordGit
             repository.Run(null, null, "symbolic-ref", "HEAD", reference);
         }
 
-        private void NetworkRun(bool allowLocal, params string[] command)
+        private void NetworkRun(bool allowLocal, CancellationToken cancellation, params string[] command)
         {
             NormalizeRemoteUrl(RemoteUrl, allowLocal);
             var options = new[] { "-c", "core.hooksPath=NUL", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
@@ -225,13 +272,17 @@ namespace WordGit
             {
                 var output = process.StandardOutput.ReadToEndAsync();
                 var errors = process.StandardError.ReadToEndAsync();
-                if (!process.WaitForExit(180000))
+                using (cancellation.Register(() => { try { process.Kill(); } catch (InvalidOperationException) { } }))
                 {
-                    process.Kill();
-                    process.WaitForExit();
-                    throw new TimeoutException("远程 Git 操作超时，请检查网络或完成 Git for Windows 登录后重试。");
+                    if (!process.WaitForExit(180000))
+                    {
+                        process.Kill();
+                        process.WaitForExit();
+                        throw new TimeoutException("远程 Git 操作超时，请检查网络或完成 Git for Windows 登录后重试。");
+                    }
                 }
                 Task.WaitAll(output, errors);
+                cancellation.ThrowIfCancellationRequested();
                 if (process.ExitCode != 0)
                 {
                     var detail = errors.Result.Trim();

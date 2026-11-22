@@ -29,6 +29,7 @@ namespace WordGit
                 application.Visible = false;
                 application.DisplayAlerts = 0;
                 var word = new WordDocuments(application);
+                if (args.Contains("--pane-only")) { VerifyPaneLoading(application, root); return; }
                 if (args.Contains("--remote-only")) { VerifyRemoteCollaboration(application, word, root); return; }
                 VerifyRevisionActions(application, word, root);
                 VerifyImportedReview(application, word, root);
@@ -484,6 +485,64 @@ namespace WordGit
             Require(readOnlyRejected, "Read-only revision resolution");
             document.Close(SaveChanges: 0);
             Console.WriteLine("PASS: native accept/reject for insertion, deletion, formatting and header revisions, Undo, stale-item and read-only protection.");
+        }
+
+        private static void VerifyPaneLoading(dynamic application, string root)
+        {
+            var path = Path.Combine(root, "侧栏异步验证.docx");
+            var storage = Path.Combine(root, "pane-repositories");
+            dynamic source = application.Documents.Add();
+            try
+            {
+                source.Content.Text = "异步侧栏测试。\r";
+                source.SaveAs2(path, 16);
+                var repo = new GitHistory(path, storage);
+                repo.CommitFile(path, "初稿", "WordGit test", null);
+                using (var host = new System.Windows.Forms.Form {
+                    ClientSize = new System.Drawing.Size(420, 720), Opacity = 0, ShowInTaskbar = false })
+                using (var pane = new HistoryPane { Dock = System.Windows.Forms.DockStyle.Fill })
+                using (var heartbeat = new System.Windows.Forms.Timer { Interval = 15 })
+                {
+                    host.Controls.Add(pane);
+                    host.Show();
+                    var ticks = 0;
+                    heartbeat.Tick += (sender, args) => ticks++;
+                    heartbeat.Start();
+                    var method = typeof(Connect).GetMethod("LoadPaneAsync",
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    pane.BindAsync(() => (System.Threading.Tasks.Task<HistoryPaneData>)method.Invoke(null,
+                        new object[] { (object)source, storage }), (documentPath, action, first, second) => { });
+                    var clock = Stopwatch.StartNew();
+                    var loaded = pane.ReloadAsync();
+                    var dispatch = clock.ElapsedMilliseconds;
+                    var deadline = DateTime.UtcNow.AddSeconds(20);
+                    while ((!loaded.IsCompleted || !PaneLabels(pane).Contains("与最新提交一致")) && DateTime.UtcNow < deadline)
+                    {
+                        System.Windows.Forms.Application.DoEvents();
+                        System.Threading.Thread.Sleep(1);
+                    }
+                    Require(loaded.IsCompleted, "Word pane loading timed out");
+                    loaded.GetAwaiter().GetResult();
+                    Require(ticks > 0 && PaneLabels(pane).Contains("当前分支  main") &&
+                        PaneLabels(pane).Contains("与最新提交一致"), "Word pane did not update after background loading");
+                    source.TrackRevisions = true;
+                    source.Content.InsertAfter("继续编辑。");
+                    pane.UpdateWorkingState();
+                    Require(PaneLabels(pane).Contains("有未保存修改"), "Word pane lost edits made during loading");
+                    Console.WriteLine("PASS: real Word asynchronous pane; dispatch " + dispatch +
+                        " ms, complete " + clock.ElapsedMilliseconds + " ms, UI heartbeat " + ticks + ".");
+                }
+            }
+            finally { source.Close(false); }
+        }
+
+        private static System.Collections.Generic.IEnumerable<string> PaneLabels(System.Windows.Forms.Control root)
+        {
+            foreach (System.Windows.Forms.Control child in root.Controls)
+            {
+                if (child is System.Windows.Forms.Label) yield return child.Text;
+                foreach (var label in PaneLabels(child)) yield return label;
+            }
         }
 
         private static void Require(bool condition, string detail)

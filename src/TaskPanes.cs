@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -34,7 +35,7 @@ namespace WordGit
 
         public TaskPanes(ICTPFactory factory) { this.factory = factory; }
 
-        public void Show(object window, Func<HistoryPaneData> load, Action<string, HistoryAction, string, string> openVersion)
+        public void Show(object window, Func<Task<HistoryPaneData>> load, Action<string, HistoryAction, string, string> openVersion)
         {
             Prune();
             var handle = (int)((dynamic)window).Hwnd;
@@ -48,7 +49,7 @@ namespace WordGit
                     native.DockPosition = DockRight;
                     native.Width = 420;
                     pane = new Pane { Native = native, Control = control };
-                    control.Bind(load, openVersion);
+                    control.BindAsync(load, openVersion);
                     panes.Add(handle, pane);
                 }
                 catch
@@ -57,8 +58,12 @@ namespace WordGit
                     throw;
                 }
             }
-            pane.Control.Reload();
-            pane.Native.Visible = true;
+            pane.Control.PrepareForShow();
+            if (!(bool)pane.Native.Visible) pane.Native.Visible = true;
+            // Paint the single loading surface before posting the background-load callback.
+            pane.Control.Refresh();
+            // Return to Word's message loop so the docked pane can paint before loading.
+            pane.Control.BeginInvoke(new Action(pane.Control.Reload));
         }
 
         public string VisiblePath(object window)

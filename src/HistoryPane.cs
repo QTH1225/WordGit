@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -14,6 +15,7 @@ namespace WordGit
         public string[] Branches;
         public Func<string, List<Revision>> Load;
         public Func<WorkingCopyState> WorkingState;
+        public Func<bool> IsSaved;
         public Func<List<DocumentReviewItem>> LoadReviewItems;
         public Action<DocumentReviewItem> NavigateReviewItem;
         public Func<DocumentReviewItem, bool, bool> ResolveReviewItem;
@@ -71,6 +73,12 @@ namespace WordGit
         };
 
         private Func<HistoryPaneData> load;
+        private Func<Task<HistoryPaneData>> loadAsync;
+        private int reloadGeneration, graphGeneration;
+        private bool loading, graphLoading, workingQuery;
+        private string graphError;
+        private readonly Panel content = new Panel { Dock = DockStyle.Fill };
+        private readonly PaneLoadingFrame loadingFrame = new PaneLoadingFrame();
         private Action<string, HistoryAction, string, string> openVersion;
         private HistoryPaneData data;
         private List<Revision> revisions = new List<Revision>();
@@ -81,14 +89,17 @@ namespace WordGit
 
         public HistoryPane()
         {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
             Font = SystemFonts.MessageBoxFont;
             BackColor = SystemColors.Control;
             ForeColor = SystemColors.ControlText;
             AutoScaleMode = AutoScaleMode.Font;
             Size = new Size(420, 640);
+            Controls.Add(content);
             var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal,
                 Size = Size, SplitterDistance = 240, SplitterWidth = 6, Panel1MinSize = 120, Panel2MinSize = 280 };
-            Controls.Add(split);
+            content.Controls.Add(split);
             var information = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Padding = new Padding(10, 4, 4, 4) };
             var about = new LinkLabel { Text = "WordGit " + AppInfo.DisplayVersion + " · " + AppInfo.Author,
@@ -101,7 +112,7 @@ namespace WordGit
             hints.SetToolTip(updates, "查询 GitHub 正式发布版本。");
             information.Controls.Add(about);
             information.Controls.Add(updates);
-            Controls.Add(information);
+            content.Controls.Add(information);
             var commentLayout = DialogLayout.Stack(3);
             commentLayout.Padding = new Padding(10, 8, 10, 2);
             commentLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -197,7 +208,7 @@ namespace WordGit
             hints.SetToolTip(compareLatest, "用 Word 对比当前稿和当前分支的最新提交。");
             workingTimer.Tick += (sender, args) =>
             {
-                if (!Visible || resolvingRevision) return;
+                if (!Visible || resolvingRevision || loading) return;
                 UpdateWorkingState();
                 if (++commentPoll % 4 == 0) ReloadComments();
             };
@@ -275,7 +286,61 @@ namespace WordGit
             hints.SetToolTip(importReview, "选择送审版本和老师返稿，创建可追溯的返稿分支。");
             hints.SetToolTip(preview, "双击提交也可在 Word 中只读打开。");
             hints.SetToolTip(compare, "按 Ctrl 可选择两个历史版本。");
+            loadingFrame.ReviewHeight = () => split.Panel1.Height;
+            loadingFrame.FooterHeight = () => information.Height;
+            Controls.Add(loadingFrame);
+            loadingFrame.BringToFront();
             ShowSelection();
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var parameters = base.CreateParams;
+                // Composite the child HWNDs together instead of exposing their individual first paints.
+                parameters.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
+                return parameters;
+            }
+        }
+
+        internal void PrepareForShow()
+        {
+            ++reloadGeneration;
+            ++graphGeneration;
+            ShowLoadingFrame();
+            CreateControl();
+            PerformLayout();
+            PrepareChildHandles(content);
+            var ready = loadingFrame.Handle;
+        }
+
+        private static void PrepareChildHandles(Control root)
+        {
+            var handle = root.Handle;
+            root.PerformLayout();
+            foreach (Control child in root.Controls) PrepareChildHandles(child);
+        }
+
+        private void ShowLoadingFrame()
+        {
+            content.Enabled = false;
+            loadingFrame.Visible = true;
+            loadingFrame.BringToFront();
+            loadingFrame.Invalidate();
+        }
+
+        private void FinishPresentation()
+        {
+            SuspendLayout();
+            try
+            {
+                content.Enabled = true;
+                loadingFrame.Visible = false;
+            }
+            finally { ResumeLayout(true); }
+            Invalidate(true);
+            Update();
         }
 
         private void StylePaneButton(Button button)
@@ -313,19 +378,60 @@ namespace WordGit
         internal void Bind(Func<HistoryPaneData> load, Action<string, HistoryAction, string, string> openVersion)
         {
             this.load = load;
+            loadAsync = null;
+            ++reloadGeneration;
+            ++graphGeneration;
             this.openVersion = openVersion;
             workingTimer.Start();
         }
 
+
+        internal void BindAsync(Func<Task<HistoryPaneData>> load, Action<string, HistoryAction, string, string> openVersion)
+        {
+            loadAsync = load;
+            this.load = null;
+            ++reloadGeneration;
+            ++graphGeneration;
+            this.openVersion = openVersion;
+            workingTimer.Start();
+        }
+
+        private bool CurrentLoad(int generation)
+        {
+            return !IsDisposed && !Disposing && generation == reloadGeneration;
+        }
+
         internal void Reload()
         {
-            if (load == null) return;
-            string previousFilter = filter.SelectedIndex > 0 ? (string)filter.SelectedItem : null;
+            var pending = ReloadAsync();
+        }
+
+        internal async Task ReloadAsync()
+        {
+            if (IsDisposed || Disposing || (load == null && loadAsync == null)) return;
+            var generation = ++reloadGeneration;
+            ++graphGeneration;
+            var previousFilter = filter.SelectedIndex > 0 ? (string)filter.SelectedItem : null;
             var previousSelection = Selected();
             var previousPath = DocumentPath;
+            if (data == null || loadingFrame.Visible) ShowLoadingFrame();
+            loading = true;
+            graphLoading = true;
+            graphError = null;
+            comments.Enabled = reviewFilter.Enabled = false;
+            graph.Enabled = false;
+            filter.Enabled = false;
+            commit.Enabled = importReview.Enabled = compareLatest.Enabled = false;
+            linkRemote.Enabled = fetchRemote.Enabled = pullRemote.Enabled = pushRemote.Enabled = false;
+            preview.Enabled = compare.Enabled = false;
+            reviewItemsCurrent = false;
+            UpdateReviewActions();
+            status.Text = "正在读取提交记录…";
             try
             {
-                data = load();
+                var next = loadAsync == null ? load() : await loadAsync();
+                if (!CurrentLoad(generation)) return;
+                data = next;
                 if (!String.Equals(previousPath, DocumentPath, StringComparison.OrdinalIgnoreCase))
                 {
                     previousFilter = null;
@@ -342,21 +448,34 @@ namespace WordGit
                     filter.Items.Add("全部分支");
                     filter.Items.AddRange(data.Branches);
                     filter.SelectedIndex = previousFilter == null ? 0 : Math.Max(0, filter.Items.IndexOf(previousFilter));
-                    filter.Enabled = data.Branches.Length > 0;
                 }
                 finally { updating = false; }
-                LoadGraph(previousSelection.Select(item => item.Id).ToArray());
+                await LoadGraphAsync(previousSelection.Select(item => item.Id).ToArray());
+                if (!CurrentLoad(generation)) return;
             }
             catch (Exception error)
             {
+                if (!CurrentLoad(generation)) return;
                 data = null;
                 branch.Text = "当前分支  —";
                 filename.Text = "";
-                filter.Enabled = false;
                 ShowGraph(new List<Revision>(), new string[0]);
+                graphError = error.Message;
                 status.Text = error.Message;
                 hints.SetToolTip(status, error.Message);
             }
+            finally
+            {
+                if (CurrentLoad(generation))
+                {
+                    loading = false;
+                    graphLoading = false;
+                    graph.Enabled = true;
+                    comments.Enabled = reviewFilter.Enabled = data != null;
+                }
+            }
+            if (!CurrentLoad(generation)) return;
+            filter.Enabled = data != null && data.Branches.Length > 0;
             commit.Enabled = data != null;
             importReview.Enabled = data != null && data.Head != null && String.Equals(data.DocumentPath, data.HistoryPath, StringComparison.OrdinalIgnoreCase);
             compareLatest.Enabled = data != null && data.Head != null;
@@ -364,11 +483,21 @@ namespace WordGit
             remoteStatus.Text = data == null || data.Remote == null ? "尚未关联 GitHub 仓库" : data.Remote.Caption;
             hints.SetToolTip(remoteStatus, data == null || data.Remote == null ? "" : (data.Remote.Url ?? "") + Environment.NewLine + "同步数量以最近一次获取为准。");
             linkRemote.Enabled = original;
-            fetchRemote.Enabled = original && data.Remote != null && data.Remote.Linked;
-            pullRemote.Enabled = fetchRemote.Enabled && data.Head != null;
-            pushRemote.Enabled = pullRemote.Enabled;
-            UpdateWorkingState();
-            ReloadComments();
+            var canFetchRemote = original && data.Remote != null && data.Remote.Linked;
+            var canPushOrPull = canFetchRemote && data.Head != null;
+            fetchRemote.Enabled = canFetchRemote;
+            pullRemote.Enabled = pushRemote.Enabled = canPushOrPull;
+            ShowSelection();
+            if (loadAsync != null) working.Text = "正在检查修改…";
+            try
+            {
+                UpdateWorkingState();
+                ReloadComments();
+            }
+            finally
+            {
+                if (CurrentLoad(generation)) FinishPresentation();
+            }
         }
 
         internal bool ReloadComments()
@@ -496,43 +625,82 @@ namespace WordGit
             args.DrawFocusRectangle();
         }
 
-        internal void UpdateWorkingState()
+        internal async void UpdateWorkingState()
         {
+            if (workingQuery || loading) return;
+            var request = data;
+            var generation = reloadGeneration;
             var text = "";
+            workingQuery = true;
             try
             {
-                if (data != null)
-                    switch (data.WorkingState())
+                if (request != null)
+                {
+                    var state = request.IsSaved == null ? request.WorkingState() :
+                        (!request.IsSaved() ? WorkingCopyState.Unsaved : await Task.Run(request.WorkingState));
+                    if (!CurrentLoad(generation) || data != request) return;
+                    // Editing may continue while the saved file is being checked.
+                    if (request.IsSaved != null && !request.IsSaved()) state = WorkingCopyState.Unsaved;
+                    switch (state)
                     {
                         case WorkingCopyState.NoCommit: text = "尚无提交"; break;
                         case WorkingCopyState.Unsaved: text = "有未保存修改"; break;
                         case WorkingCopyState.Changed: text = "有未提交修改"; break;
                         case WorkingCopyState.Clean: text = "与最新提交一致"; break;
                     }
+                }
             }
             catch (COMException) { return; }
             catch (InvalidComObjectException) { return; }
             catch (IOException) { text = "暂无法读取修改状态"; }
             catch (UnauthorizedAccessException) { text = "暂无法读取修改状态"; }
             catch (InvalidOperationException) { text = "暂无法读取修改状态"; }
-            if (working.Text == text) return;
+            finally { workingQuery = false; }
+            if (!CurrentLoad(generation) || data != request || working.Text == text) return;
             working.Text = text;
             hints.SetToolTip(working, text);
         }
 
         private void LoadGraph(string[] keep)
         {
+            var pending = LoadGraphAsync(keep);
+        }
+
+        private async Task LoadGraphAsync(string[] keep)
+        {
+            var request = data;
+            if (request == null) return;
+            var generation = ++graphGeneration;
+            graphError = null;
+            var selectedBranch = filter.SelectedIndex > 0 ? (string)filter.SelectedItem : null;
+            graphLoading = true;
+            graph.Enabled = false;
+            preview.Enabled = compare.Enabled = false;
+            status.Text = "正在读取提交记录…";
             try
             {
-                var selectedBranch = filter.SelectedIndex > 0 ? (string)filter.SelectedItem : null;
-                ShowGraph(data.Load(selectedBranch), keep ?? new string[0]);
+                var entries = loadAsync == null ? request.Load(selectedBranch) :
+                    await Task.Run(() => request.Load(selectedBranch));
+                if (IsDisposed || Disposing || generation != graphGeneration || data != request) return;
+                ShowGraph(entries, keep ?? new string[0]);
                 hints.SetToolTip(status, null);
             }
             catch (Exception error)
             {
+                if (IsDisposed || Disposing || generation != graphGeneration || data != request) return;
                 ShowGraph(new List<Revision>(), new string[0]);
+                graphError = error.Message;
                 status.Text = error.Message;
                 hints.SetToolTip(status, error.Message);
+            }
+            finally
+            {
+                if (!IsDisposed && !Disposing && generation == graphGeneration && data == request)
+                {
+                    graphLoading = false;
+                    graph.Enabled = true;
+                    ShowSelection();
+                }
             }
         }
 
@@ -647,11 +815,12 @@ namespace WordGit
         private void ShowSelection()
         {
             var count = Selected().Length;
-            preview.Enabled = count == 1;
-            compare.Enabled = count == 1 || count == 2;
+            preview.Enabled = !loading && !graphLoading && count == 1;
+            compare.Enabled = !loading && !graphLoading && (count == 1 || count == 2);
             compare.Text = count == 2 ? "对比所选版本" : "对比当前稿";
-            status.Text = revisions.Count == 0 ? "提交版本后，历史会显示在这里。"
-                : (count > 2 ? "对比时请选择一条或两条提交。" : revisions.Count + " 条提交  ·  双击预览");
+            status.Text = graphError ?? ((loading || graphLoading) ? "正在读取提交记录…" :
+                (revisions.Count == 0 ? "提交版本后，历史会显示在这里。"
+                : (count > 2 ? "对比时请选择一条或两条提交。" : revisions.Count + " 条提交  ·  双击预览")));
         }
 
         private void OpenSelected(bool diff)
@@ -666,6 +835,8 @@ namespace WordGit
         {
             if (disposing)
             {
+                ++reloadGeneration;
+                ++graphGeneration;
                 workingTimer.Dispose();
                 hints.Dispose();
                 branch.Font.Dispose();

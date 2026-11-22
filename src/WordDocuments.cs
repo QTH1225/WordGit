@@ -12,9 +12,54 @@ namespace WordGit
     {
         public static readonly string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WordGit");
         public static readonly string Repositories = Path.Combine(Root, "repositories");
+        public static readonly string Sessions = Path.Combine(Root, "sessions");
+        public static readonly string LogFile = Path.Combine(Root, "logs", "wordgit.log");
         public static string NewSession()
         {
-            return Directory.CreateDirectory(Path.Combine(Root, "sessions", Guid.NewGuid().ToString("N"))).FullName;
+            return Directory.CreateDirectory(Path.Combine(Sessions, Guid.NewGuid().ToString("N"))).FullName;
+        }
+
+        public static int CleanSessions(int days) { return CleanSessions(Sessions, days); }
+
+        internal static int CleanSessions(string sessionsRoot, int days)
+        {
+            var removed = 0;
+            var cutoff = DateTime.UtcNow.AddDays(-days);
+            try
+            {
+                foreach (var folder in Directory.GetDirectories(sessionsRoot))
+                {
+                    try
+                    {
+                        if (Directory.GetLastWriteTimeUtc(folder) >= cutoff) continue;
+                        if (Directory.GetFiles(folder, "*.wordgit", SearchOption.AllDirectories).Length > 0) continue;
+                        Directory.Delete(folder, true);
+                        removed++;
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return removed;
+        }
+
+        public static void LogError(string message) { AppendLog(LogFile, message); }
+
+        internal static void AppendLog(string file, string message)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(file));
+                if (File.Exists(file) && new FileInfo(file).Length > 1024 * 1024)
+                {
+                    var rolled = file + ".1";
+                    try { if (File.Exists(rolled)) File.Delete(rolled); } catch { }
+                    File.Move(file, rolled);
+                }
+                File.AppendAllText(file, "[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " + message + Environment.NewLine,
+                    new System.Text.UTF8Encoding(false));
+            }
+            catch { }
         }
     }
 
@@ -250,7 +295,9 @@ namespace WordGit
 
         public static byte[] Snapshot(object value)
         {
-            return ReadDocx(SaveDocument(value));
+            var path = SaveDocument(value);
+            CleanRestoreLeftovers(Path.GetDirectoryName(path));
+            return ReadDocx(path);
         }
 
         public static string SaveDocument(object value)
@@ -520,6 +567,7 @@ namespace WordGit
                 throw new InvalidOperationException("磁盘上的当前稿已变化，未替换文件。");
             if (currentHash == replacementHash) { publish(); return; }
             var folderPath = Path.GetDirectoryName(path);
+            CleanRestoreLeftovers(folderPath);
             var staged = Path.Combine(folderPath, ".wordgit-restore-" + Guid.NewGuid().ToString("N") + ".tmp");
             var backup = staged + ".bak";
             File.Copy(replacementFile, staged);
@@ -564,6 +612,7 @@ namespace WordGit
                 throw new InvalidOperationException("磁盘上的当前稿已变化，未替换文件。");
             if (current.SequenceEqual(replacement)) { publish(); return; }
             var folderPath = Path.GetDirectoryName(path);
+            CleanRestoreLeftovers(folderPath);
             var staged = Path.Combine(folderPath, ".wordgit-restore-" + Guid.NewGuid().ToString("N") + ".tmp");
             var backup = staged + ".bak";
             WriteNew(staged, replacement);
@@ -589,6 +638,22 @@ namespace WordGit
                 TryRemove(staged);
                 if (closed) Open(path, false);
             }
+        }
+
+        internal static void CleanRestoreLeftovers(string folder)
+        {
+            try
+            {
+                foreach (var file in Directory.GetFiles(folder, ".wordgit-restore-*.tmp"))
+                {
+                    try
+                    {
+                        if (File.GetLastWriteTimeUtc(file) < DateTime.UtcNow.AddDays(-1)) File.Delete(file);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
         private static void TryRemove(string file)

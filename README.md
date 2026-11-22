@@ -1,4 +1,4 @@
-# WordGit 0.10.5
+# WordGit 0.10.7
 
 在 Windows 桌面版 Word 中提交版本、管理分支、查看历史，并通过 GitHub 同步稿件。文档预览、版本对比和合并审阅使用 Word 原生功能。
 
@@ -13,12 +13,12 @@
 | Git | [Git for Windows 2.51+](https://git-scm.com/install/windows) |
 | 运行时 | [.NET Framework 4.8+](https://dotnet.microsoft.com/download/dotnet-framework/net48) |
 
-1. 准备 `WordGit-0.10.5-Setup.exe` 安装包。
+1. 准备 `WordGit-0.10.7-Setup.exe` 安装包。
 2. 保存文档，关闭所有 Word 窗口。
 3. 运行安装程序，点击 **安装 / 更新**。
 4. 重新打开 Word，进入顶部 **WordGit** 选项卡。
 
-ZIP 包的用法相同：完整解压 `WordGit-0.10.5-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装、`Check.cmd` 检查环境。
+ZIP 包的用法相同：完整解压 `WordGit-0.10.7-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装、`Check.cmd` 检查环境。
 
 安装作用于当前 Windows 用户。升级时直接运行新版安装程序，已有提交、分支和审阅稿继续保留。卸载可从 Windows“已安装的应用”或安装程序进入，历史数据也会保留。
 
@@ -38,7 +38,7 @@ ZIP 包的用法相同：完整解压 `WordGit-0.10.5-windows.zip`，运行其�
 | 按钮 | 用法 |
 | --- | --- |
 | 提交版本 | 保存当前稿，填写说明，创建一条本地提交。 |
-| 提交图 | 打开右侧“批注、修订与提交”窗格，一边编辑一边查看记录。 |
+| 提交图 | 打开右侧“批注、修订与提交”窗格，记录在后台加载，可继续编辑正文。 |
 | 预览版本 | 选择一个历史提交，在 Word 中只读打开。 |
 
 ### 分支
@@ -123,7 +123,7 @@ ZIP 包的用法相同：完整解压 `WordGit-0.10.5-windows.zip`，运行其�
 
 双方都有新增提交时，在生成的 Word 合并稿中逐条审阅，完成后点击 **提交版本**。回到原稿推送，其他作者即可拉取确认后的结果。
 
-HTTPS 连接使用 Git for Windows 的凭据管理器，首次连接按提示登录；SSH 使用已配置的密钥。远程仓库需包含 WordGit 历史，供协作者通过插件还原稿件。
+HTTPS 连接使用 Git for Windows 的凭据管理器，首次连接按提示登录；SSH 使用已配置的密钥。远程仓库需包含 WordGit 历史，供协作者通过插件还原稿件。网络操作进行中可随时点击 **取消**，不会留下半个版本；插件保留最近若干次获取前的远程备份，防止远程历史被改写后本地版本丢失。
 
 ## 项目结构
 
@@ -153,7 +153,7 @@ WordGit/
 | 文件 | 职责 |
 | --- | --- |
 | `AddIn.cs` | 插件入口、WordGit 功能区和各项操作的连接。 |
-| `TaskPanes.cs`、`HistoryPane.cs`、`CommitGraph.cs` | 右侧窗格、批注与修订列表、提交图。 |
+| `TaskPanes.cs`、`HistoryPane.cs`、`PaneLoadingFrame.cs`、`CommitGraph.cs` | 右侧窗格、加载框架、批注与修订列表、提交图。 |
 | `WordDocuments.cs` | Word 文档操作、原生对比与修订合并。 |
 | `GitHistory.cs` | 本地提交、分支、历史查询和版本取回。 |
 | `RemoteSync.cs`、`RemoteDialog.cs` | 远程连接、克隆、获取、拉取和推送。 |
@@ -169,7 +169,8 @@ WordGit/
 | --- | --- |
 | `%LOCALAPPDATA%\WordGit\app` | 插件和安装维护程序。 |
 | `%LOCALAPPDATA%\WordGit\repositories` | 稿件的 Git 历史仓库。 |
-| `%LOCALAPPDATA%\WordGit\sessions` | 预览、对比和合并审阅文件。 |
+| `%LOCALAPPDATA%\WordGit\sessions` | 预览、对比和合并审阅文件；一天前的残留会自动清理。 |
+| `%LOCALAPPDATA%\WordGit\logs` | 出错记录 `wordgit.log`（超过 1 MB 自动轮转），反馈问题时请附上。 |
 
 历史按稿件的完整路径关联。稿件改名或移动后会对应新的历史位置，原历史仓库仍保留。
 

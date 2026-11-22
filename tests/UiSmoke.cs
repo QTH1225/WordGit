@@ -59,8 +59,10 @@ namespace WordGit
                 VerifyRemoteUi(args[0], items);
                 VerifyImportReview(args[0], items);
                 VerifyAboutDialog(args[0]);
+                VerifyBackgroundOperationCancel();
                 VerifyHistoryPane(args[0], items, one, three);
                 VerifyRevisionActions(args[0]);
+                VerifyAsyncHistoryPane(args[0], items);
                 using (var compare = new HistoryDialog("论文独创性声明.docx", items, true, one, command: HistoryAction.Compare))
                 {
                     compare.Size = compare.MinimumSize;
@@ -189,6 +191,138 @@ namespace WordGit
                     throw new InvalidOperationException("History pane did not refresh the current branch");
                 host.ClientSize = new Size(300, 440);
                 Render(host, Path.Combine(output, "history-pane-narrow.png"));
+            }
+        }
+
+        private static HistoryPaneData AsyncPaneData(List<Revision> items, string branch)
+        {
+            return new HistoryPaneData {
+                DocumentPath = @"C:\test\异步稿件.docx", HistoryPath = @"C:\test\异步稿件.docx",
+                Branch = branch, Head = items[0].Id, Branches = new[] { "main", "review" },
+                Load = filter => items, WorkingState = () => WorkingCopyState.Clean,
+                LoadReviewItems = () => new List<DocumentReviewItem>()
+            };
+        }
+
+        private static void PumpUntil(Func<bool> complete, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!complete() && DateTime.UtcNow < deadline)
+            {
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(1);
+            }
+            if (!complete()) throw new InvalidOperationException("Asynchronous pane check timed out at line " + line);
+        }
+
+        private static void VerifyAsyncHistoryPane(string output, List<Revision> items)
+        {
+            var uiThread = System.Threading.Thread.CurrentThread.ManagedThreadId;
+            var metadata = new System.Threading.Tasks.TaskCompletionSource<HistoryPaneData>();
+            using (var graphEntered = new System.Threading.ManualResetEventSlim())
+            using (var graphRelease = new System.Threading.ManualResetEventSlim())
+            using (var workingEntered = new System.Threading.ManualResetEventSlim())
+            using (var workingRelease = new System.Threading.ManualResetEventSlim())
+            using (var host = new Form { ClientSize = new Size(420, 720), Opacity = 0, ShowInTaskbar = false })
+            using (var pane = new HistoryPane { Dock = DockStyle.Fill })
+            using (var heartbeat = new Timer { Interval = 15 })
+            {
+                host.Controls.Add(pane);
+                host.Show();
+                var ticks = 0;
+                heartbeat.Tick += (sender, args) => ticks++;
+                heartbeat.Start();
+                pane.BindAsync(() => metadata.Task, (path, action, first, second) => { });
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var pending = pane.ReloadAsync();
+                var dispatchMs = clock.ElapsedMilliseconds;
+                PumpUntil(() => ticks > 0);
+                var frame = Descendants(pane).Single(control => control.AccessibleName == "WordGit 正在加载");
+                if (!frame.Visible || frame.Bounds != pane.ClientRectangle)
+                    throw new InvalidOperationException("The initial loading surface did not cover the pane");
+                Render(host, Path.Combine(output, "history-loading.png"));
+                host.Show();
+                if (pending.IsCompleted || Descendants(pane).OfType<Button>().Single(button => button.Text == "提交版本").Enabled)
+                    throw new InvalidOperationException("The pane did not remain responsive while metadata was pending");
+
+                var saved = true;
+                var snapshot = AsyncPaneData(items, "main");
+                snapshot.Load = filter => {
+                    if (System.Threading.Thread.CurrentThread.ManagedThreadId == uiThread)
+                        throw new InvalidOperationException("History I/O ran on the UI thread");
+                    graphEntered.Set();
+                    if (!graphRelease.Wait(4000)) throw new InvalidOperationException("History gate timed out");
+                    return items;
+                };
+                snapshot.IsSaved = () => {
+                    if (System.Threading.Thread.CurrentThread.ManagedThreadId != uiThread)
+                        throw new InvalidOperationException("A Word saved-state query left its UI thread");
+                    return saved;
+                };
+                snapshot.WorkingState = () => {
+                    if (System.Threading.Thread.CurrentThread.ManagedThreadId == uiThread)
+                        throw new InvalidOperationException("Document hashing ran on the UI thread");
+                    workingEntered.Set();
+                    if (!workingRelease.Wait(4000)) throw new InvalidOperationException("Working-state gate timed out");
+                    return WorkingCopyState.Clean;
+                };
+                metadata.SetResult(snapshot);
+                PumpUntil(() => graphEntered.IsSet);
+                var before = ticks;
+                PumpUntil(() => ticks > before);
+                if (pending.IsCompleted || !frame.Visible) throw new InvalidOperationException("The loading frame was removed before history was ready");
+                graphRelease.Set();
+                PumpUntil(() => pending.IsCompleted && workingEntered.IsSet);
+                pending.GetAwaiter().GetResult();
+                saved = false;
+                workingRelease.Set();
+                PumpUntil(() => Descendants(pane).OfType<Label>().Any(label => label.Text == "有未保存修改"));
+                if (frame.Visible || Descendants(pane).OfType<DataGridView>().Single().RowCount != items.Count ||
+                    !Descendants(pane).OfType<Button>().Single(button => button.Text == "提交版本").Enabled)
+                    throw new InvalidOperationException("The asynchronous pane did not apply its result");
+
+                host.ClientSize = new Size(300, 520);
+                pane.PrepareForShow();
+                Render(host, Path.Combine(output, "history-loading-narrow.png"));
+                host.Show();
+                var reopened = pane.ReloadAsync();
+                PumpUntil(() => reopened.IsCompleted);
+                reopened.GetAwaiter().GetResult();
+                if (frame.Visible) throw new InvalidOperationException("Reopening left the loading frame visible");
+
+                var stale = new System.Threading.Tasks.TaskCompletionSource<HistoryPaneData>();
+                var requests = 0;
+                pane.BindAsync(() => ++requests == 1 ? stale.Task :
+                    System.Threading.Tasks.Task.FromResult(AsyncPaneData(items, "review")),
+                    (path, action, first, second) => { });
+                var older = pane.ReloadAsync();
+                var newer = pane.ReloadAsync();
+                PumpUntil(() => newer.IsCompleted);
+                newer.GetAwaiter().GetResult();
+                stale.SetResult(AsyncPaneData(items, "main"));
+                PumpUntil(() => older.IsCompleted);
+                older.GetAwaiter().GetResult();
+                if (!Descendants(pane).OfType<Label>().Any(label => label.Text == "当前分支  review"))
+                    throw new InvalidOperationException("An older request replaced the newest branch");
+
+                var failed = new System.Threading.Tasks.TaskCompletionSource<HistoryPaneData>();
+                pane.BindAsync(() => failed.Task, (path, action, first, second) => { });
+                pane.PrepareForShow();
+                var failedLoad = pane.ReloadAsync();
+                failed.SetException(new IOException("读取失败测试"));
+                PumpUntil(() => failedLoad.IsCompleted);
+                failedLoad.GetAwaiter().GetResult();
+                if (frame.Visible || !Descendants(pane).OfType<Label>().Any(label => label.Text == "读取失败测试"))
+                    throw new InvalidOperationException("A failed request left the loading cover stuck");
+
+                var closing = new System.Threading.Tasks.TaskCompletionSource<HistoryPaneData>();
+                pane.BindAsync(() => closing.Task, (path, action, first, second) => { });
+                var unfinished = pane.ReloadAsync();
+                pane.Dispose();
+                closing.SetResult(AsyncPaneData(items, "main"));
+                PumpUntil(() => unfinished.IsCompleted);
+                unfinished.GetAwaiter().GetResult();
+                Console.WriteLine("PASS: pane dispatch " + dispatchMs + " ms; UI heartbeat, background history/hash, UI-only saved state, stale results and close.");
             }
         }
 
@@ -404,6 +538,9 @@ namespace WordGit
             var calls = 0;
             using (var dialog = new AboutDialog(token => { calls++; return pending.Task; }))
             {
+                var links = Descendants(dialog).OfType<LinkLabel>().ToList();
+                if (links.Count == 0 || links.Any(link => !(link.Tag is string) || !AppInfo.IsAllowed((string)link.Tag)))
+                    throw new InvalidOperationException("About dialog contains a link that OpenLink would reject");
                 Render(dialog, Path.Combine(output, "about-dialog.png"));
                 dialog.Size = dialog.MinimumSize;
                 Render(dialog, Path.Combine(output, "about-dialog-min.png"));
@@ -437,6 +574,40 @@ namespace WordGit
             if (!cancellation.Task.IsCanceled) throw new InvalidOperationException("Closed update dialog kept its request alive");
         }
 
+        private static void VerifyBackgroundOperationCancel()
+        {
+            var gate = new System.Threading.Tasks.TaskCompletionSource<string>();
+            var finished = 0;
+            Dialogs.ShowBackgroundOperation(null, "取消测试", token =>
+            {
+                token.Register(() => gate.TrySetCanceled());
+                return gate.Task;
+            }, () => finished++);
+            var dialog = Application.OpenForms.OfType<Form>().Last(form => form.Text == "WordGit · 取消测试");
+            var cancel = Descendants(dialog).OfType<Button>().Single(button => button.Text == "取消");
+            var close = Descendants(dialog).OfType<Button>().Single(button => button.Text == "关闭");
+            cancel.PerformClick();
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!close.Enabled && DateTime.UtcNow < deadline) Application.DoEvents();
+            var status = Descendants(dialog).OfType<TextBox>().Single();
+            if (!close.Enabled || cancel.Enabled || !status.Text.Contains("已取消") || finished != 1)
+                throw new InvalidOperationException("Background operation did not finish after cancel");
+            dialog.Close();
+            Application.DoEvents();
+
+            Dialogs.ShowBackgroundOperation(null, "普通测试", () => System.Threading.Tasks.Task.FromResult("完成。"));
+            var plain = Application.OpenForms.OfType<Form>().Last(form => form.Text == "WordGit · 普通测试");
+            if (Descendants(plain).OfType<Button>().Any(button => button.Text == "取消"))
+                throw new InvalidOperationException("Non-cancellable operation shows a cancel button");
+            deadline = DateTime.UtcNow.AddSeconds(5);
+            var plainClose = Descendants(plain).OfType<Button>().Single(button => button.Text == "关闭");
+            while (!plainClose.Enabled && DateTime.UtcNow < deadline) Application.DoEvents();
+            if (!plainClose.Enabled || !Descendants(plain).OfType<TextBox>().Single().Text.Contains("完成。"))
+                throw new InvalidOperationException("Background operation did not finish");
+            plain.Close();
+            Application.DoEvents();
+        }
+
         private static Revision RevisionFor(string id, string[] parents, DateTimeOffset date, string title, params string[] refs)
         {
             return new Revision { Id = id, Parents = parents, References = refs, Author = "测试作者", Date = date,
@@ -468,6 +639,14 @@ namespace WordGit
             using (var image = new Bitmap(form.Width, form.Height))
             {
                 form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                // DrawToBitmap visits child windows in reverse z-order; reapply the visible cover.
+                foreach (var frame in Descendants(form).OfType<PaneLoadingFrame>().Where(control => control.Visible))
+                {
+                    var origin = form.PointToClient(frame.PointToScreen(Point.Empty));
+                    origin.Offset((form.Width - form.ClientSize.Width) / 2,
+                        form.Height - form.ClientSize.Height - (form.Width - form.ClientSize.Width) / 2);
+                    frame.DrawToBitmap(image, new Rectangle(origin, frame.Size));
+                }
                 image.Save(path);
             }
             form.Hide();
