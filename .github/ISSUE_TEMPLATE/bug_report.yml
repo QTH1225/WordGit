@@ -1,0 +1,78 @@
+name: 问题反馈
+description: WordGit 出错、行为与说明不符，或数据看起来不对
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请不要上传真实稿件或 repositories 历史仓库。需要样例时，请用不含敏感内容的小文档复现。
+  - type: input
+    id: version
+    attributes:
+      label: WordGit 版本
+      description: 功能区「关于与更新」里显示的版本号
+      placeholder: 例如 0.11.0
+    validations:
+      required: true
+  - type: dropdown
+    id: word
+    attributes:
+      label: Word 位数
+      options:
+        - 64 位
+        - 32 位
+        - 不确定
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows、Word 与 Git 版本
+      placeholder: 例如 Windows 11 24H2 / Microsoft 365 版本 2410 / Git 2.51.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 出问题的功能
+      options:
+        - 提交版本
+        - 提交图 / 侧栏
+        - 预览、对比或合并审阅稿
+        - 分支（新建、切换、合并、删除）
+        - 恢复或另存旧版
+        - 导入审阅稿
+        - 远程协作（关联、克隆、获取、推送、拉取）
+        - 安装、升级或卸载
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 ……
+        2. 点击 ……
+        3. 看到 ……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: 错误日志
+      description: |
+        %LOCALAPPDATA%\WordGit\logs\wordgit.log 中相关时间的几行。日志中的用户目录已替换为 %USERPROFILE%，粘贴前仍请检查是否含有文档名等不想公开的内容。
+      render: text
+  - type: checkboxes
+    id: data
+    attributes:
+      label: 数据情况
+      options:
+        - label: 文档或历史可能已经损坏或丢失（请暂时不要删除 %LOCALAPPDATA%\WordGit 中的任何文件）

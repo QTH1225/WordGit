@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    # Needs .NET Framework 4.8 (csc), Windows PowerShell 5.1 and Git for Windows.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run history, update-check and remote tests
+        shell: powershell
+        run: .\build.ps1 -Test
+
+      - name: Run UI layout tests
+        shell: powershell
+        run: .\build.ps1 -UiTest
+
+      # package.ps1 -Test also runs installer probes that need desktop Word, so CI only
+      # verifies that the release package builds and that document versions match.
+      - name: Build release package
+        shell: powershell
+        run: .\package.ps1 -NoBuild
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wordgit-package
+          path: dist/
+          if-no-files-found: error
