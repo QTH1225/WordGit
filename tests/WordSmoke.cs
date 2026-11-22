@@ -9,7 +9,7 @@ namespace WordGit
     internal static class WordSmoke
     {
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
             Console.OutputEncoding = Encoding.UTF8;
             var root = AppPaths.NewSession();
@@ -29,7 +29,10 @@ namespace WordGit
                 application.Visible = false;
                 application.DisplayAlerts = 0;
                 var word = new WordDocuments(application);
+                if (args.Contains("--remote-only")) { VerifyRemoteCollaboration(application, word, root); return; }
                 VerifyRevisionActions(application, word, root);
+                VerifyImportedReview(application, word, root);
+                VerifyRemoteCollaboration(application, word, root);
                 var sourcePath = Path.Combine(root, "原始 试验报告.docx");
                 dynamic source = application.Documents.Add();
                 source.Content.Text = "试验报告\r本节记录配合比。\r";
@@ -163,8 +166,248 @@ namespace WordGit
             finally
             {
                 if (ownsSession) application.Quit(SaveChanges: 0);
-                try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                try {
+                    var parent = Path.GetFullPath(Path.Combine(AppPaths.Root, "sessions")) + Path.DirectorySeparatorChar;
+                    if (!Path.GetFullPath(root).StartsWith(parent, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("Unexpected test session path");
+                    foreach (var file in Directory.GetFiles(root, "*", SearchOption.AllDirectories))
+                        File.SetAttributes(file, File.GetAttributes(file) & ~FileAttributes.ReadOnly);
+                    Directory.Delete(root, true);
+                } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
+        }
+
+        private static void VerifyRemoteCollaboration(dynamic application, WordDocuments word, string root)
+        {
+            var originalName = (string)application.UserName;
+            try
+            {
+                var seedPath = Path.Combine(root, "远程种子稿.docx");
+                dynamic seed = application.Documents.Add();
+                seed.RemovePersonalInformation = false;
+                seed.Content.Text = "远程协作基准\r试验条件尚待核对\r";
+                seed.Sections[1].Headers[1].Range.Text = "远程协作页眉";
+                seed.PageSetup.TopMargin = 55f;
+                dynamic table = seed.Tables.Add(seed.Range(seed.Content.End - 1, seed.Content.End - 1), 2, 2);
+                table.Cell(1, 1).Range.Text = "龄期";
+                var imagePath = Path.Combine(root, "远程协作图片.png");
+                using (var bitmap = new System.Drawing.Bitmap(20,20))
+                { bitmap.SetPixel(5,5,System.Drawing.Color.Blue); bitmap.Save(imagePath,System.Drawing.Imaging.ImageFormat.Png); }
+                seed.InlineShapes.AddPicture(FileName: imagePath, LinkToFile: false, SaveWithDocument: true, Range: seed.Range(0,0));
+                seed.SaveAs2(FileName: seedPath, FileFormat: 16, AddToRecentFiles: false);
+                seed.Close(SaveChanges: 0);
+                var server = new GitHistory(seedPath, Path.Combine(root, "server"));
+                var basis = server.CommitFile(seedPath, "共同版本", "作者", null);
+                var aPath = Path.Combine(root, "远程作者甲.docx");
+                var bPath = Path.Combine(root, "远程作者乙.docx");
+                var a = GitHistory.CloneRemote(server.RepositoryPath, "main", aPath, Path.Combine(root, "remote-a"), true);
+                var b = GitHistory.CloneRemote(server.RepositoryPath, "main", bPath, Path.Combine(root, "remote-b"), true);
+                dynamic aDoc = word.Open(aPath, false, true);
+                aDoc.TrackRevisions = false;
+                aDoc.Range(0,0).InsertBefore("作者甲新增的试验结果\r");
+                WordDocuments.SaveDocument(aDoc);
+                var aHash = WordDocuments.FileChecksum(aPath);
+                var local = a.CommitFile(aPath, "甲修改", "甲", basis);
+                // Keep the first client profile stable; raw revision authors are captured from the peer file.
+                dynamic bDoc = word.Open(bPath, false, false);
+                bDoc.RemovePersonalInformation = false;
+                bDoc.TrackRevisions = true;
+                dynamic range = bDoc.Content.Duplicate;
+                Require((bool)range.Find.Execute(FindText: "试验条件尚待核对"), "Remote edit anchor");
+                range.Text = "作者乙补充了试验条件";
+                dynamic comment = bDoc.Comments.Add(bDoc.Range(0,2), "合作者乙的统计建议");
+                comment.Author = "合作者乙";
+                WordDocuments.SaveDocument(bDoc);
+                bDoc.Close(SaveChanges: 0);
+                var rawRemote = WordDocuments.ReadDocx(bPath);
+                dynamic rawPreview = word.Open(bPath, true, false);
+                var rawAuthors = WordDocuments.ReviewItems((object)rawPreview).Where(item => !item.IsComment).Select(item => item.Author).Distinct().ToArray();
+                var rawCommentAuthor = WordDocuments.Comments((object)rawPreview).Single(item => item.Text.Contains("统计建议")).Author;
+                Require(rawAuthors.Length > 0, "Saved remote fixture has no revision authors");
+                rawPreview.Close(SaveChanges: 0);
+                var remote = b.CommitFile(bPath, "乙修改", "乙", basis);
+                b.PushRemote(true);
+                var state = a.FetchRemote(true);
+                Require(a.Head() == local && WordDocuments.FileChecksum(aPath) == aHash &&
+                    state.Ahead == 1 && state.Behind == 1, "Remote fetch altered the open draft");
+                Require((bool)aDoc.Saved && !(bool)aDoc.ReadOnly, "Remote fixture is dirty/read-only before comparison");
+                Console.WriteLine("Running native Word review for divergent remote branches…");
+                dynamic review = word.ReviewBranchesExtracted(a, basis, local, remote, "main", "origin/main", true);
+                var items = WordDocuments.ReviewItems((object)review);
+                Require((bool)aDoc.Saved, "Native comparison marked the original draft as unsaved");
+                Require(items.Any(item => item.IsComment && item.Author == rawCommentAuthor) &&
+                    items.Any(item => !item.IsComment && rawAuthors.Contains(item.Author)), "Remote review lost original contributor metadata");
+                review.AcceptAllRevisions();
+                Require(((string)review.Content.Text).Contains("作者甲新增的试验结果") &&
+                    ((string)review.Content.Text).Contains("作者乙补充了试验条件") &&
+                    (int)review.Tables.Count == 1 && (int)review.InlineShapes.Count == 1 &&
+                    ((string)review.Sections[1].Headers[1].Range.Text).Contains("远程协作页眉") &&
+                    Math.Abs((float)review.PageSetup.TopMargin - 55f) < 0.1f, "Remote merge lost edits or layout objects");
+                var mergedFile = Path.Combine(root, "远程确认结果.docx");
+                review.SaveAs2(FileName: mergedFile, FileFormat: 16, AddToRecentFiles: false);
+                var mergedHash = WordDocuments.FileChecksum(mergedFile);
+                string merged = null;
+                using (a.Lock())
+                    word.ReplaceWorkingCopy(aPath, aHash, mergedFile, mergedHash,
+                        () => merged = a.CommitFile(aPath, "确认远程修订", "甲", local, "main", state.RemoteReference, remote));
+                Require(a.History().Single(row => row.Id == merged).Parents.SequenceEqual(new[] { local, remote }) &&
+                    a.Extract(remote).SequenceEqual(rawRemote), "Remote merge lost either parent or raw peer revision");
+                a.PushRemote(true);
+                var peerState = b.FetchRemote(true);
+                var peerStaged = Path.Combine(root, "乙下载的合并版本.docx");
+                WordDocuments.ExtractToFile(b, merged, peerStaged);
+                bDoc = word.Open(bPath, false, false);
+                var peerHash = WordDocuments.FileChecksum(bPath);
+                using (b.Lock())
+                    word.ReplaceWorkingCopy(bPath, peerHash, peerStaged, mergedHash,
+                        () => b.FastForwardRemote("main", remote, peerState.RemoteReference, merged));
+                Require(b.Head() == merged && WordDocuments.FileChecksum(bPath) == mergedHash && server.Head() == merged,
+                    "Merged document did not round-trip through the remote");
+                bDoc = word.Current();
+                bDoc.TrackRevisions = false;
+                bDoc.Range(0,0).InsertBefore("乙下一轮更新\r");
+                WordDocuments.SaveDocument(bDoc);
+                var next = b.CommitFile(bPath, "乙下一轮", "乙", merged);
+                b.PushRemote(true);
+                state = a.FetchRemote(true);
+                var staged = Path.Combine(root, "甲下载的下一轮.docx");
+                WordDocuments.ExtractToFile(a, next, staged);
+                var nextHash = WordDocuments.FileChecksum(staged);
+                aDoc = word.Open(aPath, false, false);
+                aDoc.TrackRevisions = false;
+                aDoc.Range(0,0).InsertBefore("甲未保存的修改\r");
+                var refused = false;
+                try {
+                    using (a.Lock())
+                        word.ReplaceWorkingCopy(aPath, mergedHash, staged, nextHash,
+                            () => a.FastForwardRemote("main", merged, state.RemoteReference, next));
+                } catch (InvalidOperationException) { refused = true; }
+                Require(refused && a.Head() == merged && WordDocuments.FileChecksum(aPath) == mergedHash &&
+                    ((string)aDoc.Content.Text).Contains("甲未保存的修改"), "Pull overwrote unsaved Word edits");
+                aDoc.Close(SaveChanges: 0);
+                aDoc = word.Open(aPath, false, false);
+                using (a.Lock())
+                    word.ReplaceWorkingCopy(aPath, mergedHash, staged, nextHash,
+                        () => a.FastForwardRemote("main", merged, state.RemoteReference, next));
+                Require(a.Head() == next && WordDocuments.FileChecksum(aPath) == nextHash &&
+                    a.Extract(remote).SequenceEqual(rawRemote), "Clean remote pull lost history or document bytes");
+                Console.WriteLine("PASS: real Word two-client clone/fetch/native revision merge/two-parent commit/push/pull, contributor metadata, layout objects and unsaved-edit protection.");
+            }
+            finally { application.UserName = originalName; }
+        }
+
+        private static void VerifyImportedReview(dynamic application, WordDocuments word, string root)
+        {
+            var userName = (string)application.UserName;
+            try
+            {
+                var path = Path.Combine(root, "返稿导入-主稿.docx");
+                dynamic source = application.Documents.Add();
+                source.RemovePersonalInformation = false;
+                source.Content.Text = "送审标题\r原始试验说明\r应删除的旧描述\r";
+                source.Sections[1].Headers[1].Range.Text = "送审页眉";
+                source.PageSetup.TopMargin = 55f;
+                dynamic end = source.Range(source.Content.End - 1, source.Content.End - 1);
+                dynamic table = source.Tables.Add(end, 2, 2);
+                table.Cell(1, 1).Range.Text = "龄期";
+                table.Cell(1, 2).Range.Text = "试件";
+                var picture = Path.Combine(root, "返稿导入-图片.png");
+                using (var bitmap = new System.Drawing.Bitmap(24, 24))
+                { bitmap.SetPixel(10, 10, System.Drawing.Color.Red); bitmap.Save(picture, System.Drawing.Imaging.ImageFormat.Png); }
+                source.InlineShapes.AddPicture(FileName: picture, LinkToFile: false, SaveWithDocument: true,
+                    Range: source.Range(0, 0));
+                source.SaveAs2(FileName: path, FileFormat: 16, AddToRecentFiles: false);
+                var repository = new GitHistory(path, root);
+                var basis = repository.CommitFile(path, "送审 A", "作者", null);
+                source.TrackRevisions = false;
+                source.Range(0, 0).InsertBefore("我在送审后新增的试验结果\r");
+                WordDocuments.SaveDocument(source);
+                var target = repository.CommitFile(path, "继续修改 B", "作者", basis);
+                var targetHash = WordDocuments.FileChecksum(path);
+                application.UserName = "导师甲";
+                var commentsPath = Path.Combine(root, "只有批注的老师返稿.docx");
+                WordDocuments.ExtractToFile(repository, basis, commentsPath);
+                dynamic comments = word.Open(commentsPath, false, false);
+                comments.Comments.Add(comments.Range(0, 2), "仅批注：请补充统计方法");
+                WordDocuments.SaveDocument(comments);
+                comments.Close(SaveChanges: 0);
+                var commentsId = repository.ImportReviewFile(commentsPath, basis, "review/仅批注", "导师甲", "main", target);
+                dynamic commentsMerge = word.ReviewBranchesExtracted(repository, basis, target, commentsId);
+                commentsMerge.AcceptAllRevisions();
+                Require(((string)commentsMerge.Content.Text).Contains("我在送审后新增的试验结果") &&
+                    WordDocuments.Comments((object)commentsMerge).Any(item => item.Text.Contains("仅批注")),
+                    "Comment-only review lost current edits or teacher comments");
+                commentsMerge.Close(SaveChanges: 0);
+
+                var teacherPath = Path.Combine(root, "有批注和修订的老师返稿.docx");
+                WordDocuments.ExtractToFile(repository, basis, teacherPath);
+                dynamic teacher = word.Open(teacherPath, false, false);
+                teacher.RemovePersonalInformation = false;
+                teacher.TrackRevisions = true;
+                dynamic replacement = teacher.Content.Duplicate;
+                Require((bool)replacement.Find.Execute(FindText: "原始试验说明"), "Missing teacher edit anchor");
+                replacement.Text = "老师修改后的试验说明";
+                dynamic deletion = teacher.Content.Duplicate;
+                Require((bool)deletion.Find.Execute(FindText: "应删除的旧描述"), "Missing teacher deletion anchor");
+                deletion.Delete();
+                dynamic teacherComment = teacher.Comments.Add(teacher.Range(0, 2), "请核对这个试验结论");
+                teacherComment.Author = "导师甲";
+                WordDocuments.SaveDocument(teacher);
+                Require((int)teacher.Revisions.Count > 0, "Teacher revision fixture has no tracked changes");
+                teacher.Close(SaveChanges: 0);
+                var raw = WordDocuments.ReadDocx(teacherPath);
+                dynamic sourcePreview = word.Open(teacherPath, true, false);
+                var originalComment = WordDocuments.Comments((object)sourcePreview).Single(item => item.Text.Contains("核对"));
+                var originalAuthors = WordDocuments.ReviewItems((object)sourcePreview).Where(item => !item.IsComment).Select(item => item.Author).Distinct().ToArray();
+                var originalRevisionCount = (int)sourcePreview.Revisions.Count;
+                Require(originalRevisionCount > 0 && originalAuthors.Length > 0, "Saved teacher file lost its fixture revisions");
+                sourcePreview.Close(SaveChanges: 0);
+                string imported;
+                using (repository.Lock())
+                    imported = repository.ImportReviewFile(teacherPath, basis, "review/导师一审", "导师甲", "main", target);
+                Require(repository.Head() == target && WordDocuments.FileChecksum(path) == targetHash &&
+                    repository.History().Single(row => row.Id == imported).Parents.SequenceEqual(new[] { basis }),
+                    "Import changed the active branch or submission ancestry");
+                Require(repository.Extract(imported).SequenceEqual(raw), "Imported DOCX is not byte-exact");
+                var previewPath = Path.Combine(root, "原始返稿预览.docx");
+                WordDocuments.ExtractToFile(repository, imported, previewPath);
+                dynamic preview = word.Open(previewPath, true, false);
+                Require((int)preview.Revisions.Count > 0 && WordDocuments.Comments((object)preview).Any(item =>
+                    item.Author == originalComment.Author && item.Text.Contains("核对")), "Preview lost teacher review metadata");
+                preview.Close(SaveChanges: 0);
+                Console.WriteLine("Running native review for imported teacher branch…");
+                dynamic resolved = word.ReviewBranchesExtracted(repository, basis, target, imported, "main", "review/导师一审");
+                var items = WordDocuments.ReviewItems((object)resolved);
+                Require(items.Any(item => !item.IsComment && originalAuthors.Contains(item.Author)) &&
+                    items.Any(item => item.IsComment && item.Author == originalComment.Author && item.Text.Contains("核对")),
+                    "Native review lost original comment or revision authors");
+                var reject = items.FirstOrDefault(item => !item.IsComment && item.RevisionType == 2 &&
+                    item.RangeText.Contains("应删除的旧描述"));
+                Require(reject != null, "Native merge lost the reviewable deletion");
+                word.ResolveReviewItem((object)resolved, reject, false);
+                resolved.AcceptAllRevisions();
+                var body = (string)resolved.Content.Text;
+                Require(body.Contains("我在送审后新增的试验结果") && body.Contains("老师修改后的试验说明") &&
+                    body.Contains("应删除的旧描述"), "Accept/reject did not retain both sides and the rejected deletion");
+                Require((int)resolved.Tables.Count == 1 && (int)resolved.InlineShapes.Count == 1 &&
+                    ((string)resolved.Sections[1].Headers[1].Range.Text).Contains("送审页眉") &&
+                    Math.Abs((float)resolved.PageSetup.TopMargin - 55f) < 0.1f, "Imported review merge changed layout objects");
+                var mergedPath = Path.Combine(root, "返稿导入-确认结果.docx");
+                resolved.SaveAs2(FileName: mergedPath, FileFormat: 16, AddToRecentFiles: false);
+                var mergedHash = WordDocuments.FileChecksum(mergedPath);
+                string merged = null;
+                using (repository.Lock())
+                    word.ReplaceWorkingCopy(path, targetHash, mergedPath, mergedHash,
+                        () => merged = repository.CommitFile(path, "确认老师一审", "作者", target,
+                            "main", "review/导师一审", imported));
+                Require(repository.Head() == merged && repository.History().Single(row => row.Id == merged).Parents.SequenceEqual(new[] { target, imported }) &&
+                    WordDocuments.FileChecksum(path) == mergedHash, "Imported review did not create a two-parent merge");
+                repository.Repack();
+                Require(repository.Extract(imported).SequenceEqual(raw) && WordDocuments.ReadDocx(teacherPath).SequenceEqual(raw),
+                    "Review source or its commit changed after merging/repacking");
+                Console.WriteLine("PASS: imported raw teacher DOCX, comments-only review, original authors and revisions, native accept/reject, current edits, image/table/header/margin and traceable merge.");
+            }
+            finally { application.UserName = userName; }
         }
 
         private static void VerifyRevisionActions(object value, WordDocuments word, string root)

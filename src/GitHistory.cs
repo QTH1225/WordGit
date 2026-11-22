@@ -29,7 +29,7 @@ namespace WordGit
         }
     }
 
-    internal sealed class GitHistory
+    internal sealed partial class GitHistory
     {
         private const string FileName = "document.docx";
         private const string Heads = "refs/heads/";
@@ -95,7 +95,7 @@ namespace WordGit
         public string BranchTip(string branch)
         {
             if (!File.Exists(Path.Combine(root, "HEAD"))) return null;
-            var result = Invoke(null, null, "rev-parse", "--verify", "-q", BranchRef(branch));
+            var result = Invoke(null, null, "rev-parse", "--verify", "-q", HistoryReference(branch));
             if (result.Code == 1) return null;
             return Id(Text(result));
         }
@@ -118,6 +118,45 @@ namespace WordGit
             revision = Id(revision);
             Extract(revision);
             Run(null, null, "update-ref", reference, revision, new string('0', revision.Length));
+        }
+
+        public string ImportReviewFile(string path, string basis, string newBranch, string reviewer,
+            string targetBranch, string expectedTarget)
+        {
+            if (String.IsNullOrWhiteSpace(reviewer) || reviewer.IndexOf('\0') >= 0)
+                throw new ArgumentException("请填写返稿来源。");
+            EnsureRepository();
+            var reference = BranchRef(newBranch);
+            Run(null, null, "check-ref-format", reference);
+            if (Branches().Any(branch => String.Equals(branch, newBranch, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("同名分支已存在，请换一个返稿分支名。");
+            basis = Id(basis);
+            if (expectedTarget == null || ActiveBranch() != targetBranch || BranchTip(targetBranch) != expectedTarget)
+                throw new InvalidOperationException("当前分支或提交已变化，请刷新后重新导入。");
+            ExtractTo(basis, Stream.Null);
+            WordDocuments.ValidateDocx(path);
+            var prepared = PrepareSnapshotFile(path);
+            if (ActiveBranch() != targetBranch || BranchTip(targetBranch) != expectedTarget)
+                throw new InvalidOperationException("导入期间当前分支已变化，返稿分支尚未创建，请重新导入。");
+            var identity = Regex.Replace(reviewer, @"[<>\x00-\x1f]", "").Trim();
+            if (identity.Length == 0) throw new ArgumentException("请填写有效的返稿来源。");
+            var message = "导入审阅稿：" + Path.GetFileName(path) + "\n\nWordGit-Review-Base: " + basis +
+                "\nWordGit-Review-SHA256: " + prepared.Checksum + "\n";
+            var commit = Id(Text(Run(Utf8.GetBytes(message), identity, "commit-tree", prepared.Tree, "-p", basis, "-F", "-")));
+            RefTransaction(identity, "create " + reference + " " + commit,
+                "verify " + BranchRef(targetBranch) + " " + Id(expectedTarget));
+            if (commitCreated != null) commitCreated(root);
+            return commit;
+        }
+
+        internal string ImportedReviewBase(string revision)
+        {
+            var text = Text(Run(null, null, "show", "-s", "--format=%P%n%B", Id(revision)));
+            var lines = text.Split('\n');
+            var marker = lines.Where(line => line.StartsWith("WordGit-Review-Base: ", StringComparison.Ordinal)).ToArray();
+            if (marker.Length != 1) return null;
+            var parent = marker[0].Substring("WordGit-Review-Base: ".Length).Trim();
+            return Regex.IsMatch(parent, @"\A(?:[a-f0-9]{40}|[a-f0-9]{64})\z") && lines[0].Trim() == parent ? parent : null;
         }
 
         public void Switch(string from, string oldTip, string to, string newTip)
@@ -252,7 +291,7 @@ namespace WordGit
         public List<Revision> History(string branch = null)
         {
             if (!File.Exists(Path.Combine(root, "HEAD"))) return new List<Revision>();
-            var raw = Text(Run(null, null, "log", branch == null ? "--all" : BranchRef(branch), "--topo-order",
+            var raw = Text(Run(null, null, "log", branch == null ? "--all" : HistoryReference(branch), "--topo-order",
                 "--decorate=full", "-z", "--format=%H%x00%P%x00%aI%x00%an%x00%D%x00%s%x00%B", "--"));
             if (raw.Length == 0) return new List<Revision>();
             var fields = (raw.EndsWith("\0", StringComparison.Ordinal) ? raw.Substring(0, raw.Length - 1) : raw).Split('\0');
@@ -265,6 +304,7 @@ namespace WordGit
                     Date = DateTimeOffset.Parse(fields[index + 2], System.Globalization.CultureInfo.InvariantCulture),
                     Author = fields[index + 3],
                     References = fields[index + 4].Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries)
+                        .Where(reference => !reference.StartsWith("refs/wordgit/", StringComparison.Ordinal))
                         .Select(reference => reference.Replace("refs/heads/", "").Replace("refs/tags/", "").Replace("refs/remotes/", "")).ToArray(),
                     Subject = fields[index + 5],
                     Message = fields[index + 6].TrimEnd()
@@ -556,7 +596,7 @@ namespace WordGit
             var operations = new List<string> {
                 "update " + reference + " " + commit + " " + (expectedHead ?? new string('0', commit.Length))
             };
-            if (sourceBranch != null) operations.Add("verify " + BranchRef(sourceBranch) + " " + Id(sourceTip));
+            if (sourceBranch != null) operations.Add("verify " + HistoryReference(sourceBranch) + " " + Id(sourceTip));
             RefTransaction(identity, operations.ToArray());
             if (commitCreated != null) commitCreated(root);
             return commit;

@@ -7,7 +7,7 @@ if (-not (Test-Path -LiteralPath $compiler)) { throw '需要 Windows .NET Framew
 $bin = Join-Path $PSScriptRoot 'bin'
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
 $sources = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'src') -Filter '*.cs' | Select-Object -ExpandProperty FullName)
-$references = @('System.Windows.Forms.dll','System.Drawing.dll','System.IO.Compression.dll','Microsoft.CSharp.dll')
+$references = @('System.Windows.Forms.dll','System.Drawing.dll','System.IO.Compression.dll','Microsoft.CSharp.dll','System.Net.Http.dll','System.Web.Extensions.dll')
 $options = @('/nologo','/codepage:65001','/langversion:5','/optimize+') + @($references | ForEach-Object { "/reference:$_" })
 & $compiler @options /target:library "/out:$bin\WordGit.dll" @sources
 if ($LASTEXITCODE -ne 0) { throw '插件构建失败。' }
@@ -18,6 +18,14 @@ if ($Test) {
     if ($LASTEXITCODE -ne 0) { throw '测试构建失败。' }
     & "$bin\WordGit.Smoke.exe"
     if ($LASTEXITCODE -ne 0) { throw '测试失败。' }
+    & $compiler @options /target:exe "/out:$bin\WordGit.UpdatesSmoke.exe" @sources (Join-Path $PSScriptRoot 'tests\UpdatesSmoke.cs')
+    if ($LASTEXITCODE -ne 0) { throw '更新检查测试构建失败。' }
+    & "$bin\WordGit.UpdatesSmoke.exe"
+    if ($LASTEXITCODE -ne 0) { throw '更新检查测试失败。' }
+    & $compiler @options /target:exe "/out:$bin\WordGit.RemoteSmoke.exe" @sources (Join-Path $PSScriptRoot 'tests\RemoteSmoke.cs')
+    if ($LASTEXITCODE -ne 0) { throw '远程同步测试构建失败。' }
+    & "$bin\WordGit.RemoteSmoke.exe"
+    if ($LASTEXITCODE -ne 0) { throw '远程同步测试失败。' }
 }
 if ($WordTest) {
     $testSource = Join-Path $PSScriptRoot 'tests\WordSmoke.cs'

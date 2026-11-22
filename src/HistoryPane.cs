@@ -18,6 +18,7 @@ namespace WordGit
         public Action<DocumentReviewItem> NavigateReviewItem;
         public Func<DocumentReviewItem, bool, bool> ResolveReviewItem;
         public bool CanResolveRevisions;
+        public RemoteState Remote;
     }
 
     [ComVisible(true), Guid("F55EC3C1-B725-4ED8-9CA6-ED51D07C3361"), ProgId(HistoryPane.ProgId)]
@@ -34,6 +35,12 @@ namespace WordGit
         private readonly Button compareLatest = DialogLayout.Button("对比最新提交");
         private readonly Timer workingTimer = new Timer { Interval = 1200 };
         private readonly Button commit = DialogLayout.Button("提交版本");
+        private readonly Button importReview = DialogLayout.Button("导入返稿");
+        private readonly Label remoteStatus = new Label { AutoSize = false, Dock = DockStyle.Fill, AutoEllipsis = true, AccessibleName = "远程同步状态" };
+        private readonly Button linkRemote = DialogLayout.Button("关联");
+        private readonly Button fetchRemote = DialogLayout.Button("获取");
+        private readonly Button pullRemote = DialogLayout.Button("拉取");
+        private readonly Button pushRemote = DialogLayout.Button("推送");
         private readonly Button preview = DialogLayout.Button("预览");
         private readonly Button compare = DialogLayout.Button("对比当前稿");
         private readonly ToolTip hints = new ToolTip();
@@ -82,6 +89,19 @@ namespace WordGit
             var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal,
                 Size = Size, SplitterDistance = 240, SplitterWidth = 6, Panel1MinSize = 120, Panel2MinSize = 280 };
             Controls.Add(split);
+            var information = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Padding = new Padding(10, 4, 4, 4) };
+            var about = new LinkLabel { Text = "WordGit " + AppInfo.DisplayVersion + " · " + AppInfo.Author,
+                AutoSize = true, AccessibleName = "WordGit 版本与作者", Margin = new Padding(0, 0, 14, 2) };
+            var updates = new LinkLabel { Text = "检查更新", AutoSize = true,
+                AccessibleName = "检查 WordGit 更新", Margin = new Padding(0, 0, 0, 2) };
+            about.LinkClicked += (sender, args) => AboutDialog.ShowWindow(FindForm(), false);
+            updates.LinkClicked += (sender, args) => AboutDialog.ShowWindow(FindForm(), true);
+            hints.SetToolTip(about, "查看版本、作者和项目链接。");
+            hints.SetToolTip(updates, "查询 GitHub 正式发布版本。");
+            information.Controls.Add(about);
+            information.Controls.Add(updates);
+            Controls.Add(information);
             var commentLayout = DialogLayout.Stack(3);
             commentLayout.Padding = new Padding(10, 8, 10, 2);
             commentLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -125,8 +145,13 @@ namespace WordGit
             hints.SetToolTip(acceptRevision, "接受选中的修订，并定位下一条。");
             hints.SetToolTip(rejectRevision, "拒绝选中的修订，并定位下一条。");
             split.Panel1.Controls.Add(commentLayout);
-            var layout = DialogLayout.Stack(7);
+            var layout = DialogLayout.Stack(8);
             layout.Padding = new Padding(10);
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.Margin = new Padding(0);
+            layout.MinimumSize = new Size(0, 450);
+            split.Panel2.AutoScroll = true;
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -141,23 +166,27 @@ namespace WordGit
             header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             branch.Font = new Font(Font, FontStyle.Bold);
-            branch.Height = Font.Height + 10;
+            branch.Height = Font.Height + 16;
             branch.Margin = new Padding(0, 0, 6, 0);
             var refresh = DialogLayout.Button("刷新");
-            refresh.Margin = new Padding(0, 0, 0, 2);
+            StylePaneButton(refresh);
+            refresh.Width = 64;
+            refresh.Margin = new Padding(0);
             refresh.Click += (sender, args) => Reload();
             header.Controls.Add(branch, 0, 0);
             header.Controls.Add(refresh, 1, 0);
             layout.Controls.Add(header, 0, 0);
             filename.Height = Font.Height + 6;
-            filename.Margin = new Padding(0, 2, 0, 6);
+            filename.Margin = new Padding(0, 4, 0, 8);
+            filename.TextAlign = ContentAlignment.MiddleLeft;
             layout.Controls.Add(filename, 0, 1);
 
             var workingRow = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Dock = DockStyle.Fill, ColumnCount = 2, Margin = new Padding(0, 0, 0, 6) };
-            workingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            workingRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            working.Height = Font.Height + 10;
+            workingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            workingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            working.Height = Font.Height + 16;
+            StylePaneButton(compareLatest);
             working.Margin = new Padding(0, 0, 6, 0);
             compareLatest.Margin = new Padding(0);
             compareLatest.Enabled = false;
@@ -172,9 +201,41 @@ namespace WordGit
                 UpdateWorkingState();
                 if (++commentPoll % 4 == 0) ReloadComments();
             };
+            var remoteFrame = new GroupBox { Text = "远程协作", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Fill, Margin = new Padding(0, 2, 0, 8), Padding = new Padding(8, 6, 8, 8) };
+            var remotePanel = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top, ColumnCount = 1, RowCount = 2, Margin = new Padding(0) };
+            remotePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            remotePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            remotePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            remoteStatus.Height = Font.Height + 8;
+            remoteStatus.TextAlign = ContentAlignment.MiddleLeft;
+            remoteStatus.Margin = new Padding(0, 0, 0, 6);
+            remotePanel.Controls.Add(remoteStatus, 0, 0);
+            var syncControls = new[] { linkRemote, fetchRemote, pullRemote, pushRemote };
+            var syncButtons = ButtonGrid(4, syncControls);
+            var syncActions = new[] { HistoryAction.LinkRemote, HistoryAction.FetchRemote, HistoryAction.PullRemote, HistoryAction.PushRemote };
+            for (var i = 0; i < syncControls.Length; i++)
+            {
+                var action = syncActions[i];
+                syncControls[i].Enabled = false;
+                syncControls[i].Click += (sender, args) => openVersion(DocumentPath, action, null, null);
+            }
+            remotePanel.Controls.Add(syncButtons, 0, 1);
+            remoteFrame.Controls.Add(remotePanel);
+            layout.Controls.Add(remoteFrame, 0, 3);
+            hints.SetToolTip(fetchRemote, "下载远程历史，不覆盖当前稿。");
+            hints.SetToolTip(pullRemote, "拉取新版本；双方有修改时生成 Word 修订合并稿。");
+            hints.SetToolTip(pushRemote, "推送当前分支的已提交版本。");
+            filter.FormattingEnabled = true;
+            filter.Format += (sender, args) => {
+                var reference = args.ListItem as string;
+                if (reference != null && reference.StartsWith(GitHistory.RemotePrefix, StringComparison.Ordinal))
+                    args.Value = "远程 " + GitHistory.ReferenceLabel(reference);
+            };
             filter.Margin = new Padding(0);
             filter.SelectedIndexChanged += (sender, args) => { if (!updating && data != null) LoadGraph(null); };
-            layout.Controls.Add(filter, 0, 3);
+            layout.Controls.Add(filter, 0, 4);
 
             graph.RowTemplate.Height = 3 * Font.Height + 21;
             graph.Columns.Add(new DataGridViewTextBoxColumn { Width = 42, MinimumWidth = 28, SortMode = DataGridViewColumnSortMode.NotSortable });
@@ -197,25 +258,56 @@ namespace WordGit
             graph.CellPainting += PaintRow;
             graph.SelectionChanged += (sender, args) => { if (!updating) ShowSelection(); };
             graph.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0 && preview.Enabled) OpenSelected(false); };
-            layout.Controls.Add(graph, 0, 5);
+            layout.Controls.Add(graph, 0, 6);
 
             status.MaximumSize = new Size(255, 0);
-            layout.Controls.Add(status, 0, 6);
-            var actions = DialogLayout.Buttons(false);
-            actions.WrapContents = true;
+            layout.Controls.Add(status, 0, 7);
+            var actions = ButtonGrid(2, commit, importReview, preview, compare);
             actions.Margin = new Padding(0, 8, 0, 0);
             preview.Click += (sender, args) => OpenSelected(false);
             compare.Click += (sender, args) => OpenSelected(true);
             commit.Enabled = false;
             commit.Click += (sender, args) => openVersion(DocumentPath, HistoryAction.Commit, null, null);
-            actions.Controls.Add(commit);
-            actions.Controls.Add(preview);
-            actions.Controls.Add(compare);
-            layout.Controls.Add(actions, 0, 4);
+            importReview.Enabled = false;
+            importReview.Click += (sender, args) => openVersion(DocumentPath, HistoryAction.ImportReview, null, null);
+            layout.Controls.Add(actions, 0, 5);
             hints.SetToolTip(commit, "保存当前文档，并提交到当前分支。");
+            hints.SetToolTip(importReview, "选择送审版本和老师返稿，创建可追溯的返稿分支。");
             hints.SetToolTip(preview, "双击提交也可在 Word 中只读打开。");
             hints.SetToolTip(compare, "按 Ctrl 可选择两个历史版本。");
             ShowSelection();
+        }
+
+        private void StylePaneButton(Button button)
+        {
+            var height = Font.Height + 16;
+            button.AutoSize = false;
+            button.MinimumSize = new Size(0, height);
+            button.Size = new Size(1, height);
+            button.Dock = DockStyle.Fill;
+            button.Padding = new Padding(3, 0, 3, 0);
+            button.TextAlign = ContentAlignment.MiddleCenter;
+            button.AutoEllipsis = true;
+            button.UseVisualStyleBackColor = true;
+        }
+
+        private TableLayoutPanel ButtonGrid(int columns, params Button[] buttons)
+        {
+            var rows = (buttons.Length + columns - 1) / columns;
+            var grid = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Fill, ColumnCount = columns, RowCount = rows, Margin = new Padding(0) };
+            for (var column = 0; column < columns; column++)
+                grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / columns));
+            for (var row = 0; row < rows; row++)
+                grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            for (var i = 0; i < buttons.Length; i++)
+            {
+                StylePaneButton(buttons[i]);
+                buttons[i].Margin = new Padding(0, 0, i % columns == columns - 1 ? 0 : 6,
+                    i / columns == rows - 1 ? 0 : 6);
+                grid.Controls.Add(buttons[i], i % columns, i / columns);
+            }
+            return grid;
         }
 
         internal void Bind(Func<HistoryPaneData> load, Action<string, HistoryAction, string, string> openVersion)
@@ -266,7 +358,15 @@ namespace WordGit
                 hints.SetToolTip(status, error.Message);
             }
             commit.Enabled = data != null;
+            importReview.Enabled = data != null && data.Head != null && String.Equals(data.DocumentPath, data.HistoryPath, StringComparison.OrdinalIgnoreCase);
             compareLatest.Enabled = data != null && data.Head != null;
+            var original = data != null && String.Equals(data.DocumentPath, data.HistoryPath, StringComparison.OrdinalIgnoreCase);
+            remoteStatus.Text = data == null || data.Remote == null ? "尚未关联 GitHub 仓库" : data.Remote.Caption;
+            hints.SetToolTip(remoteStatus, data == null || data.Remote == null ? "" : (data.Remote.Url ?? "") + Environment.NewLine + "同步数量以最近一次获取为准。");
+            linkRemote.Enabled = original;
+            fetchRemote.Enabled = original && data.Remote != null && data.Remote.Linked;
+            pullRemote.Enabled = fetchRemote.Enabled && data.Head != null;
+            pushRemote.Enabled = pullRemote.Enabled;
             UpdateWorkingState();
             ReloadComments();
         }

@@ -106,6 +106,7 @@ namespace WordGit
                 VerifyLegacyFormats(root);
                 VerifyCompression(root);
                 VerifyStreaming(root);
+                VerifyReviewImport(root);
                 Console.WriteLine("PASS: Git history, exact DOCX restoration, branches, merge, working-copy state and lossless history compression.");
             }
             finally { try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
@@ -223,6 +224,56 @@ namespace WordGit
                 bigRepo.ExtractTo(bigCommit, output);
             Require(File.ReadAllBytes(bigOut).SequenceEqual(bigBytes), "Large document changed through streaming roundtrip");
             Console.WriteLine("PASS: streaming plan, file commit, streamed extract, change detection and corruption rejection.");
+        }
+
+        private static void VerifyReviewImport(string root)
+        {
+            var path = Path.Combine(root, "导入测试-当前稿.docx");
+            var returned = Path.Combine(root, "导入测试-老师原始返稿.docx");
+            var original = Fixture("送审版本");
+            var current = Fixture("我在送审后继续修改");
+            var incoming = Fixture("老师批注与修订的原始部件");
+            File.WriteAllBytes(path, original);
+            File.WriteAllBytes(returned, incoming);
+            var repo = new GitHistory(path, root);
+            var basis = repo.CommitFile(path, "送审版本", "作者", null);
+            File.WriteAllBytes(path, current);
+            var target = repo.CommitFile(path, "继续修改", "作者", basis);
+            string imported;
+            using (repo.Lock()) imported = repo.ImportReviewFile(returned, basis, "review/一审", "导师甲", "main", target);
+            var row = repo.History().Single(item => item.Id == imported);
+            Require(repo.Head() == target && repo.ActiveBranch() == "main" && File.ReadAllBytes(path).SequenceEqual(current),
+                "Review import changed the working copy or HEAD");
+            Require(row.Parents.SequenceEqual(new[] { basis }) && row.Author == "导师甲" &&
+                repo.ImportedReviewBase(imported) == basis && repo.MergeBase(target, imported) == basis,
+                "Imported review lost its submission basis or author");
+            Require(repo.Extract(imported).SequenceEqual(incoming) && File.ReadAllBytes(returned).SequenceEqual(incoming),
+                "Review import changed original DOCX bytes");
+            foreach (var branch in new[] { "REVIEW/一审", "bad branch", "../bad", "review/一审/nested" })
+            {
+                var refused = false;
+                try { repo.ImportReviewFile(returned, basis, branch, "导师甲", "main", target); }
+                catch (Exception) { refused = true; }
+                Require(refused && repo.Head() == target && repo.Branches().Length == 2, "Invalid import published a branch");
+            }
+            var stale = false;
+            try { repo.ImportReviewFile(returned, basis, "review/过期", "导师甲", "main", basis); }
+            catch (InvalidOperationException) { stale = true; }
+            Require(stale && repo.BranchTip("review/过期") == null, "Stale HEAD imported a review");
+            var invalid = Path.Combine(root, "损坏返稿.docx");
+            File.WriteAllText(invalid, "not a docx");
+            var corrupt = false;
+            try { repo.ImportReviewFile(invalid, basis, "review/损坏", "导师甲", "main", target); }
+            catch (InvalidDataException) { corrupt = true; }
+            Require(corrupt && repo.BranchTip("review/损坏") == null && repo.Head() == target, "Corrupt review was published");
+            var merge = repo.Commit(Fixture("审阅确认后的合并结果"), "确认老师返稿", "作者",
+                target, "main", "review/一审", imported);
+            Require(repo.History().Single(item => item.Id == merge).Parents.SequenceEqual(new[] { target, imported }),
+                "Review merge lost one parent");
+            repo.Repack();
+            Require(repo.Extract(imported).SequenceEqual(incoming) && repo.Extract(basis).SequenceEqual(original) &&
+                repo.Extract(target).SequenceEqual(current), "Review history changed after repack");
+            Console.WriteLine("PASS: exact external review import, submission ancestry, unchanged HEAD/work copy, failed-import isolation and two-parent merge.");
         }
 
         private static void VerifyCompression(string root)

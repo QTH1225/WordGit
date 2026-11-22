@@ -12,7 +12,7 @@ $dist = Join-Path $PSScriptRoot 'dist'
 New-Item -ItemType Directory -Path $package,$dist -Force | Out-Null
 try {
     $allowlist = @('bin/WordGit.dll','install.ps1','Install.cmd','Uninstall.cmd','Check.cmd','README.md',
-        'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md')
+        'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','LICENSE')
     $files = @()
     $number = 0
     foreach ($name in $allowlist) {

@@ -14,7 +14,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test -UiTes
 
 输出插件 DLL 到 bin/WordGit.dll。脚本调用系统 .NET Framework 编译器，不下载 NuGet 依赖。
 
-Word 原生功能测试会新建独立会话和测试文档：
+Word 原生功能测试会新建独立会话和测试文档（包含双客户端远程协作场景）：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -WordTest
@@ -49,7 +49,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\package.ps1 -Test
 - WordGit-版本-windows.zip：含相同安装程序、脚本、文档与预编译 DLL。
 - SHA256SUMS.txt：EXE 和 ZIP 的 SHA-256。
 
--Test 验证核心历史、混合存储格式、界面、内嵌资源、Windows PowerShell 5.1、安装与升级的数据保留及卸载。安装测试使用隔离目录和临时注册表子项，不卸载当前用户正在使用的插件。
+-Test 验证核心历史、混合存储格式、双客户端本地远程同步、界面、内嵌资源、Windows PowerShell 5.1、安装与升级的数据保留及卸载。Git for Windows 的远程辅助进程需要正常 Windows 进程权限，受限沙箱可能阻止运行。安装测试使用隔离目录和临时注册表子项，不卸载当前用户正在使用的插件。
 
 ## 存储与注册
 

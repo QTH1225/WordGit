@@ -7,7 +7,7 @@ using System.Windows.Forms;
 
 namespace WordGit
 {
-    internal enum HistoryAction { Compare, Export, Restore, Merge, Preview, CreateBranch, SwitchBranch, MergeBranch, DeleteBranch, CompareLatest, Commit }
+    internal enum HistoryAction { Compare, Export, Restore, Merge, Preview, CreateBranch, SwitchBranch, MergeBranch, DeleteBranch, CompareLatest, Commit, ImportReview, LinkRemote, FetchRemote, PullRemote, PushRemote }
 
     internal static class DialogLayout
     {
@@ -119,15 +119,16 @@ namespace WordGit
             if (allowRestore) AddVersionAction(actions, "恢复为当前稿", HistoryAction.Restore, command);
             AddVersionAction(actions, "合并审阅稿", HistoryAction.Merge, command);
             if (command == HistoryAction.CreateBranch) AddVersionAction(actions, "新建分支", HistoryAction.CreateBranch, command);
+            if (command == HistoryAction.ImportReview) AddVersionAction(actions, "选择送审版本", HistoryAction.ImportReview, command);
             var close = DialogLayout.Button(command.HasValue ? "取消" : "关闭");
             close.DialogResult = DialogResult.Cancel;
             actions.Controls.Add(close);
             CancelButton = close;
             history.SelectionChanged += (sender, args) => ShowSelection();
-            history.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0 && history.SelectedRows.Count == 1) Complete(HistoryAction.Preview); };
+            history.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0 && history.SelectedRows.Count == 1) Complete(command == HistoryAction.ImportReview ? HistoryAction.ImportReview : HistoryAction.Preview); };
             if (revisions.Count > 0)
             {
-                var preferred = command == HistoryAction.CreateBranch ? revisions.FindIndex(revision => revision.Id == head) : 0;
+                var preferred = command == HistoryAction.CreateBranch || command == HistoryAction.ImportReview ? revisions.FindIndex(revision => revision.Id == head) : 0;
                 var row = history.Rows[Math.Max(0, preferred)];
                 history.CurrentCell = row.Cells[1];
                 row.Selected = true;
@@ -156,6 +157,7 @@ namespace WordGit
                 case HistoryAction.Restore: return "选择要恢复为当前稿的版本。";
                 case HistoryAction.Merge: return "选一版作为基准后选择返稿，或按 Ctrl 选两个历史版本。";
                 case HistoryAction.CreateBranch: return "选择新分支的起始版本。";
+                case HistoryAction.ImportReview: return "选择当时发给老师的送审版本，作为返稿分支的父提交。";
                 default: return "单击查看详情，Ctrl 选两版对比；双击只读打开历史版本。";
             }
         }
@@ -387,10 +389,10 @@ namespace WordGit
 
         public static void ShowHistoryCompression(IWin32Window owner, string filename, Func<RepackResult> repack)
         {
-            ShowBackgroundOperation(owner, "压缩历史 · " + filename, async () =>
+            ShowBackgroundOperation(owner, "优化仓库存储 · " + filename, async () =>
             {
                 var result = await Task.Run(repack);
-                return "压缩完成。" + Environment.NewLine + "Git 对象占用  " +
+                return "存储优化完成。" + Environment.NewLine + "Git 对象占用  " +
                     FormatSize(result.BeforeBytes) + " → " + FormatSize(result.AfterBytes);
             });
         }

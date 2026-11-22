@@ -386,17 +386,19 @@ namespace WordGit
         private object ReviewStaged(string folder, string leftFile, string rightFile, bool merge, string author)
         {
             dynamic left = null, right = null;
+            var screenUpdating = (bool)word.ScreenUpdating;
+            word.ScreenUpdating = false;
             try
             {
                 left = Open(leftFile, false, false);
                 right = Open(rightFile, false, false);
-                if (!merge)
-                {
-                    left.TrackRevisions = false;
-                    right.TrackRevisions = false;
-                    left.AcceptAllRevisions();
-                    right.AcceptAllRevisions();
-                }
+                // Word can reject AcceptAllRevisions on an invisible, inactive document.
+                left.Windows[1].Visible = true;
+                left.Activate();
+                if (!merge) { left.TrackRevisions = false; left.AcceptAllRevisions(); }
+                right.Windows[1].Visible = true;
+                right.Activate();
+                if (!merge) { right.TrackRevisions = false; right.AcceptAllRevisions(); }
                 dynamic result;
                 if (merge)
                     result = word.MergeDocuments(OriginalDocument: left, RevisedDocument: right, Destination: 2,
@@ -414,6 +416,7 @@ namespace WordGit
             {
                 CloseReviewInput(right);
                 CloseReviewInput(left);
+                word.ScreenUpdating = screenUpdating;
                 TryRemove(leftFile);
                 TryRemove(rightFile);
                 try { Directory.Delete(folder); } catch (IOException) { } catch (UnauthorizedAccessException) { }
@@ -428,7 +431,7 @@ namespace WordGit
             return Review(targetChanges, sourceChanges, true);
         }
 
-        public object ReviewBranchesExtracted(GitHistory repo, string basisRevision, string targetRevision, string incomingRevision, string targetBranch = "当前分支", string sourceBranch = "来源分支")
+        public object ReviewBranchesExtracted(GitHistory repo, string basisRevision, string targetRevision, string incomingRevision, string targetBranch = "当前分支", string sourceBranch = "来源分支", bool preserveIncomingRevisions = false)
         {
             if (repo.SnapshotChecksum(basisRevision) == repo.SnapshotChecksum(targetRevision))
                 return ReviewFiles(repo, targetRevision, incomingRevision, true);
@@ -436,16 +439,18 @@ namespace WordGit
             var targetFile = Path.Combine(folder, "分支修订-当前.docx");
             var sourceFile = Path.Combine(folder, "分支修订-来源.docx");
             SaveBranchRevisionsToFile(repo, basisRevision, targetRevision, targetBranch, targetFile);
-            SaveBranchRevisionsToFile(repo, basisRevision, incomingRevision, sourceBranch, sourceFile);
+            SaveBranchRevisionsToFile(repo, basisRevision, incomingRevision, sourceBranch, sourceFile,
+                repo.ImportedReviewBase(incomingRevision) != null || preserveIncomingRevisions);
             return ReviewStaged(folder, targetFile, sourceFile, true, null);
         }
 
-        private void SaveBranchRevisionsToFile(GitHistory repo, string basisRevision, string versionRevision, string author, string outputPath)
+        private void SaveBranchRevisionsToFile(GitHistory repo, string basisRevision, string versionRevision, string author, string outputPath,
+            bool preserveRevisions = false)
         {
             object document = null;
             try
             {
-                document = ReviewFiles(repo, basisRevision, versionRevision, false, author);
+                document = ReviewFiles(repo, basisRevision, versionRevision, preserveRevisions, author);
                 ((dynamic)document).SaveAs2(FileName: outputPath, FileFormat: 16, AddToRecentFiles: false);
             }
             finally

@@ -56,6 +56,9 @@ namespace WordGit
                     Render(history, Path.Combine(args[0], "history-branch-min.png"));
                 }
                 VerifyRibbon();
+                VerifyRemoteUi(args[0], items);
+                VerifyImportReview(args[0], items);
+                VerifyAboutDialog(args[0]);
                 VerifyHistoryPane(args[0], items, one, three);
                 VerifyRevisionActions(args[0]);
                 using (var compare = new HistoryDialog("论文独创性声明.docx", items, true, one, command: HistoryAction.Compare))
@@ -168,6 +171,10 @@ namespace WordGit
                 commit.PerformClick();
                 if (!commit.Enabled || selected.Last() != "Commit::")
                     throw new InvalidOperationException("Pane commit must target its current document and branch");
+                var import = Descendants(pane).OfType<Button>().Single(button => button.Text == "导入返稿");
+                import.PerformClick();
+                if (!import.Enabled || selected.Last() != "ImportReview::")
+                    throw new InvalidOperationException("Pane review import did not target its document");
                 state = WorkingCopyState.Unsaved;
                 pane.UpdateWorkingState();
                 if (Descendants(pane).OfType<Label>().All(label => label.Text != "有未保存修改"))
@@ -278,13 +285,156 @@ namespace WordGit
             var tab = ribbon.GetElementsByTagName("tab").Cast<System.Xml.XmlElement>().Single();
             if (tab.GetAttribute("label") != "WordGit")
                 throw new InvalidOperationException("Unexpected WordGit tab label");
+            var groups = tab.ChildNodes.OfType<System.Xml.XmlElement>().Where(node => node.LocalName == "group").ToArray();
+            if (!groups.Select(group => group.GetAttribute("label")).SequenceEqual(new[] { "本地提交", "分支", "比较与审阅", "远程协作", "取回版本", "关于与更新" }))
+                throw new InvalidOperationException("Unexpected Ribbon group order");
+            if (groups.Any(group => group.ChildNodes.OfType<System.Xml.XmlElement>().Any(node => node.GetAttribute("onAction") == "OnCompressHistory")))
+                throw new InvalidOperationException("Storage optimization is exposed as a primary Ribbon button");
             var buttons = ribbon.GetElementsByTagName("button").Cast<System.Xml.XmlElement>().ToArray();
             var callbacks = buttons.Select(button => button.GetAttribute("onAction")).ToArray();
-            if (buttons.Length != 12 || callbacks.Distinct().Count() != 12 || !callbacks.Contains("OnDeleteBranch") ||
-                !buttons.Any(button => button.GetAttribute("label") == "压缩历史" && button.GetAttribute("onAction") == "OnCompressHistory") ||
+            if (buttons.Length != 19 || callbacks.Distinct().Count() != 19 || !callbacks.Contains("OnDeleteBranch") ||
+                !buttons.Any(button => button.GetAttribute("label").Replace('\u00A0', ' ') == "WordGit " + AppInfo.DisplayVersion && button.GetAttribute("onAction") == "OnAbout") ||
+                !callbacks.Contains("OnCheckUpdates") || !callbacks.Contains("OnImportReview") ||
+                new[] { "OnLinkRemote", "OnCloneRemote", "OnFetchRemote", "OnPullRemote", "OnPushRemote" }.Any(action => !callbacks.Contains(action)) ||
+                callbacks.Contains("OnCompressHistory") || ribbon.GetElementsByTagName("menu").Cast<System.Xml.XmlElement>().Any(menu => menu.GetAttribute("id") == "WordGitMaintenance") ||
                 buttons.Any(button => String.IsNullOrEmpty(button.GetAttribute("imageMso"))) ||
                 callbacks.Any(callback => typeof(IWordGitActions).GetMethod(callback) == null || typeof(Connect).GetMethod(callback) == null))
                 throw new InvalidOperationException("Missing Ribbon button, icon, or COM callback");
+        }
+
+        private static void VerifyRemoteUi(string output, List<Revision> items)
+        {
+            foreach (var clone in new[] { false, true })
+            using (var dialog = new RemoteDialog(clone, clone ? null : "https://github.com/owner/paper.git", "main"))
+            {
+                Render(dialog, Path.Combine(output, clone ? "remote-clone.png" : "remote-link.png"));
+                dialog.Url.Text = "https://github.com/owner/paper";
+                dialog.DocumentPath.Text = Path.Combine(output, "远程克隆的新稿件.docx");
+                dialog.Size = dialog.MinimumSize;
+                Render(dialog, Path.Combine(output, clone ? "remote-clone-min.png" : "remote-link-min.png"));
+                var note = Descendants(dialog).OfType<TextBox>().Single(box => box.Multiline);
+                if (note.Bottom > ((Button)dialog.AcceptButton).Parent.Top)
+                    throw new InvalidOperationException("Remote instructions overlap buttons");
+                dialog.Show();
+                ((Button)dialog.AcceptButton).PerformClick();
+                if (dialog.Options == null || dialog.Options.Url != "https://github.com/owner/paper.git" || dialog.Options.Branch != "main")
+                    throw new InvalidOperationException("Remote dialog lost connection options");
+            }
+            var actions = new List<HistoryAction>();
+            string lastFilter = null;
+            var data = new HistoryPaneData {
+                DocumentPath = @"C:\test\当前稿.docx", HistoryPath = @"C:\test\当前稿.docx", Branch = "main", Head = items[0].Id,
+                Branches = new[] { "main", GitHistory.RemotePrefix + "main" },
+                Load = filter => { lastFilter = filter; return filter == null ? items : items.Take(2).ToList(); },
+                WorkingState = () => WorkingCopyState.Clean,
+                LoadReviewItems = () => new List<DocumentReviewItem>(),
+                Remote = new RemoteState { Url = "https://github.com/owner/paper.git", RemoteBranch = "main", RemoteTip = items[2].Id, LocalTip = items[0].Id, Ahead = 2, Behind = 1 }
+            };
+            using (var host = new Form { ClientSize = new Size(420, 720) })
+            using (var pane = new HistoryPane { Dock = DockStyle.Fill })
+            {
+                host.Controls.Add(pane);
+                pane.Bind(() => data, (path, action, first, second) => actions.Add(action));
+                pane.Reload();
+                Render(host, Path.Combine(output, "remote-history-pane.png"));
+                if (!Descendants(pane).OfType<Label>().Any(label => label.Text.Contains("领先 2 / 落后 1")))
+                    throw new InvalidOperationException("Remote synchronization state is missing");
+                host.Show();
+                foreach (var label in new[] { "获取", "拉取", "推送" })
+                    Descendants(pane).OfType<Button>().Single(button => button.Text == label).PerformClick();
+                if (!actions.SequenceEqual(new[] { HistoryAction.FetchRemote, HistoryAction.PullRemote, HistoryAction.PushRemote }))
+                    throw new InvalidOperationException("Remote buttons sent the wrong actions");
+                var filter = Descendants(pane).OfType<ComboBox>().Single(box => box.AccessibleName == "筛选分支");
+                filter.SelectedItem = GitHistory.RemotePrefix + "main";
+                if (lastFilter != GitHistory.RemotePrefix + "main" || Descendants(pane).OfType<DataGridView>().Single().RowCount != 2)
+                    throw new InvalidOperationException("Remote branch view did not load its own history");
+                host.ClientSize = new Size(300, 520);
+                Render(host, Path.Combine(output, "remote-history-narrow.png"));
+                data.DocumentPath = @"C:\test\合并稿.docx";
+                pane.Reload();
+                if (Descendants(pane).OfType<Button>().Any(button =>
+                    new[] { "关联", "获取", "拉取", "推送" }.Contains(button.Text) && button.Enabled))
+                    throw new InvalidOperationException("Unfinished review can synchronize as the source document");
+            }
+        }
+
+        private static void VerifyImportReview(string output, List<Revision> items)
+        {
+            using (var picker = new HistoryDialog("论文.docx", items, true, items[1].Id, command: HistoryAction.ImportReview))
+            {
+                Render(picker, Path.Combine(output, "review-basis-picker.png"));
+                var grid = Descendants(picker).OfType<DataGridView>().Single();
+                if (grid.MultiSelect || grid.SelectedRows[0].Index != 1 || Descendants(picker).OfType<Button>().Count() != 2)
+                    throw new InvalidOperationException("Review import must select exactly one submission basis");
+                picker.Show();
+                grid.CurrentCell = grid.Rows[3].Cells[1];
+                ((Button)picker.AcceptButton).PerformClick();
+                if (picker.Action != HistoryAction.ImportReview || picker.Basis.Id != items[3].Id)
+                    throw new InvalidOperationException("Review import lost the selected older basis");
+            }
+            var file = Path.Combine(output, "导入界面测试返稿.docx");
+            File.WriteAllBytes(file, new byte[] { 1, 2, 3 });
+            try
+            {
+                using (var dialog = new ImportReviewDialog(Path.Combine(output, "当前稿.docx"), items[3], "main"))
+                {
+                    if (((Button)dialog.AcceptButton).Enabled) throw new InvalidOperationException("Review file is optional");
+                    Render(dialog, Path.Combine(output, "review-import.png"));
+                    dialog.FilePath.Text = file;
+                    dialog.BranchName.Text = "review/老师一审";
+                    dialog.Reviewer.Text = "导师甲";
+                    dialog.Size = dialog.MinimumSize;
+                    Render(dialog, Path.Combine(output, "review-import-min.png"));
+                    var note = Descendants(dialog).OfType<TextBox>().Single(box => box.Multiline);
+                    if (note.Bottom > ((Button)dialog.AcceptButton).Parent.Top)
+                        throw new InvalidOperationException("Review import instructions overlap the action row");
+                    dialog.Show();
+                    ((Button)dialog.AcceptButton).PerformClick();
+                    if (dialog.DialogResult != DialogResult.OK || dialog.Options.FilePath != file ||
+                        dialog.Options.Branch != "review/老师一审" || dialog.Options.Reviewer != "导师甲" || !dialog.Options.MergeAfterImport)
+                        throw new InvalidOperationException("Review import lost selected options");
+                }
+            }
+            finally { File.Delete(file); }
+        }
+
+        private static void VerifyAboutDialog(string output)
+        {
+            var pending = new System.Threading.Tasks.TaskCompletionSource<UpdateResult>();
+            var calls = 0;
+            using (var dialog = new AboutDialog(token => { calls++; return pending.Task; }))
+            {
+                Render(dialog, Path.Combine(output, "about-dialog.png"));
+                dialog.Size = dialog.MinimumSize;
+                Render(dialog, Path.Combine(output, "about-dialog-min.png"));
+                if (!Descendants(dialog).OfType<Label>().Any(label => label.Text.Contains(AppInfo.DisplayVersion)) ||
+                    !Descendants(dialog).OfType<LinkLabel>().Any(link => link.Text == AppInfo.ProjectUrl))
+                    throw new InvalidOperationException("About dialog lost product information");
+                dialog.Show();
+                var running = dialog.CheckForUpdatesAsync();
+                var duplicate = dialog.CheckForUpdatesAsync();
+                var check = Descendants(dialog).OfType<Button>().Single(button => button.Text == "检查更新");
+                if (calls != 1 || running.IsCompleted || check.Enabled)
+                    throw new InvalidOperationException("Update check blocked the UI or allowed duplicate requests");
+                pending.SetResult(new UpdateResult(UpdateState.Available, "发现新版本 0.9.10。请打开发布页下载安装。"));
+                var deadline = DateTime.UtcNow.AddSeconds(3);
+                while (!running.IsCompleted && DateTime.UtcNow < deadline) Application.DoEvents();
+                if (!running.IsCompleted || !check.Enabled ||
+                    !Descendants(dialog).OfType<TextBox>().Single().Text.Contains("0.9.10"))
+                    throw new InvalidOperationException("Update result was not displayed");
+                Render(dialog, Path.Combine(output, "about-update-result.png"));
+            }
+            var cancellation = new System.Threading.Tasks.TaskCompletionSource<UpdateResult>();
+            var closing = new AboutDialog(token => {
+                token.Register(() => cancellation.TrySetCanceled());
+                return cancellation.Task;
+            });
+            closing.Show();
+            var checking = closing.CheckForUpdatesAsync();
+            closing.Close();
+            Application.DoEvents();
+            closing.Dispose();
+            if (!cancellation.Task.IsCanceled) throw new InvalidOperationException("Closed update dialog kept its request alive");
         }
 
         private static Revision RevisionFor(string id, string[] parents, DateTimeOffset date, string title, params string[] refs)

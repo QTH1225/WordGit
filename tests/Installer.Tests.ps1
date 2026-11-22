@@ -41,7 +41,7 @@ function Assert-SameHashes($Before, $After, [string]$Message) {
 
 $realRepositories = Join-Path $env:LOCALAPPDATA 'WordGit\repositories'
 $realBefore = Get-TestDataHashes $realRepositories
-$workspace = Join-Path ([IO.Path]::GetDirectoryName($PackageRoot)) ('installer-test-' + [Guid]::NewGuid().ToString('N'))
+$workspace = Join-Path ([IO.Path]::GetDirectoryName($PackageRoot)) ('it-' + [Guid]::NewGuid().ToString('N').Substring(0,12))
 $wordgitRoot = Join-Path $workspace 'user\WordGit'
 $app = Join-Path $wordgitRoot 'app'
 $sentinels = @(
@@ -110,7 +110,7 @@ try {
 } finally {
     $target = [IO.Path]::GetFullPath($workspace)
     $parent = [IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($PackageRoot)) + [IO.Path]::DirectorySeparatorChar
-    if ($target.StartsWith($parent,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($target) -like 'installer-test-*' -and (Test-Path -LiteralPath $target)) {
+    if ($target.StartsWith($parent,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($target) -match '^it-[a-f0-9]{12}$' -and (Test-Path -LiteralPath $target)) {
         Remove-Item -LiteralPath $target -Recurse -Force
     }
 }
