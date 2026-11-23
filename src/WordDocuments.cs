@@ -188,6 +188,8 @@ namespace WordGit
     internal sealed class WordDocuments
     {
         private readonly dynamic word;
+        public bool IsWpsHost { get; private set; }
+
         public bool SupportsTrackedMerge { get; private set; }
 
         public void EnsureTrackedMergeSupported()
@@ -200,7 +202,8 @@ namespace WordGit
         {
             word = application;
             var path = (string)word.Path;
-            SupportsTrackedMerge = String.IsNullOrEmpty(path) || !File.Exists(Path.Combine(path, "wps.exe"));
+            IsWpsHost = !String.IsNullOrEmpty(path) && File.Exists(Path.Combine(path, "wps.exe"));
+            SupportsTrackedMerge = !IsWpsHost;
         }
         public IWin32Window Owner
         {

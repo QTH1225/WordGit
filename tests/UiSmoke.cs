@@ -643,8 +643,27 @@ namespace WordGit
 
         private static void VerifyRibbon(string output)
         {
+            VerifyRibbonMarkup(Connect.RibbonMarkup(true), true);
+            VerifyRibbonMarkup(Connect.RibbonMarkup(false), false);
+            if (new Connect().GetCustomUI("Microsoft.Word.Document") != Connect.RibbonMarkup(true))
+                throw new InvalidOperationException("Ribbon without a host must default to native icons");
+            foreach (var id in new[] { "graph", "branch", "compare" })
+            using (var bitmap = RibbonIcons.BitmapFor(id))
+            {
+                var opaque = 0;
+                for (var y = 0; y < bitmap.Height; y++)
+                    for (var x = 0; x < bitmap.Width; x++)
+                        if (bitmap.GetPixel(x, y).A > 0) opaque++;
+                if (bitmap.Width != 32 || bitmap.Height != 32 || opaque < 50)
+                    throw new InvalidOperationException("Custom Ribbon icon is empty: " + id);
+                bitmap.Save(Path.Combine(output, "ribbon-icon-" + id + ".png"));
+            }
+        }
+
+        private static void VerifyRibbonMarkup(string markup, bool nativeIcons)
+        {
             var ribbon = new System.Xml.XmlDocument();
-            ribbon.LoadXml(new Connect().GetCustomUI("Microsoft.Word.Document"));
+            ribbon.LoadXml(markup);
             var tab = ribbon.GetElementsByTagName("tab").Cast<System.Xml.XmlElement>().Single();
             if (tab.GetAttribute("label") != "WordGit")
                 throw new InvalidOperationException("Unexpected WordGit tab label");
@@ -667,25 +686,29 @@ namespace WordGit
                 callbacks.Any(callback => typeof(IWordGitActions).GetMethod(callback) == null || typeof(Connect).GetMethod(callback) == null))
                 throw new InvalidOperationException("Missing Ribbon button, icon, or COM callback");
             var imageCallbacks = buttons.Select(button => button.GetAttribute("getImage")).Where(name => name.Length != 0).ToArray();
-            if (!imageCallbacks.OrderBy(name => name).SequenceEqual(new[] { "GetImageBranch", "GetImageCompare", "GetImageGraph" }))
+            var expectedCallbacks = nativeIcons ? new string[0] : new[] { "GetImageBranch", "GetImageCompare", "GetImageGraph" };
+            if (!imageCallbacks.OrderBy(name => name).SequenceEqual(expectedCallbacks.OrderBy(name => name)))
                 throw new InvalidOperationException("Unexpected custom Ribbon icon callbacks");
+            foreach (var pair in new[]
+                {
+                    new { Id = "WordGitHistory", Native = "ViewOutlineView", Custom = "GetImageGraph" },
+                    new { Id = "WordGitCreateBranch", Native = "FileNew", Custom = "GetImageBranch" },
+                    new { Id = "WordGitCompare", Native = "ReviewCompareMenu", Custom = "GetImageCompare" }
+                })
+            {
+                var button = buttons.Single(item => item.GetAttribute("id") == pair.Id);
+                var expected = nativeIcons ? "imageMso:" + pair.Native : "getImage:" + pair.Custom;
+                var actual = button.GetAttribute("imageMso").Length != 0 ? "imageMso:" + button.GetAttribute("imageMso")
+                    : "getImage:" + button.GetAttribute("getImage");
+                if (actual != expected)
+                    throw new InvalidOperationException("Wrong icon source for " + pair.Id + ": " + actual);
+            }
             foreach (var callback in imageCallbacks)
             {
                 var method = typeof(Connect).GetMethod(callback);
                 if (method == null || typeof(IWordGitActions).GetMethod(callback) == null ||
                     method.Invoke(new Connect(), new object[] { null }) == null)
                     throw new InvalidOperationException("Custom Ribbon icon callback failed: " + callback);
-            }
-            foreach (var id in new[] { "graph", "branch", "compare" })
-            using (var bitmap = RibbonIcons.BitmapFor(id))
-            {
-                var opaque = 0;
-                for (var y = 0; y < bitmap.Height; y++)
-                    for (var x = 0; x < bitmap.Width; x++)
-                        if (bitmap.GetPixel(x, y).A > 0) opaque++;
-                if (bitmap.Width != 32 || bitmap.Height != 32 || opaque < 50)
-                    throw new InvalidOperationException("Custom Ribbon icon is empty: " + id);
-                bitmap.Save(Path.Combine(output, "ribbon-icon-" + id + ".png"));
             }
         }
 

@@ -122,24 +122,30 @@ namespace WordGit
 
         public string GetCustomUI(string ribbonId)
         {
+            // Word keeps the native imageMso icons; WPS lacks three of them, so only WPS gets custom-drawn ones.
+            return RibbonMarkup(word == null || !word.IsWpsHost);
+        }
+
+        internal static string RibbonMarkup(bool nativeIcons)
+        {
             // Keep 2-3 character captions together. For longer captions, allow a line break only after the first pair.
             // WORD JOINER protects each line; ZERO WIDTH SPACE marks the intended break.
-            return @"<customUI xmlns=""http://schemas.microsoft.com/office/2006/01/customui"">
+            var markup = @"<customUI xmlns=""http://schemas.microsoft.com/office/2006/01/customui"">
 <ribbon><tabs><tab id=""WordGitTab"" label=""WordGit"">
   <group id=""WordGitVersions"" label=""本地提交"">
     <button id=""WordGitCommit"" label=""提&#x2060;交&#x200B;版&#x2060;本"" size=""large"" imageMso=""FileSave"" onAction=""OnCommit"" supertip=""保存当前文档并创建本地 Git 提交。"" />
-    <button id=""WordGitHistory"" label=""提&#x2060;交&#x2060;图"" size=""large"" getImage=""GetImageGraph"" onAction=""OnHistory"" supertip=""在 Word 右侧查看分支和提交记录，预览或对比历史版本。"" />
+    <button id=""WordGitHistory"" label=""提&#x2060;交&#x2060;图"" size=""large"" {IconGraph} onAction=""OnHistory"" supertip=""在 Word 右侧查看分支和提交记录，预览或对比历史版本。"" />
     <button id=""WordGitPreview"" label=""预&#x2060;览&#x200B;版&#x2060;本"" size=""large"" imageMso=""FilePrintPreview"" onAction=""OnPreview"" supertip=""选一个历史版本，在 Word 中只读打开。"" />
   </group>
   <group id=""WordGitBranches"" label=""分支"">
-    <button id=""WordGitCreateBranch"" label=""新&#x2060;建&#x200B;分&#x2060;支"" size=""large"" getImage=""GetImageBranch"" onAction=""OnCreateBranch"" supertip=""选择起始版本并输入新分支名称。"" />
+    <button id=""WordGitCreateBranch"" label=""新&#x2060;建&#x200B;分&#x2060;支"" size=""large"" {IconBranch} onAction=""OnCreateBranch"" supertip=""选择起始版本并输入新分支名称。"" />
     <button id=""WordGitSwitchBranch"" label=""切&#x2060;换&#x200B;分&#x2060;支"" size=""large"" imageMso=""WindowSwitchWindowsMenuWord"" onAction=""OnSwitchBranch"" supertip=""选择要切换到的本地分支。"" />
     <button id=""WordGitMergeBranch"" label=""合&#x2060;并&#x200B;分&#x2060;支"" size=""large"" imageMso=""ReviewAcceptChange"" onAction=""OnMergeBranch"" supertip=""将所选分支合入当前分支，先在 Word 中审阅修订。"" />
     <button id=""WordGitDeleteBranch"" label=""删&#x2060;除&#x200B;分&#x2060;支"" size=""large"" imageMso=""ReviewRejectChange"" onAction=""OnDeleteBranch"" supertip=""删除已经合入当前分支的其他本地分支。"" />
   </group>
   <group id=""WordGitReview"" label=""比较与审阅"">
     <button id=""WordGitImportReview"" label=""返&#x2060;稿&#x200B;合&#x2060;并"" size=""large"" imageMso=""FileOpen"" onAction=""OnImportReview"" supertip=""选择送审版本和返稿文件，生成 Word 修订合并稿，可选择将原始返稿保存为独立分支。"" />
-    <button id=""WordGitCompare"" label=""对&#x2060;比&#x200B;版&#x2060;本"" size=""large"" getImage=""GetImageCompare"" onAction=""OnCompare"" supertip=""选一版与当前稿对比，或按 Ctrl 选两版对比。"" />
+    <button id=""WordGitCompare"" label=""对&#x2060;比&#x200B;版&#x2060;本"" size=""large"" {IconCompare} onAction=""OnCompare"" supertip=""选一版与当前稿对比，或按 Ctrl 选两版对比。"" />
   </group>
   <group id=""WordGitRemote"" label=""远程协作"">
     <button id=""WordGitLinkRemote"" label=""关&#x2060;联&#x200B;仓&#x2060;库"" size=""large"" imageMso=""HyperlinkInsert"" onAction=""OnLinkRemote"" supertip=""为当前稿件关联一个 GitHub 仓库并获取远程历史。"" />
@@ -156,7 +162,12 @@ namespace WordGit
     <button id=""WordGitAbout"" label=""WordGit {WordGitVersion}"" size=""large"" imageMso=""FileProperties"" onAction=""OnAbout"" supertip=""查看版本、作者、项目主页和反馈链接。"" />
     <button id=""WordGitCheckUpdates"" label=""检&#x2060;查&#x200B;更&#x2060;新"" size=""large"" imageMso=""Refresh"" onAction=""OnCheckUpdates"" supertip=""查询 GitHub 正式发布版本，并打开发布页下载安装。"" />
   </group>
-</tab></tabs></ribbon></customUI>".Replace("{WordGitVersion}", AppInfo.DisplayVersion);
+</tab></tabs></ribbon></customUI>"
+                .Replace("{IconGraph}", nativeIcons ? "imageMso=\"ViewOutlineView\"" : "getImage=\"GetImageGraph\"")
+                .Replace("{IconBranch}", nativeIcons ? "imageMso=\"FileNew\"" : "getImage=\"GetImageBranch\"")
+                .Replace("{IconCompare}", nativeIcons ? "imageMso=\"ReviewCompareMenu\"" : "getImage=\"GetImageCompare\"")
+                .Replace("{WordGitVersion}", AppInfo.DisplayVersion);
+            return markup;
         }
 
         public void OnCommit(object control) { Guard(CommitCurrent, true); }
