@@ -57,6 +57,9 @@ namespace WordGit
         [DispId(18)] void OnFetchRemote([MarshalAs(UnmanagedType.IDispatch)] object control);
         [DispId(19)] void OnPullRemote([MarshalAs(UnmanagedType.IDispatch)] object control);
         [DispId(20)] void OnPushRemote([MarshalAs(UnmanagedType.IDispatch)] object control);
+        [DispId(21)] [return: MarshalAs(UnmanagedType.IDispatch)] object GetImageGraph([MarshalAs(UnmanagedType.IDispatch)] object control);
+        [DispId(22)] [return: MarshalAs(UnmanagedType.IDispatch)] object GetImageBranch([MarshalAs(UnmanagedType.IDispatch)] object control);
+        [DispId(23)] [return: MarshalAs(UnmanagedType.IDispatch)] object GetImageCompare([MarshalAs(UnmanagedType.IDispatch)] object control);
     }
 
     [ComVisible(true), Guid("C5707F76-F46F-4A11-800B-18E7D98377D3"), ProgId("WordGit.Connect")]
@@ -113,6 +116,10 @@ namespace WordGit
             MessageBox.Show(message, "WordGit", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
+        public object GetImageGraph(object control) { return RibbonIcons.PictureFor("graph"); }
+        public object GetImageBranch(object control) { return RibbonIcons.PictureFor("branch"); }
+        public object GetImageCompare(object control) { return RibbonIcons.PictureFor("compare"); }
+
         public string GetCustomUI(string ribbonId)
         {
             // Keep 2-3 character captions together. For longer captions, allow a line break only after the first pair.
@@ -121,18 +128,18 @@ namespace WordGit
 <ribbon><tabs><tab id=""WordGitTab"" label=""WordGit"">
   <group id=""WordGitVersions"" label=""本地提交"">
     <button id=""WordGitCommit"" label=""提&#x2060;交&#x200B;版&#x2060;本"" size=""large"" imageMso=""FileSave"" onAction=""OnCommit"" supertip=""保存当前文档并创建本地 Git 提交。"" />
-    <button id=""WordGitHistory"" label=""提&#x2060;交&#x2060;图"" size=""large"" imageMso=""ViewOutlineView"" onAction=""OnHistory"" supertip=""在 Word 右侧查看分支和提交记录，预览或对比历史版本。"" />
+    <button id=""WordGitHistory"" label=""提&#x2060;交&#x2060;图"" size=""large"" getImage=""GetImageGraph"" onAction=""OnHistory"" supertip=""在 Word 右侧查看分支和提交记录，预览或对比历史版本。"" />
     <button id=""WordGitPreview"" label=""预&#x2060;览&#x200B;版&#x2060;本"" size=""large"" imageMso=""FilePrintPreview"" onAction=""OnPreview"" supertip=""选一个历史版本，在 Word 中只读打开。"" />
   </group>
   <group id=""WordGitBranches"" label=""分支"">
-    <button id=""WordGitCreateBranch"" label=""新&#x2060;建&#x200B;分&#x2060;支"" size=""large"" imageMso=""FileNew"" onAction=""OnCreateBranch"" supertip=""选择起始版本并输入新分支名称。"" />
+    <button id=""WordGitCreateBranch"" label=""新&#x2060;建&#x200B;分&#x2060;支"" size=""large"" getImage=""GetImageBranch"" onAction=""OnCreateBranch"" supertip=""选择起始版本并输入新分支名称。"" />
     <button id=""WordGitSwitchBranch"" label=""切&#x2060;换&#x200B;分&#x2060;支"" size=""large"" imageMso=""WindowSwitchWindowsMenuWord"" onAction=""OnSwitchBranch"" supertip=""选择要切换到的本地分支。"" />
     <button id=""WordGitMergeBranch"" label=""合&#x2060;并&#x200B;分&#x2060;支"" size=""large"" imageMso=""ReviewAcceptChange"" onAction=""OnMergeBranch"" supertip=""将所选分支合入当前分支，先在 Word 中审阅修订。"" />
     <button id=""WordGitDeleteBranch"" label=""删&#x2060;除&#x200B;分&#x2060;支"" size=""large"" imageMso=""ReviewRejectChange"" onAction=""OnDeleteBranch"" supertip=""删除已经合入当前分支的其他本地分支。"" />
   </group>
   <group id=""WordGitReview"" label=""比较与审阅"">
     <button id=""WordGitImportReview"" label=""返&#x2060;稿&#x200B;合&#x2060;并"" size=""large"" imageMso=""FileOpen"" onAction=""OnImportReview"" supertip=""选择送审版本和返稿文件，生成 Word 修订合并稿，可选择将原始返稿保存为独立分支。"" />
-    <button id=""WordGitCompare"" label=""对&#x2060;比&#x200B;版&#x2060;本"" size=""large"" imageMso=""ReviewCompareMenu"" onAction=""OnCompare"" supertip=""选一版与当前稿对比，或按 Ctrl 选两版对比。"" />
+    <button id=""WordGitCompare"" label=""对&#x2060;比&#x200B;版&#x2060;本"" size=""large"" getImage=""GetImageCompare"" onAction=""OnCompare"" supertip=""选一版与当前稿对比，或按 Ctrl 选两版对比。"" />
   </group>
   <group id=""WordGitRemote"" label=""远程协作"">
     <button id=""WordGitLinkRemote"" label=""关&#x2060;联&#x200B;仓&#x2060;库"" size=""large"" imageMso=""HyperlinkInsert"" onAction=""OnLinkRemote"" supertip=""为当前稿件关联一个 GitHub 仓库并获取远程历史。"" />
@@ -415,6 +422,7 @@ namespace WordGit
             if (activeTip == null) { Notice("还没有版本，请先点击「提交版本」。"); return false; }
             var branches = repo.Branches();
             var filename = Path.GetFileName(historyPath);
+            if (command == HistoryAction.MergeBranch || command == HistoryAction.Merge) word.EnsureTrackedMergeSupported();
             var deleting = command == HistoryAction.DeleteBranch;
             var chooseBranch = command == HistoryAction.SwitchBranch || command == HistoryAction.MergeBranch || deleting;
             if (review != null && (chooseBranch || command == HistoryAction.CreateBranch || command == HistoryAction.Restore || command == HistoryAction.ImportReview))
@@ -590,6 +598,7 @@ namespace WordGit
             var sourceTip = repo.BranchTip(source);
             if (sourceTip == null) throw new InvalidOperationException("找不到来源分支。");
             if (repo.IsAncestor(sourceTip, tip)) { Notice("来源分支的提交已包含在当前分支。"); return; }
+            word.EnsureTrackedMergeSupported();
             var basis = repo.MergeBase(tip, sourceTip);
             var result = word.ReviewBranchesExtracted(repo, basis, tip, sourceTip, branch, GitHistory.ReferenceLabel(source),
                 source.StartsWith(GitHistory.RemotePrefix, StringComparison.Ordinal));
@@ -613,7 +622,7 @@ namespace WordGit
         {
             ImportReviewOptions options;
             bool chooseHistoricalMerge;
-            using (var picker = new ImportReviewDialog(path, repo.History(), branch, branches))
+            using (var picker = new ImportReviewDialog(path, repo.History(), branch, branches, word.SupportsTrackedMerge))
             {
                 if (picker.ShowDialog(word.Owner) != DialogResult.OK) return;
                 chooseHistoricalMerge = picker.ChooseHistoricalMerge;
@@ -649,7 +658,8 @@ namespace WordGit
                 });
                 var saved = "返稿已保存到「" + options.Branch + "」，提交 " + imported.Substring(0, 8) + "。";
                 RefreshPane(path);
-                if (!options.CreateMergeDraft) return saved + " 可随时从「合并分支」继续审阅。";
+                if (!options.CreateMergeDraft)
+                    return saved + (word.SupportsTrackedMerge ? " 可随时从「合并分支」继续审阅。" : " 可在提交图中预览或对比返稿。");
                 try
                 {
                     StartBranchMerge(document, path, repo, branch, tip, options.Branch);
@@ -740,6 +750,9 @@ namespace WordGit
                     return "远程历史已获取。当前稿仍有未提交修改，请先提交，再点击「拉取」；当前稿没有被覆盖。";
                 if (state.Ahead > 0)
                 {
+                    if (!word.SupportsTrackedMerge)
+                        return "双方的版本已保留，可在提交图中对比。当前 WPS 文字暂不支持自动合并分叉的历史。" +
+                            Environment.NewLine + state.Caption;
                     StartBranchMerge(document, path, repo, branch, head, state.RemoteReference);
                     return "双方修改已生成 Word 修订合并稿。确认修订后点击右侧的「完成合并」，再回到原稿推送。";
                 }

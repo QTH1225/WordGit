@@ -162,7 +162,7 @@ namespace WordGitSetup
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             Controls.Add(layout);
             layout.Controls.Add(new Label { Text = "WordGit " + new Version(payload.Manifest.Version).ToString(3), Font = new Font(Font.FontFamily, 20, FontStyle.Bold), AutoSize = true }, 0, 0);
-            layout.Controls.Add(new Label { Text = "在 Microsoft Word 中提交版本、查看分支、对比并处理修订。\r\n安装到当前 Windows 用户；安装和卸载前请保存并关闭 Word。", AutoSize = true, Margin = new Padding(0, 10, 0, 10) }, 0, 1);
+            layout.Controls.Add(new Label { Text = "在 Word 或 WPS 文字中提交版本、查看分支、对比并处理修订。\r\n安装到当前 Windows 用户。请先保存并退出 Word 和 WPS 文字。", AutoSize = true, Margin = new Padding(0, 10, 0, 10) }, 0, 1);
             var links = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 10) };
             AddLink(links, "下载 Git for Windows", "https://git-scm.com/install/windows");
             AddLink(links, "下载 .NET Framework 4.8", "https://dotnet.microsoft.com/download/dotnet-framework/net48");

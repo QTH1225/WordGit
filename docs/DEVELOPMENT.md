@@ -1,6 +1,6 @@
 # 开发与验证
 
-需要 Windows、.NET Framework 4.8，以及用于功能测试的 Git for Windows 2.51+。Word 原生测试还需要桌面版 Microsoft Word。
+需要 Windows、.NET Framework 4.8，以及用于功能测试的 Git for Windows 2.51+。原生功能测试需要相应的 Windows 桌面版 Microsoft Word 或 WPS 文字。
 
 普通用户应使用预编译发布包。以下步骤供开发者使用，PowerShell 5.1 或 PowerShell 7 均可。
 
@@ -21,6 +21,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test -UiTes
 | `-Test` | Smoke（历史、格式兼容、维护、恢复记录）、UpdatesSmoke、RemoteSmoke（双客户端本地远程） | Git for Windows |
 | `-UiTest` | UiSmoke（功能区、对话框、侧栏布局） | 桌面会话 |
 | `-WordTest` | WordSmoke（原生比较、修订、合并、恢复、远程协作） | 桌面版 Word |
+| `-WpsTest` | WordSmoke（提交、只读预览、比较、恢复、处理修订和保存返稿分支） | 桌面版 WPS 文字 |
 
 GitHub Actions 在每次推送和 PR 时运行 `-Test`、`-UiTest` 并生成发布包（`.github/workflows/ci.yml`）；CodeQL 每周及推送时扫描 C# 源码与工作流。
 
@@ -28,11 +29,12 @@ Word 原生功能测试会新建独立会话和测试文档（包含双客户端
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -WordTest
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -WpsTest
 ```
 
 ## 从源码安装
 
-构建完成、保存并关闭 Word 后：
+构建完成、保存并退出 Word 和 WPS 文字后：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
@@ -65,7 +67,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\package.ps1 -Test
 
 运行时源码位于 src/；安装维护程序位于 packaging/Setup.cs。插件采用 .NET Framework COM 接口，无 VSTO 依赖。
 
-WordGit.Connect 和 WordGit.HistoryPane 注册到当前用户的 COM 类和 Word 加载项项下，安装器根据 WINWORD.EXE 的实际架构选择 32/64 位注册表视图。CLSID 与 ProgID 同时写在源码属性和 install.ps1 开头的变量中，安装测试会核对两者一致。卸载不处理历史仓库或审阅稿。
+WordGit.Connect 和 WordGit.HistoryPane 注册为当前用户的 COM 类。安装器根据 WINWORD.EXE 和 wps.exe 的实际架构选择注册表视图，分别登记对应编辑器的加载项。CLSID 与 ProgID 同时写在源码属性和 install.ps1 开头的变量中，安装测试会核对两者一致。卸载不处理历史仓库或审阅稿。
 
 所有 git.exe 调用经过 `GitProcess`：清除继承的 GIT_* 环境变量、屏蔽全局与系统配置（网络操作除外，以使用用户的凭据和代理）、开启 `core.fsync=committed`，并把进程放进作业对象，超时或取消时结束整棵进程树。新增 Git 调用时不要绕过它直接启动进程。
 

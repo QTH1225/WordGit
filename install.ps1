@@ -20,38 +20,70 @@ function Get-WordGitRegistryViews {
     [Microsoft.Win32.RegistryView]::Registry32
 }
 
-function Get-WordGitEnvironment {
-    $wordPath = $null
+function Find-WordGitOfficeHost([string]$Name, [string]$Executable) {
+    $hostPath = $null
     foreach ($view in (Get-WordGitRegistryViews)) {
         foreach ($hive in @([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryHive]::CurrentUser)) {
             $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, $view)
             try {
-                $key = $base.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\WINWORD.EXE')
+                $key = $base.OpenSubKey("SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\$Executable")
                 if ($key) {
                     try {
                         $candidate = ([string]$key.GetValue('')).Trim('"')
-                        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { $wordPath = $candidate }
+                        if ($candidate -and [IO.Path]::GetFileName($candidate) -eq $Executable -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                            $hostPath = $candidate
+                        }
                     } finally { $key.Dispose() }
                 }
             } finally { $base.Dispose() }
-            if ($wordPath) { break }
+            if ($hostPath) { break }
         }
-        if ($wordPath) { break }
+        if ($hostPath) { break }
     }
-    if (-not $wordPath) { throw '未找到 Windows 桌面版 Microsoft Word。请先安装 Word。' }
-    $reader = New-Object IO.BinaryReader([IO.File]::OpenRead($wordPath))
+    if (-not $hostPath) { return }
+    $reader = New-Object IO.BinaryReader([IO.File]::OpenRead($hostPath))
     try {
-        if ($reader.ReadUInt16() -ne 0x5A4D) { throw 'Word 程序格式无效。' }
+        if ($reader.ReadUInt16() -ne 0x5A4D) { throw "$Name 程序格式无效。" }
         $reader.BaseStream.Position = 0x3C
         $offset = $reader.ReadInt32()
         $reader.BaseStream.Position = $offset
-        if ($reader.ReadUInt32() -ne 0x4550) { throw '无法识别 Word 程序架构。' }
+        if ($reader.ReadUInt32() -ne 0x4550) { throw "无法识别 $Name 程序架构。" }
         $machine = $reader.ReadUInt16()
     } finally { $reader.Dispose() }
-    if ($machine -eq 0x8664) { $wordBits = 64 }
-    elseif ($machine -eq 0x14C) { $wordBits = 32 }
-    else { throw '当前安装程序支持 x86/x64 Word，尚未验证 ARM 原生 Word。' }
+    if ($machine -eq 0x8664) { $bits = 64; $viewName = 'Registry64' }
+    elseif ($machine -eq 0x14C) { $bits = 32; $viewName = 'Registry32' }
+    else { return }
+    [PSCustomObject]@{ Name = $Name; Path = $hostPath; Bits = $bits; RegistryView = $viewName }
+}
 
+function Get-WordGitRunningEditors {
+    Get-Process -Name WINWORD -ErrorAction SilentlyContinue
+    $wpsProcesses = @(Get-Process -Name wps -ErrorAction SilentlyContinue)
+    if ($wpsProcesses.Count -eq 0) { return }
+    # WPS uses wps.exe for Explorer previews and multiple background helpers as well.
+    # Treat unknown processes as editors, including when their command line cannot be read.
+    $commands = @{}
+    try {
+        foreach ($process in (Get-CimInstance Win32_Process -Filter "Name='wps.exe'" -ErrorAction Stop)) {
+            $commands[[int]$process.ProcessId] = $process.CommandLine
+        }
+    } catch {}
+    foreach ($process in $wpsProcesses) {
+        $command = $commands[$process.Id]
+        if ($process.MainWindowHandle -eq [IntPtr]::Zero -and $command -and
+            ($command -match '(?i)(?:^|[\s"])(?:/Preview|-Entry=CefRenderEntryPoint|--type=(?:renderer|utility|gpu-process))(?=[\s"]|$)' -or
+             ($command -match '(?i)(?:^|[\s"])-Entry=EntryPoint(?=[\s"]|$)' -and
+              $command -match '(?i)(?:^|[\s"])(?:--host|--server=browser(?:\.[\w.-]+)?)(?=[\s"]|$)'))) { continue }
+        $process
+    }
+}
+
+function Get-WordGitEnvironment {
+    $officeHosts = @(
+        Find-WordGitOfficeHost 'Microsoft Word' 'WINWORD.EXE'
+        Find-WordGitOfficeHost 'WPS 文字' 'wps.exe'
+    )
+    if ($officeHosts.Count -eq 0) { throw '未找到 Windows x86/x64 版 Microsoft Word 或 WPS 文字。' }
     $release = 0
     foreach ($view in (Get-WordGitRegistryViews)) {
         $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
@@ -89,7 +121,7 @@ function Get-WordGitEnvironment {
     }
     $gitVersion = [version]$Matches[1]
     if ($gitVersion -lt [version]'2.51.0') { throw "Git 版本为 $gitVersion，需要 2.51 或更新版本。" }
-    [PSCustomObject]@{ WordPath = $wordPath; WordBits = $wordBits; GitPath = $git; GitVersion = $gitVersion.ToString(); FrameworkRelease = $release }
+    [PSCustomObject]@{ Hosts = $officeHosts; GitPath = $git; GitVersion = $gitVersion.ToString(); FrameworkRelease = $release }
 }
 
 function Get-WordGitInstallDirectory {
@@ -122,26 +154,40 @@ function Register-WordGitClass($Base, [string]$ClassId, [string]$ProgId, [string
     }
 }
 
-function Register-WordGitPlugin($Base, [string]$Assembly, [string]$Version, [string]$CodeBase) {
+function Register-WordGitPlugin($Base, [string]$Assembly, [string]$Version, [string]$CodeBase, [switch]$Word, [switch]$Wps) {
     Register-WordGitClass $Base $WordGitConnectClsid $WordGitConnectProgId $Assembly $Version $CodeBase 'Both'
     Register-WordGitClass $Base $WordGitPaneClsid $WordGitPaneProgId $Assembly $Version $CodeBase 'Apartment'
     $control = $Base.CreateSubKey("Software\Classes\CLSID\$WordGitPaneClsid\Control")
     $control.Dispose()
-    $addin = "Software\Microsoft\Office\Word\Addins\$WordGitConnectProgId"
-    Set-WordGitRegistryValue $Base $addin 'FriendlyName' 'WordGit'
-    Set-WordGitRegistryValue $Base $addin 'Description' 'Word 本地 Git 版本管理'
-    Set-WordGitRegistryValue $Base $addin 'LoadBehavior' 3 'DWord'
+    $roots = @()
+    if ($Word) { $roots += 'Software\Microsoft\Office\Word\Addins' }
+    if ($Wps) { $roots += 'Software\Kingsoft\Office\WPS\Addins' }
+    foreach ($root in $roots) {
+        $addin = "$root\$WordGitConnectProgId"
+        Set-WordGitRegistryValue $Base $addin 'FriendlyName' 'WordGit'
+        Set-WordGitRegistryValue $Base $addin 'Description' '文档 Git 版本管理'
+        Set-WordGitRegistryValue $Base $addin 'LoadBehavior' 3 'DWord'
+    }
+    if ($Wps) {
+        Set-WordGitRegistryValue $Base 'Software\Kingsoft\Office\WPS\AddinsWL' $WordGitConnectProgId ''
+    }
 }
 
 function Remove-WordGitRegistration($Base) {
     foreach ($path in @(
         "Software\Microsoft\Office\Word\Addins\$WordGitConnectProgId",
+        "Software\Kingsoft\Office\WPS\Addins\$WordGitConnectProgId",
         "Software\Classes\CLSID\$WordGitConnectClsid",
         "Software\Classes\$WordGitConnectProgId",
         "Software\Classes\CLSID\$WordGitPaneClsid",
         "Software\Classes\$WordGitPaneProgId",
         'Software\Microsoft\Windows\CurrentVersion\Uninstall\WordGit'
     )) { $Base.DeleteSubKeyTree($path, $false) }
+    $wpsList = $Base.OpenSubKey('Software\Kingsoft\Office\WPS\AddinsWL', $true)
+    if ($wpsList) {
+        try { $wpsList.DeleteValue($WordGitConnectProgId, $false) }
+        finally { $wpsList.Dispose() }
+    }
 }
 
 function Test-WordGitPayload {
@@ -234,7 +280,7 @@ if ($LibraryOnly) { return }
 if ($Uninstall -and ($CheckOnly -or $Plan)) { throw '卸载和检查参数不能同时使用。' }
 $installDir = Get-WordGitInstallDirectory
 if ($Uninstall) {
-    if (Get-Process -Name WINWORD -ErrorAction SilentlyContinue) { throw '请先保存并关闭所有 Word 窗口，再卸载 WordGit。' }
+    if (Get-WordGitRunningEditors) { throw '请先保存并退出 Word 和 WPS 文字，再卸载 WordGit。' }
     foreach ($view in (Get-WordGitRegistryViews)) {
         $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
         try { Remove-WordGitRegistration $base } finally { $base.Dispose() }
@@ -249,27 +295,31 @@ $version = $identity.Version.ToString()
 $source = Join-Path $PSScriptRoot 'bin\WordGit.dll'
 $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
 $installed = Join-Path $installDir "WordGit.$version.$($hash.Substring(0,12)).dll"
-$view = if ($environmentInfo.WordBits -eq 64) { [Microsoft.Win32.RegistryView]::Registry64 } else { [Microsoft.Win32.RegistryView]::Registry32 }
 if ($Plan) {
-    [PSCustomObject]@{ Version = $version; WordBits = $environmentInfo.WordBits; WordPath = $environmentInfo.WordPath;
+    [PSCustomObject]@{ Version = $version; Hosts = $environmentInfo.Hosts;
         GitPath = $environmentInfo.GitPath; GitVersion = $environmentInfo.GitVersion; FrameworkRelease = $environmentInfo.FrameworkRelease;
-        RegistryView = $view.ToString(); InstallDirectory = $installDir; InstalledDll = $installed; Sha256 = $hash;
-        WordRunning = [bool](Get-Process -Name WINWORD -ErrorAction SilentlyContinue); Scope = 'CurrentUser' } | ConvertTo-Json
+        InstallDirectory = $installDir; InstalledDll = $installed; Sha256 = $hash;
+        OfficeRunning = [bool](Get-WordGitRunningEditors); Scope = 'CurrentUser' } | ConvertTo-Json -Depth 4
     return
 }
-Write-Output "Microsoft Word：$($environmentInfo.WordBits) 位"
+foreach ($officeHost in $environmentInfo.Hosts) { Write-Output "$($officeHost.Name)：$($officeHost.Bits) 位" }
 Write-Output "Git：$($environmentInfo.GitVersion)"
 Write-Output '.NET Framework：4.8 或更新版本'
 Write-Output "WordGit：$version"
 if ($CheckOnly) { Write-Output '环境和安装文件检查通过。'; return }
-if (Get-Process -Name WINWORD -ErrorAction SilentlyContinue) { throw '请先保存并关闭所有 Word 窗口，再安装或更新 WordGit。' }
+if (Get-WordGitRunningEditors) { throw '请先保存并退出 Word 和 WPS 文字，再安装或更新 WordGit。' }
 if (-not $SetupExecutable) { $SetupExecutable = Join-Path $PSScriptRoot 'WordGit.Setup.exe' }
 $installed = Install-WordGitFiles $installDir $PSScriptRoot $identity $SetupExecutable
-$base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
-try {
-    Register-WordGitPlugin $base $identity.FullName $version ([Uri]$installed).AbsoluteUri
-    Register-WordGitProgram $base $installDir $version
-} finally { $base.Dispose() }
+foreach ($group in ($environmentInfo.Hosts | Group-Object RegistryView)) {
+    $view = [Microsoft.Win32.RegistryView]$group.Name
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
+    try {
+        Register-WordGitPlugin $base $identity.FullName $version ([Uri]$installed).AbsoluteUri -Word:($group.Group.Name -contains 'Microsoft Word') -Wps:($group.Group.Name -contains 'WPS 文字')
+    } finally { $base.Dispose() }
+}
+$programView = [Microsoft.Win32.RegistryView](@(Get-WordGitRegistryViews)[0])
+$base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $programView)
+try { Register-WordGitProgram $base $installDir $version } finally { $base.Dispose() }
 # Remove only obsolete versioned plugin binaries after registration succeeds.
 Get-ChildItem -LiteralPath $installDir -File | Where-Object {
     $_.Name -match '^WordGit\.\d+\.\d+\.\d+\.\d+\.[A-Fa-f0-9]{12}\.dll$' -and $_.FullName -ne $installed
@@ -277,5 +327,5 @@ Get-ChildItem -LiteralPath $installDir -File | Where-Object {
     $obsolete = $_.Name
     try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch { Write-Output "保留仍在使用的旧组件：$obsolete" }
 }
-Write-Output '安装完成。重新打开 Word，即可在顶部看到 WordGit 选项卡。'
+Write-Output '安装完成。重新打开 Word 或 WPS 文字，可在功能区找到 WordGit。'
 Write-Output '升级保留原有版本历史。卸载入口位于 Windows 设置的应用列表中。'

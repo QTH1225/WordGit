@@ -188,7 +188,20 @@ namespace WordGit
     internal sealed class WordDocuments
     {
         private readonly dynamic word;
-        public WordDocuments(object application) { word = application; }
+        public bool SupportsTrackedMerge { get; private set; }
+
+        public void EnsureTrackedMergeSupported()
+        {
+            if (!SupportsTrackedMerge)
+                throw new InvalidOperationException("当前 WPS 文字暂不支持生成可保留双方修改的修订合并稿。可将返稿保存为独立分支，并对比历史版本。");
+        }
+
+        public WordDocuments(object application)
+        {
+            word = application;
+            var path = (string)word.Path;
+            SupportsTrackedMerge = String.IsNullOrEmpty(path) || !File.Exists(Path.Combine(path, "wps.exe"));
+        }
         public IWin32Window Owner
         {
             get { return word.Windows.Count == 0 ? null : DialogPlacement.RootOwner(new WordWindow(new IntPtr((int)word.ActiveWindow.Hwnd))); }
@@ -430,6 +443,7 @@ namespace WordGit
 
         public object ReviewFiles(GitHistory repo, string originalRevision, string revisedRevision, bool merge, string author = null)
         {
+            if (merge) EnsureTrackedMergeSupported();
             var folder = AppPaths.NewSession();
             var leftFile = Path.Combine(folder, "基准版本.docx");
             var rightFile = Path.Combine(folder, "修订版本.docx");
@@ -442,6 +456,7 @@ namespace WordGit
         // holds the caller's originals open.
         public object ReviewPaths(string original, string revised, bool merge, string author = null)
         {
+            if (merge) EnsureTrackedMergeSupported();
             var folder = AppPaths.NewSession();
             var leftFile = Path.Combine(folder, "基准版本.docx");
             var rightFile = Path.Combine(folder, "修订版本.docx");
@@ -517,6 +532,7 @@ namespace WordGit
                         CompareFormatting: true, CompareTables: true, CompareHeaders: true, CompareFootnotes: true,
                         CompareTextboxes: true, CompareFields: true, CompareComments: true, RevisedAuthor: author ?? "WordGit",
                         IgnoreAllComparisonWarnings: true);
+                if (result == null) throw new InvalidOperationException("编辑器未生成独立的修订稿。");
                 result.Activate();
                 return result;
             }
@@ -533,6 +549,7 @@ namespace WordGit
 
         public object ReviewBranchesExtracted(GitHistory repo, string basisRevision, string targetRevision, string incomingRevision, string targetBranch = "当前分支", string sourceBranch = "来源分支", bool preserveIncomingRevisions = false)
         {
+            EnsureTrackedMergeSupported();
             if (repo.SnapshotChecksum(basisRevision) == repo.SnapshotChecksum(targetRevision))
                 return ReviewFiles(repo, targetRevision, incomingRevision, true);
             var folder = AppPaths.NewSession();
@@ -546,6 +563,7 @@ namespace WordGit
 
         internal object ReviewReturnedDraft(GitHistory repo, string basisRevision, string targetRevision, string externalPath, string branch)
         {
+            EnsureTrackedMergeSupported();
             DocxFormat.ValidateFile(externalPath);
             if (repo.SnapshotChecksum(basisRevision) == repo.SnapshotChecksum(targetRevision))
                 return ReviewReturnAgainstBase(repo, basisRevision, externalPath);

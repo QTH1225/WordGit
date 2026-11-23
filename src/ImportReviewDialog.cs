@@ -28,10 +28,10 @@ namespace WordGit
         private readonly Button merge = DialogLayout.Button("生成合并稿");
         private readonly Button saveOnly = DialogLayout.Button("仅保存为分支");
 
-        internal ImportReviewDialog(string originalPath, List<Revision> revisions, string currentBranch, string[] branches)
+        internal ImportReviewDialog(string originalPath, List<Revision> revisions, string currentBranch, string[] branches, bool supportsTrackedMerge = true)
         {
             this.originalPath = Path.GetFullPath(originalPath);
-            Text = "WordGit · 返稿合并";
+            Text = supportsTrackedMerge ? "WordGit · 返稿合并" : "WordGit · 保存返稿";
             Font = SystemFonts.MessageBoxFont;
             AutoScaleMode = AutoScaleMode.Font;
             StartPosition = FormStartPosition.CenterParent;
@@ -71,17 +71,18 @@ namespace WordGit
             BasisPicker.SelectedIndex = 0;
             layout.Controls.Add(Field("送审版本", BasisPicker), 0, 1);
             var target = new TextBox { Text = currentBranch, Dock = DockStyle.Fill, ReadOnly = true, AccessibleName = "合入分支" };
-            layout.Controls.Add(Field("合入分支", target), 0, 2);
+            if (supportsTrackedMerge) layout.Controls.Add(Field("合入分支", target), 0, 2);
             var defaultBranch = "review-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
             BranchName.Text = defaultBranch;
             for (var suffix = 2; GitHistory.ReviewBranchConflict(BranchName.Text, branches) != null; suffix++)
                 BranchName.Text = defaultBranch + "-" + suffix;
-            layout.Controls.Add(SaveOriginal, 0, 3);
+            if (supportsTrackedMerge) layout.Controls.Add(SaveOriginal, 0, 3);
             var branchRow = Field("返稿分支", BranchName);
             var reviewerRow = Field("返稿来源", Reviewer);
             layout.Controls.Add(branchRow, 0, 4);
             layout.Controls.Add(reviewerRow, 0, 5);
-            var note = DialogLayout.Label("生成合并稿前，请先提交当前稿的修改。");
+            var note = DialogLayout.Label(supportsTrackedMerge ? "生成合并稿前，请先提交当前稿的修改。"
+                : "当前 WPS 文字支持将原始返稿保存为分支，可在提交图中预览或对比。自动生成修订合并稿暂不可用。");
             layout.Controls.Add(note, 0, 6);
             var historical = new LinkLabel { Text = "合并两个历史版本…", AutoSize = true, Margin = new Padding(0, 2, 0, 0),
                 Enabled = revisions.Count >= 2 };
@@ -89,7 +90,7 @@ namespace WordGit
                 ChooseHistoricalMerge = true;
                 DialogResult = DialogResult.OK;
             };
-            outer.Controls.Add(historical, 0, 1);
+            if (supportsTrackedMerge) outer.Controls.Add(historical, 0, 1);
             Action wrap = () => {
                 var width = Math.Max(120, scroll.ClientSize.Width - SystemInformation.VerticalScrollBarWidth);
                 note.MaximumSize = new Size(width, 0);
@@ -142,11 +143,11 @@ namespace WordGit
             BranchName.TextChanged += validate;
             Reviewer.TextChanged += validate;
             SaveOriginal.CheckedChanged += validate;
-            buttons.Controls.Add(merge);
+            if (supportsTrackedMerge) buttons.Controls.Add(merge);
             buttons.Controls.Add(saveOnly);
             buttons.Controls.Add(cancel);
             outer.Controls.Add(buttons, 0, 2);
-            AcceptButton = merge;
+            AcceptButton = supportsTrackedMerge ? merge : saveOnly;
             CancelButton = cancel;
             validate(this, EventArgs.Empty);
         }

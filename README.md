@@ -1,6 +1,6 @@
 # WordGit 0.11.2
 
-在 Windows 桌面版 Word 中提交版本、管理分支、查看历史，并通过 GitHub 同步稿件。文档预览、版本对比和合并审阅使用 Word 原生功能。
+在 Windows 桌面版 Word 和 WPS 文字中提交版本、管理分支、查看历史，并通过 GitHub 同步稿件。文档预览、版本对比和修订处理使用当前编辑器的原生功能。
 
 作者：[QTH1225](https://github.com/QTH1225) · [项目主页](https://github.com/QTH1225/WordGit) · [发布记录](https://github.com/QTH1225/WordGit/releases) · [问题反馈](https://github.com/QTH1225/WordGit/issues) · [GPL-3.0-only 许可证](LICENSE)
 
@@ -9,20 +9,24 @@
 | 环境 | 要求 |
 | --- | --- |
 | 系统 | Windows 10 / 11 |
-| 编辑器 | Windows 桌面版 Microsoft Word |
+| 编辑器 | Windows 桌面版 Microsoft Word 或 WPS 文字 |
 | Git | [Git for Windows 2.51+](https://git-scm.com/install/windows) |
 | 运行时 | [.NET Framework 4.8+](https://dotnet.microsoft.com/download/dotnet-framework/net48) |
 
 1. 准备 `WordGit-0.11.2-Setup.exe` 安装包。
-2. 保存文档，关闭所有 Word 窗口。
+2. 保存文档，退出 Word 和 WPS 文字。
 3. 运行安装程序，点击 **安装 / 更新**。
-4. 重新打开 Word，进入顶部 **WordGit** 选项卡。没有出现时见下文 [在 Word 中载入插件](#在-word-中载入插件)。
+4. 打开 Word 或 WPS 文字，进入顶部 **WordGit** 选项卡。
 
 ZIP 包的用法相同：完整解压 `WordGit-0.11.2-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装、`Check.cmd` 检查环境。
 
 安装作用于当前 Windows 用户。升级时直接运行新版安装程序，已有提交、分支和审阅稿继续保留。卸载可从 Windows“已安装的应用”或安装程序进入，历史数据也会保留。
 
-当前已在 64 位 Word 实机验证；32 位 Word 的完整功能验证仍在补充。发布包的签名与兼容性状态见 [发布说明](docs/RELEASING.md)。
+### WPS 文字兼容范围
+
+WPS 文字可独立提交、预览、恢复、对比和处理现有修订。**返稿合并**入口在 WPS 中可将原始返稿保存为分支，保留批注和修订。自动生成返稿、历史版本或分支的修订合并稿，以及分叉后的拉取合并，目前需要在 Word 中操作。
+
+如未出现 **WordGit** 选项卡，在 WPS 文字的 **开发工具 → COM 加载项** 查看 WordGit 是否启用。在 Word 中的加载步骤见下文。
 
 ## 在 Word 中载入插件
 
@@ -38,7 +42,7 @@ WordGit 是 Word 的 COM 加载项，**不需要在 Word 里手动添加文件**
 | `Software\Classes\CLSID\{F55EC3C1-B725-4ED8-9CA6-ED51D07C3361}` 与 `WordGit.HistoryPane` | 右侧“批注、修订与提交”窗格的控件。 |
 | `Software\Microsoft\Office\Word\Addins\WordGit.Connect` | 告诉 Word 有这个加载项；`LoadBehavior = 3` 表示 Word 启动时自动载入。 |
 
-安装程序会读取 `WINWORD.EXE` 判断 Word 是 32 位还是 64 位，再写入对应的注册表视图，所以两种 Word 使用同一个安装包。
+安装程序会检测 Word 和 WPS 文字的实际位数，再写入相应的注册表视图。WPS 的加载项登记在 `Software\Kingsoft\Office\WPS\Addins\WordGit.Connect`，两个编辑器使用同一个安装包。
 
 ### 确认已经载入
 

@@ -1,4 +1,4 @@
-﻿param([switch]$Test, [switch]$WordTest, [switch]$UiTest)
+﻿param([switch]$Test, [switch]$WordTest, [switch]$UiTest, [switch]$WpsTest)
 $ErrorActionPreference = 'Stop'
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (-not (Test-Path -LiteralPath $framework)) { $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319' }
@@ -30,5 +30,6 @@ if ($Test) {
     Invoke-TestProgram 'RemoteSmoke' '远程同步测试'
 }
 if ($WordTest) { Invoke-TestProgram 'WordSmoke' 'Word 实机测试' -Extra @('/debug:pdbonly') }
+if ($WpsTest) { Invoke-TestProgram 'WordSmoke' 'WPS 文字实机测试' -Arguments @('--wps') -Extra @('/debug:pdbonly') }
 if ($UiTest) { Invoke-TestProgram 'UiSmoke' '界面布局测试' -Arguments @($bin) }
 if ($failures.Count -gt 0) { throw ('测试失败：' + ($failures -join '、')) }

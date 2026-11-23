@@ -46,7 +46,7 @@ namespace WordGit
                         throw new InvalidOperationException("Invalid filtered branch state");
                     Render(history, Path.Combine(args[0], "history-branch-min.png"));
                 }
-                VerifyRibbon();
+                VerifyRibbon(args[0]);
                 VerifyRemoteUi(args[0], items);
                 VerifyImportReview(args[0], items);
                 VerifyAboutDialog(args[0]);
@@ -641,7 +641,7 @@ namespace WordGit
             }
         }
 
-        private static void VerifyRibbon()
+        private static void VerifyRibbon(string output)
         {
             var ribbon = new System.Xml.XmlDocument();
             ribbon.LoadXml(new Connect().GetCustomUI("Microsoft.Word.Document"));
@@ -663,9 +663,30 @@ namespace WordGit
                 !callbacks.Contains("OnCheckUpdates") || !callbacks.Contains("OnImportReview") ||
                 new[] { "OnLinkRemote", "OnCloneRemote", "OnFetchRemote", "OnPullRemote", "OnPushRemote" }.Any(action => !callbacks.Contains(action)) ||
                 callbacks.Contains("OnCompressHistory") || ribbon.GetElementsByTagName("menu").Cast<System.Xml.XmlElement>().Any(menu => menu.GetAttribute("id") == "WordGitMaintenance") ||
-                buttons.Any(button => String.IsNullOrEmpty(button.GetAttribute("imageMso"))) ||
+                buttons.Any(button => String.IsNullOrEmpty(button.GetAttribute("imageMso")) == String.IsNullOrEmpty(button.GetAttribute("getImage"))) ||
                 callbacks.Any(callback => typeof(IWordGitActions).GetMethod(callback) == null || typeof(Connect).GetMethod(callback) == null))
                 throw new InvalidOperationException("Missing Ribbon button, icon, or COM callback");
+            var imageCallbacks = buttons.Select(button => button.GetAttribute("getImage")).Where(name => name.Length != 0).ToArray();
+            if (!imageCallbacks.OrderBy(name => name).SequenceEqual(new[] { "GetImageBranch", "GetImageCompare", "GetImageGraph" }))
+                throw new InvalidOperationException("Unexpected custom Ribbon icon callbacks");
+            foreach (var callback in imageCallbacks)
+            {
+                var method = typeof(Connect).GetMethod(callback);
+                if (method == null || typeof(IWordGitActions).GetMethod(callback) == null ||
+                    method.Invoke(new Connect(), new object[] { null }) == null)
+                    throw new InvalidOperationException("Custom Ribbon icon callback failed: " + callback);
+            }
+            foreach (var id in new[] { "graph", "branch", "compare" })
+            using (var bitmap = RibbonIcons.BitmapFor(id))
+            {
+                var opaque = 0;
+                for (var y = 0; y < bitmap.Height; y++)
+                    for (var x = 0; x < bitmap.Width; x++)
+                        if (bitmap.GetPixel(x, y).A > 0) opaque++;
+                if (bitmap.Width != 32 || bitmap.Height != 32 || opaque < 50)
+                    throw new InvalidOperationException("Custom Ribbon icon is empty: " + id);
+                bitmap.Save(Path.Combine(output, "ribbon-icon-" + id + ".png"));
+            }
         }
 
         private static void VerifyRemoteUi(string output, List<Revision> items)

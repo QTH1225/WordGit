@@ -15,26 +15,47 @@ namespace WordGit
             var root = AppPaths.NewSession();
             dynamic application = null;
             bool ownsSession = false;
+            var wps = args.Contains("--wps");
+            var wordProcesses = wps ? Process.GetProcessesByName("WINWORD").Select(process => process.Id).ToArray() : new int[0];
             try
             {
-                var existing = Process.GetProcessesByName("WINWORD").Select(process => (uint)process.Id).ToArray();
-                application = Activator.CreateInstance(Type.GetTypeFromProgID("Word.Application", true));
+                var processName = wps ? "wps" : "WINWORD";
+                var executable = wps ? "wps.exe" : "WINWORD.EXE";
+                var progId = wps ? "KWPS.Application" : "Word.Application";
+                var existing = Process.GetProcessesByName(processName).Select(process => (uint)process.Id).ToArray();
+                application = Activator.CreateInstance(Type.GetTypeFromProgID(progId, true));
+                Require(File.Exists(Path.Combine((string)application.Path, executable)), "Automation opened a different editor from " + progId);
                 if (existing.Length != 0)
                 {
-                    var added = Process.GetProcessesByName("WINWORD").Where(process => !existing.Contains((uint)process.Id)).ToList();
-                    if (added.Count != 1 || (int)application.Documents.Count != 0)
+                    var added = Process.GetProcessesByName(processName).Where(process => !existing.Contains((uint)process.Id)).ToList();
+                    if ((wps ? added.Count == 0 : added.Count != 1) || (int)application.Documents.Count != 0)
                         throw new InvalidOperationException("无法确认 Word 测试使用独立进程。现有文档未动。");
                 }
                 ownsSession = true;
                 application.Visible = false;
                 application.DisplayAlerts = 0;
+                Console.WriteLine("Testing " + progId + " " + application.Version);
+                if (args.Contains("--installed-addin")) VerifyInstalledAddIn(application);
                 var word = new WordDocuments(application);
+                if (wps)
+                {
+                    VerifyRevisionActions(application, word, root);
+                    VerifyWpsCompatibility(application, word, root);
+                    Require(Process.GetProcessesByName("WINWORD").All(process => wordProcesses.Contains(process.Id)),
+                        "WPS started a Microsoft Word process");
+                    Console.WriteLine("PASS: the WPS session did not start Word.");
+                    return;
+                }
                 if (args.Contains("--dialogs-only")) { VerifyDialogOwners(application, word); return; }
                 if (args.Contains("--pane-only")) { VerifyPaneLoading(application, root); return; }
                 if (args.Contains("--remote-only")) { VerifyRemoteCollaboration(application, word, root); return; }
-                VerifyRevisionActions(application, word, root);
-                VerifyImportedReview(application, word, root);
-                VerifyRemoteCollaboration(application, word, root);
+                if (args.Contains("--review-only")) { VerifyImportedReview(application, word, root); return; }
+                if (!args.Contains("--local-only"))
+                {
+                    VerifyRevisionActions(application, word, root);
+                    VerifyImportedReview(application, word, root);
+                    VerifyRemoteCollaboration(application, word, root);
+                }
                 var sourcePath = Path.Combine(root, "原始 试验报告.docx");
                 dynamic source = application.Documents.Add();
                 source.Content.Text = "试验报告\r本节记录配合比。\r";
@@ -48,6 +69,14 @@ namespace WordGit
                 var original = TestFiles.Snapshot((object)source);
                 var repo = new GitHistory(sourcePath, root);
                 var first = repo.Commit(original, "初稿", "测试", null);
+                var previewPath = Path.Combine(root, "初稿预览.docx");
+                WordDocuments.ExtractToFile(repo, first, previewPath);
+                dynamic preview = word.Open(previewPath, true);
+                Require((bool)preview.ReadOnly && (int)preview.Tables.Count == 1 &&
+                    TestFiles.ReadDocx(previewPath).SequenceEqual(original), "Word did not open the exact original in read-only mode");
+                preview.Close(SaveChanges: 0);
+                source.Activate();
+                Console.WriteLine("PASS: Word commits and previews the byte-identical original read-only.");
                 source.TrackRevisions = true;
                 source.Range(0, 0).InsertBefore("当前还有未保存修改\r");
                 source.Comments.Add(source.Range(0, 2), "定位这条批注");
@@ -184,6 +213,98 @@ namespace WordGit
                     Directory.Delete(root, true);
                 } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
+        }
+
+        private static void VerifyInstalledAddIn(dynamic application)
+        {
+            dynamic document = application.Documents.Add();
+            try
+            {
+                var addIn = application.COMAddIns.Item("WordGit.Connect");
+                Require((bool)addIn.Connect, "WordGit is registered but not connected in this editor");
+                Console.WriteLine("PASS: the installed WordGit COM add-in loads automatically.");
+            }
+            finally { document.Close(SaveChanges: 0); }
+        }
+
+        private static void VerifyWpsCompatibility(dynamic application, WordDocuments word, string root)
+        {
+            var path = Path.Combine(root, "WPS 测试稿.docx");
+            dynamic draft = application.Documents.Add();
+            draft.Content.Text = "送审版\r正文段落\r";
+            draft.Sections[1].Headers[1].Range.Text = "测试页眉";
+            draft.PageSetup.TopMargin = 55f;
+            dynamic table = draft.Tables.Add(draft.Range(draft.Content.End - 1, draft.Content.End - 1), 2, 2);
+            table.Cell(1, 1).Range.Text = "试件";
+            draft.SaveAs2(FileName: path, FileFormat: 16, AddToRecentFiles: false);
+            var repo = new GitHistory(path, root);
+            var first = repo.CommitFile(WordDocuments.SaveDocument((object)draft), "送审版", "测试", null);
+            var original = TestFiles.ReadDocx(path);
+            draft.Range(0, 0).InsertBefore("我方修改\r");
+            var second = repo.CommitFile(WordDocuments.SaveDocument((object)draft), "修改稿", "测试", first);
+            Require(first != null && second != null && repo.History().Count == 2, "WPS failed to commit both versions");
+            Console.WriteLine("PASS: WPS commits two native DOCX versions.");
+
+            var previewPath = Path.Combine(root, "送审版预览.docx");
+            WordDocuments.ExtractToFile(repo, first, previewPath);
+            dynamic preview = word.Open(previewPath, true);
+            Require((bool)preview.ReadOnly && (int)preview.Tables.Count == 1 &&
+                ((string)preview.Sections[1].Headers[1].Range.Text).Contains("测试页眉") &&
+                Math.Abs((float)preview.PageSetup.TopMargin - 55f) < 0.1f &&
+                TestFiles.ReadDocx(previewPath).SequenceEqual(original), "WPS preview failed to preserve the old DOCX");
+            preview.Close(SaveChanges: 0);
+            Console.WriteLine("PASS: WPS opens the exact old version read-only and preserves table, header and margin.");
+
+            var latest = TestFiles.ReadDocx(path);
+            draft.Activate();
+            draft.TrackRevisions = true;
+            draft.Range(0, 0).InsertBefore("未保存的修改\r");
+            var sourceRevisions = (int)draft.Revisions.Count;
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                dynamic compared = word.CompareCurrentExtracted(repo, second, (object)draft);
+                Require((int)compared.Revisions.Count > 0 &&
+                    ((string)compared.Content.Text).Contains("未保存的修改") &&
+                    (int)compared.Tables.Count == 1, "WPS comparison missed tracked edits or table");
+                compared.Close(SaveChanges: 0);
+                draft.Activate();
+            }
+            Require(!(bool)draft.Saved && (int)draft.Revisions.Count == sourceRevisions &&
+                TestFiles.ReadDocx(path).SequenceEqual(latest), "WPS comparison changed the working copy");
+            Console.WriteLine("PASS: WPS compares unsaved tracked edits repeatedly without saving the draft.");
+
+            draft.Close(SaveChanges: 0);
+            draft = word.Open(path, false);
+            word.Restore((object)draft, repo, first, "测试");
+            Require(TestFiles.ReadDocx(path).SequenceEqual(original) && repo.History().Count == 3 &&
+                repo.Extract(second).SequenceEqual(latest), "WPS restore changed historical bytes or refs");
+            Console.WriteLine("PASS: WPS restores identical bytes in a new commit.");
+
+            var returnPath = Path.Combine(root, "老师返稿.docx");
+            TestFiles.WriteNew(returnPath, original);
+            dynamic returned = word.Open(returnPath, false);
+            returned.Comments.Add(returned.Range(0, 2), "这里需要补充数据");
+            returned.TrackRevisions = true;
+            returned.Range(0, 0).InsertBefore("老师补充\r");
+            WordDocuments.SaveDocument((object)returned);
+            returned.Close(SaveChanges: 0);
+            var tip = repo.Head();
+            var review = repo.ImportReviewFile(returnPath, first, "review-wps", "老师", "main", tip);
+            Require(repo.BranchTip("review-wps") == review && repo.History("review-wps").First().Parents.Single() == first &&
+                repo.Extract(review).SequenceEqual(TestFiles.ReadDocx(returnPath)), "WPS archive altered the returned draft or its parent");
+            var archivePath = Path.Combine(root, "返稿预览.docx");
+            WordDocuments.ExtractToFile(repo, review, archivePath);
+            dynamic archive = word.Open(archivePath, true);
+            Require((int)archive.Comments.Count == 1 && (int)archive.Revisions.Count > 0,
+                "WPS did not reopen the archived comments and tracked revisions");
+            archive.Close(SaveChanges: 0);
+
+            var blocked = false;
+            try { word.ReviewBranchesExtracted(repo, first, tip, review); }
+            catch (InvalidOperationException error) { blocked = error.Message.Contains("WPS"); }
+            Require(blocked && repo.Head() == tip && repo.BranchTip("review-wps") == review &&
+                TestFiles.ReadDocx(path).SequenceEqual(original), "WPS merge must leave the original and archived history intact");
+            Console.WriteLine("PASS: WPS archives review bytes, comments and revisions; automatic tracked merge is unavailable.");
         }
 
         private static void VerifyRemoteCollaboration(dynamic application, WordDocuments word, string root)
@@ -343,9 +464,10 @@ namespace WordGit
                 var commentsId = repository.ImportReviewFile(commentsPath, basis, "review/仅批注", "导师甲", "main", target);
                 dynamic commentsMerge = word.ReviewBranchesExtracted(repository, basis, target, commentsId);
                 commentsMerge.AcceptAllRevisions();
-                Require(((string)commentsMerge.Content.Text).Contains("我在送审后新增的试验结果") &&
-                    WordDocuments.Comments((object)commentsMerge).Any(item => item.Text.Contains("仅批注")),
-                    "Comment-only review lost current edits or teacher comments");
+                var keptCurrent = ((string)commentsMerge.Content.Text).Contains("我在送审后新增的试验结果");
+                var keptComment = WordDocuments.Comments((object)commentsMerge).Any(item => item.Text.Contains("仅批注"));
+                Require(keptCurrent && keptComment, "Comment-only review lost current edits or teacher comments (current=" +
+                    keptCurrent + ", comment=" + keptComment + ")");
                 commentsMerge.Close(SaveChanges: 0);
 
                 var teacherPath = Path.Combine(root, "有批注和修订的老师返稿.docx");
@@ -462,7 +584,10 @@ namespace WordGit
             Require((bool)format.Find.Execute(FindText: "格式测试"), "Revision fixture formatting");
             format.Font.Italic = -1;
             document.Sections[1].Headers[1].Range.InsertBefore("页眉新增");
-            document.Comments.Add(document.Range(0, 2), "保留批注");
+            // Anchor to unchanged text: WPS splits a revision at a comment boundary.
+            dynamic commentAnchor = document.Content.Duplicate;
+            Require((bool)commentAnchor.Find.Execute(FindText: "保留正文"), "Revision fixture comment anchor");
+            document.Comments.Add(commentAnchor, "保留批注");
             var first = WordDocuments.ReviewItems((object)document).Single(item => item.RevisionType == 1 && item.RangeText.Contains("新增后接受"));
             word.ResolveReviewItem((object)document, first, true);
             Require(((string)document.Content.Text).Contains("新增后接受") &&
