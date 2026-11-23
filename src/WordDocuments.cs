@@ -467,18 +467,13 @@ namespace WordGit
             return ReviewStaged(folder, leftFile, rightFile, false, null);
         }
 
-        public object MergeExtracted(GitHistory repo, string originalRevision, string revisedRevision, string externalPath)
+        private object ReviewReturnAgainstBase(GitHistory repo, string basisRevision, string externalPath)
         {
             var folder = AppPaths.NewSession();
             var leftFile = Path.Combine(folder, "基准版本.docx");
             var rightFile = Path.Combine(folder, "修订版本.docx");
-            ExtractToFile(repo, originalRevision, leftFile);
-            if (externalPath == null) ExtractToFile(repo, revisedRevision, rightFile);
-            else
-            {
-                DocxFormat.ValidateFile(externalPath);
-                CopyShared(externalPath, rightFile);
-            }
+            ExtractToFile(repo, basisRevision, leftFile);
+            CopyShared(externalPath, rightFile);
             return ReviewStaged(folder, leftFile, rightFile, true, null);
         }
 
@@ -542,13 +537,30 @@ namespace WordGit
             return ReviewStaged(folder, targetFile, sourceFile, true, null);
         }
 
+        internal object ReviewReturnedDraft(GitHistory repo, string basisRevision, string targetRevision, string externalPath, string branch)
+        {
+            DocxFormat.ValidateFile(externalPath);
+            if (repo.SnapshotChecksum(basisRevision) == repo.SnapshotChecksum(targetRevision))
+                return ReviewReturnAgainstBase(repo, basisRevision, externalPath);
+
+            var folder = AppPaths.NewSession();
+            var targetFile = Path.Combine(folder, "当前稿修订.docx");
+            var returnedFile = Path.Combine(folder, "返稿修订.docx");
+            SaveBranchRevisionsToFile(repo, basisRevision, targetRevision, branch, targetFile);
+            SaveReviewToFile(ReviewReturnAgainstBase(repo, basisRevision, externalPath), returnedFile);
+            return ReviewStaged(folder, targetFile, returnedFile, true, null);
+        }
+
         private void SaveBranchRevisionsToFile(GitHistory repo, string basisRevision, string versionRevision, string author, string outputPath,
             bool preserveRevisions = false)
         {
-            object document = null;
+            SaveReviewToFile(ReviewFiles(repo, basisRevision, versionRevision, preserveRevisions, author), outputPath);
+        }
+
+        private void SaveReviewToFile(object document, string outputPath)
+        {
             try
             {
-                document = ReviewFiles(repo, basisRevision, versionRevision, preserveRevisions, author);
                 ((dynamic)document).SaveAs2(FileName: outputPath, FileFormat: 16, AddToRecentFiles: false);
             }
             finally

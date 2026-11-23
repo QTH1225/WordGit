@@ -131,9 +131,8 @@ namespace WordGit
     <button id=""WordGitDeleteBranch"" label=""删&#x2060;除&#x200B;分&#x2060;支"" size=""large"" imageMso=""ReviewRejectChange"" onAction=""OnDeleteBranch"" supertip=""删除已经合入当前分支的其他本地分支。"" />
   </group>
   <group id=""WordGitReview"" label=""比较与审阅"">
-    <button id=""WordGitImportReview"" label=""导&#x2060;入&#x200B;审&#x2060;阅&#x2060;稿"" size=""large"" imageMso=""FileOpen"" onAction=""OnImportReview"" supertip=""选择送审版本与老师返稿，保留原始批注和修订并导入独立分支，再与当前稿合并。"" />
+    <button id=""WordGitImportReview"" label=""返&#x2060;稿&#x200B;合&#x2060;并"" size=""large"" imageMso=""FileOpen"" onAction=""OnImportReview"" supertip=""选择送审版本和返稿文件，生成 Word 修订合并稿，可选择将原始返稿保存为独立分支。"" />
     <button id=""WordGitCompare"" label=""对&#x2060;比&#x200B;版&#x2060;本"" size=""large"" imageMso=""ReviewCompareMenu"" onAction=""OnCompare"" supertip=""选一版与当前稿对比，或按 Ctrl 选两版对比。"" />
-    <button id=""WordGitMergeReview"" label=""合&#x2060;并&#x200B;审&#x2060;阅&#x2060;稿"" size=""large"" imageMso=""ReviewTrackChanges"" onAction=""OnMergeReview"" supertip=""选择基准版和返稿，生成 Word 修订稿。"" />
   </group>
   <group id=""WordGitRemote"" label=""远程协作"">
     <button id=""WordGitLinkRemote"" label=""关&#x2060;联&#x200B;仓&#x2060;库"" size=""large"" imageMso=""HyperlinkInsert"" onAction=""OnLinkRemote"" supertip=""为当前稿件关联一个 GitHub 仓库并获取远程历史。"" />
@@ -167,7 +166,7 @@ namespace WordGit
         public void OnCompare(object control) { OpenHistory(HistoryAction.Compare); }
         public void OnExport(object control) { OpenHistory(HistoryAction.Export); }
         public void OnRestore(object control) { OpenHistory(HistoryAction.Restore); }
-        public void OnMergeReview(object control) { OpenHistory(HistoryAction.Merge); }
+        public void OnMergeReview(object control) { OnImportReview(control); }
         public void OnCreateBranch(object control) { OpenHistory(HistoryAction.CreateBranch); }
         public void OnSwitchBranch(object control) { OpenHistory(HistoryAction.SwitchBranch); }
         public void OnMergeBranch(object control) { OpenHistory(HistoryAction.MergeBranch); }
@@ -187,7 +186,7 @@ namespace WordGit
         private void OpenHistory(HistoryAction? command)
         {
             var changesHistory = !command.HasValue || command == HistoryAction.CreateBranch ||
-                command == HistoryAction.SwitchBranch || command == HistoryAction.Restore || command == HistoryAction.DeleteBranch || command == HistoryAction.ImportReview;
+                command == HistoryAction.SwitchBranch || command == HistoryAction.Restore || command == HistoryAction.DeleteBranch;
             Guard(() => { while (ManageHistory(command) && !command.HasValue) { } }, changesHistory);
         }
 
@@ -253,7 +252,7 @@ namespace WordGit
                         else if (action == HistoryAction.Compare) CompareVersions(document, repo, revision, other);
                         else PreviewVersion(historyPath, repo, revision);
                     }
-                }, action == HistoryAction.Commit || action == HistoryAction.ImportReview));
+                }, action == HistoryAction.Commit));
         }
 
         private object DocumentForWindow(int handle)
@@ -366,9 +365,9 @@ namespace WordGit
             var head = repo.Head();
             if (review != null && (head != review.Head || branch != review.Branch))
                 throw new InvalidOperationException("审阅期间原文档的历史已更新。请先比较最新版本，再重新合并。");
-            if (review != null && review.SourceBranch != null)
+            if (review != null && (review.SourceBranch != null || review.ApplyToOriginal))
             {
-                FinishBranchMerge(document, path, review, repo);
+                FinishWorkingCopyMerge(document, path, review, repo);
                 return;
             }
             var target = Path.GetFileName(historyPath);
@@ -439,7 +438,7 @@ namespace WordGit
             switch (action)
             {
                 case HistoryAction.ImportReview:
-                    ImportReview(document, historyPath, repo, branch, activeTip, basis);
+                    MergeReturnedDraft(document, historyPath, repo, branch, activeTip, basis, branches);
                     break;
                 case HistoryAction.CreateBranch:
                     var name = Dialogs.Ask(word.Owner, "从 " + basis.Id.Substring(0, 8) + " 新建分支", "", true);
@@ -476,24 +475,13 @@ namespace WordGit
                     RestoreVersion(document, historyPath, repo, basis.Id);
                     break;
                 case HistoryAction.Merge:
-                    string externalPath = null;
-                    if (other == null)
-                    {
-                        using (var open = new OpenFileDialog { Filter = "Word 审阅稿 (*.docx)|*.docx", Title = "选择返回的 Word 审阅稿" })
-                        {
-                            if (open.ShowDialog(word.Owner) != DialogResult.OK) return true;
-                            externalPath = open.FileName;
-                        }
-                    }
-                    var head = repo.Head();
                     using (Busy())
                     {
-                        dynamic result = word.MergeExtracted(repo, basis.Id, other == null ? null : other.Id, externalPath);
+                        var result = word.ReviewFiles(repo, basis.Id, other.Id, true);
                         var resultPath = Path.Combine(AppPaths.NewSession(), Path.GetFileNameWithoutExtension(historyPath) + "-合并稿.docx");
-                        result.SaveAs2(FileName: resultPath, FileFormat: 16, AddToRecentFiles: false);
-                        new PendingReview { Original = historyPath, Branch = repo.ActiveBranch() }.Save(resultPath, head);
+                        SaveMergeDraft(result, resultPath, new PendingReview { Original = historyPath, Branch = branch }, activeTip);
                     }
-                    Notice("已打开合并稿。请在 Word 的「审阅」中接受或拒绝修改，再点击「提交版本」。");
+                    Notice("已打开合并稿。请接受或拒绝修订，再点击「提交版本」。");
                     break;
             }
             return false;
@@ -566,33 +554,62 @@ namespace WordGit
             }, false, () => RefreshPane(path), ReplacingStatus);
         }
 
-        private void StartBranchMerge(object document, string path, GitHistory repo, string branch, string tip, string source)
+        private static void CheckMergeTarget(object document, string path, GitHistory repo, string tip)
         {
             WordDocuments.EnsureReplaceable(path);
             if (!(bool)((dynamic)document).Saved || WordDocuments.FileChecksum(path) != repo.SnapshotChecksum(tip))
-                throw new InvalidOperationException("请先提交当前分支的修改，再合并分支。");
+                throw new InvalidOperationException("请先提交当前分支的修改，再生成合并稿。");
+        }
+
+        private void StartBranchMerge(object document, string path, GitHistory repo, string branch, string tip, string source)
+        {
+            CheckMergeTarget(document, path, repo, tip);
             var sourceTip = repo.BranchTip(source);
             if (sourceTip == null) throw new InvalidOperationException("找不到来源分支。");
             if (repo.IsAncestor(sourceTip, tip)) { Notice("来源分支的提交已包含在当前分支。"); return; }
             var basis = repo.MergeBase(tip, sourceTip);
-            dynamic result = word.ReviewBranchesExtracted(repo, basis, tip, sourceTip, branch, GitHistory.ReferenceLabel(source),
+            var result = word.ReviewBranchesExtracted(repo, basis, tip, sourceTip, branch, GitHistory.ReferenceLabel(source),
                 source.StartsWith(GitHistory.RemotePrefix, StringComparison.Ordinal));
             var resultPath = Path.Combine(AppPaths.NewSession(), Path.GetFileNameWithoutExtension(path) + "-分支合并稿.docx");
-            result.SaveAs2(FileName: resultPath, FileFormat: 16, AddToRecentFiles: false);
-            new PendingReview { Original = path, Branch = branch, SourceBranch = source, SourceTip = sourceTip }.Save(resultPath, tip);
-            Notice("已打开「" + GitHistory.ReferenceLabel(source) + " → " + branch + "」的修订稿。请在 Word 审阅中接受或拒绝修改，再点击「提交版本」完成合并。此时分支尚未改变。");
+            SaveMergeDraft(result, resultPath,
+                new PendingReview { Original = path, Branch = branch, SourceBranch = source, SourceTip = sourceTip }, tip);
+            Notice("已打开「" + GitHistory.ReferenceLabel(source) + " → " + branch + "」的修订稿。请接受或拒绝修订，再点击「提交版本」完成合并。");
         }
 
-        private void ImportReview(object document, string path, GitHistory repo, string branch, string tip, Revision basis)
+        private void SaveMergeDraft(object result, string resultPath, PendingReview review, string head)
+        {
+            dynamic document = result;
+            document.SaveAs2(FileName: resultPath, FileFormat: 16, AddToRecentFiles: false);
+            review.Save(resultPath, head);
+            if (panes == null) return;
+            try { ShowPane((object)document.ActiveWindow); }
+            catch (Exception error) { AppPaths.LogError("open merge review pane: " + error); }
+        }
+
+        private void MergeReturnedDraft(object document, string path, GitHistory repo, string branch, string tip, Revision basis, string[] branches)
         {
             ImportReviewOptions options;
-            using (var picker = new ImportReviewDialog(path, basis, branch))
+            using (var picker = new ImportReviewDialog(path, basis, branch, branches))
             {
                 if (picker.ShowDialog(word.Owner) != DialogResult.OK) return;
                 options = picker.Options;
             }
+            if (options.Branch == null)
+            {
+                using (Busy())
+                {
+                    CheckMergeTarget(document, path, repo, tip);
+                    var mergeBase = repo.MergeBase(tip, basis.Id);
+                    var result = word.ReviewReturnedDraft(repo, mergeBase, tip, options.FilePath, branch);
+                    var resultPath = Path.Combine(AppPaths.NewSession(), Path.GetFileNameWithoutExtension(path) + "-返稿合并稿.docx");
+                    SaveMergeDraft(result, resultPath, new PendingReview { Original = path, Branch = branch, ApplyToOriginal = true }, tip);
+                }
+                Notice("已打开返稿合并稿。接受或拒绝修订后，点击「提交版本」将结果合入当前稿。");
+                return;
+            }
+
             UiThread.EnsureContext();
-            RunInBackground(path, "导入审阅稿 · " + options.Branch, async token =>
+            RunInBackground(path, "保存返稿 · " + options.Branch, async token =>
             {
                 var imported = await Task.Run(() => {
                     using (repo.Lock()) return repo.ImportReviewFile(options.FilePath, basis.Id, options.Branch,
@@ -600,7 +617,7 @@ namespace WordGit
                 });
                 var saved = "返稿已保存到「" + options.Branch + "」，提交 " + imported.Substring(0, 8) + "。";
                 RefreshPane(path);
-                if (!options.MergeAfterImport) return saved + " 可随时从「合并分支」继续审阅。";
+                if (!options.CreateMergeDraft) return saved + " 可随时从「合并分支」继续审阅。";
                 try
                 {
                     StartBranchMerge(document, path, repo, branch, tip, options.Branch);
@@ -612,7 +629,7 @@ namespace WordGit
                     return saved + Environment.NewLine + "生成合并稿未完成：" + error.Message +
                         Environment.NewLine + "返稿分支已保留。请处理当前稿状态后，从「合并分支」选择该返稿分支继续。";
                 }
-            }, false, () => RefreshPane(path));
+            }, false);
         }
 
         private void LinkRemote()
@@ -705,17 +722,19 @@ namespace WordGit
                 using (repo.Lock())
                     word.ReplaceWorkingCopy(repo, path, headHash, staged, remoteHash,
                         () => repo.FastForwardRemote(branch, head, state.RemoteReference, state.RemoteTip));
+                RefreshPane(path);
                 return "已拉取远程版本 " + state.RemoteTip.Substring(0, 8) + "。原有提交继续保留。";
-            }, true, () => RefreshPane(path));
+            }, true);
         }
 
-        private void FinishBranchMerge(object document, string path, PendingReview review, GitHistory repo)
+        private void FinishWorkingCopyMerge(object document, string path, PendingReview review, GitHistory repo)
         {
             if ((int)((dynamic)document).Revisions.Count > 0 || WordDocuments.ReviewItems(document).Any(item => !item.IsComment))
-                throw new InvalidOperationException("这份分支合并稿仍有待处理修订。请先在 Word「审阅」中接受或拒绝修改。");
-            if (repo.BranchTip(review.SourceBranch) != review.SourceTip)
+                throw new InvalidOperationException("合并稿仍有待处理的修订，请先逐条接受或拒绝。");
+            if (review.SourceBranch != null && repo.BranchTip(review.SourceBranch) != review.SourceTip)
                 throw new InvalidOperationException("来源分支已更新，请重新生成合并修订稿。");
-            var message = Dialogs.Ask(word.Owner, "确认合并到「" + review.Branch + "」", "合并分支 " + GitHistory.ReferenceLabel(review.SourceBranch));
+            var summary = review.SourceBranch == null ? "合并返稿" : "合并分支 " + GitHistory.ReferenceLabel(review.SourceBranch);
+            var message = Dialogs.Ask(word.Owner, "确认合并到「" + review.Branch + "」", summary);
             if (message == null) return;
             WordDocuments.SaveDocument(document);
             var author = Author;
@@ -730,8 +749,10 @@ namespace WordGit
                             review.SourceBranch, review.SourceTip));
                 review.SourceBranch = null;
                 review.SourceTip = null;
-                review.Save(path, commit);
-                return "已合并到「" + review.Branch + "」，提交 " + commit.Substring(0, 8) + "。";
+                review.ApplyToOriginal = false;
+                review.Save(path, commit ?? review.Head);
+                return commit == null ? "合并结果与最新提交一致。" :
+                    "已合并到「" + review.Branch + "」，提交 " + commit.Substring(0, 8) + "。";
             }, false, () => RefreshPane(review.Original));
         }
 
@@ -798,18 +819,28 @@ namespace WordGit
 
         private sealed class PendingReview
         {
+            private const string ApplyMarker = "apply-to-original";
             public string Original, Head, Branch, SourceBranch, SourceTip;
+            public bool ApplyToOriginal;
             public static PendingReview Load(string path)
             {
                 if (!AppPaths.IsSessionFile(path) || !File.Exists(path + ".wordgit")) return null;
                 var saved = File.ReadAllLines(path + ".wordgit");
-                if ((saved.Length != 2 && saved.Length != 5) || !Path.IsPathRooted(saved[0])) throw new InvalidDataException("合并稿的版本关联已损坏。");
+                var apply = saved.Length == 6 && saved[5] == ApplyMarker;
+                if ((saved.Length != 2 && saved.Length != 5 && !apply) || !Path.IsPathRooted(saved[0]))
+                    throw new InvalidDataException("合并稿的版本关联已损坏。");
                 return new PendingReview { Original = saved[0], Head = saved[1], Branch = saved.Length == 2 ? "main" : saved[2],
-                    SourceBranch = saved.Length == 5 && saved[3].Length > 0 ? saved[3] : null,
-                    SourceTip = saved.Length == 5 && saved[4].Length > 0 ? saved[4] : null };
+                    SourceBranch = saved.Length >= 5 && saved[3].Length > 0 ? saved[3] : null,
+                    SourceTip = saved.Length >= 5 && saved[4].Length > 0 ? saved[4] : null,
+                    ApplyToOriginal = apply };
             }
 
-            public void Save(string path, string head) { File.WriteAllLines(path + ".wordgit", new[] { Original, head, Branch, SourceBranch ?? "", SourceTip ?? "" }); }
+            public void Save(string path, string head)
+            {
+                var metadata = new List<string> { Original, head, Branch, SourceBranch ?? "", SourceTip ?? "" };
+                if (ApplyToOriginal) metadata.Add(ApplyMarker);
+                File.WriteAllLines(path + ".wordgit", metadata);
+            }
         }
     }
 }

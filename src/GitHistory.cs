@@ -141,6 +141,16 @@ namespace WordGit
             Run(null, null, "update-ref", reference, revision, new string('0', revision.Length));
         }
 
+        internal static string ReviewBranchConflict(string name, IEnumerable<string> branches)
+        {
+            var comparison = StringComparison.OrdinalIgnoreCase;
+            var conflict = branches.FirstOrDefault(branch => String.Equals(name, branch, comparison) ||
+                name.StartsWith(branch + "/", comparison) || branch.StartsWith(name + "/", comparison));
+            if (conflict == null) return null;
+            return "返稿分支「" + name + "」与已有分支「" + conflict +
+                "」冲突。请换一个名称，例如 review-老师审阅。";
+        }
+
         public string ImportReviewFile(string path, string basis, string newBranch, string reviewer,
             string targetBranch, string expectedTarget)
         {
@@ -149,8 +159,8 @@ namespace WordGit
             EnsureRepository();
             var reference = BranchRef(newBranch);
             Run(null, null, "check-ref-format", reference);
-            if (Branches().Any(branch => String.Equals(branch, newBranch, StringComparison.OrdinalIgnoreCase)))
-                throw new InvalidOperationException("同名分支已存在，请换一个返稿分支名。");
+            var conflict = ReviewBranchConflict(newBranch, Branches());
+            if (conflict != null) throw new InvalidOperationException(conflict);
             basis = Id(basis);
             if (expectedTarget == null || ActiveBranch() != targetBranch || BranchTip(targetBranch) != expectedTarget)
                 throw new InvalidOperationException("当前分支或提交已变化，请刷新后重新导入。");

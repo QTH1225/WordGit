@@ -371,6 +371,25 @@ namespace WordGit
                 var originalRevisionCount = (int)sourcePreview.Revisions.Count;
                 Require(originalRevisionCount > 0 && originalAuthors.Length > 0, "Saved teacher file lost its fixture revisions");
                 sourcePreview.Close(SaveChanges: 0);
+
+                var referencesBeforeDirect = repository.ReferenceState();
+                Console.WriteLine("Running native review without archiving the teacher file…");
+                dynamic direct = word.ReviewReturnedDraft(repository, basis, target, teacherPath, "main");
+                try
+                {
+                    var directItems = WordDocuments.ReviewItems((object)direct);
+                    Require(directItems.Any(item => !item.IsComment && originalAuthors.Contains(item.Author)) &&
+                        directItems.Any(item => item.IsComment && item.Text.Contains("核对")), "Direct merge lost teacher review metadata");
+                    direct.AcceptAllRevisions();
+                    var directBody = (string)direct.Content.Text;
+                    Require(directBody.Contains("我在送审后新增的试验结果") && directBody.Contains("老师修改后的试验说明"),
+                        "Direct merge lost either the teacher edits or post-submission work");
+                    Require(repository.ReferenceState() == referencesBeforeDirect &&
+                        WordDocuments.FileChecksum(path) == targetHash && TestFiles.ReadDocx(teacherPath).SequenceEqual(raw),
+                        "Generating a direct merge changed refs or an input file");
+                }
+                finally { direct.Close(SaveChanges: 0); }
+
                 string imported;
                 using (repository.Lock())
                     imported = repository.ImportReviewFile(teacherPath, basis, "review/导师一审", "导师甲", "main", target);

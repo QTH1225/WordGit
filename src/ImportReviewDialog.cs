@@ -8,7 +8,7 @@ namespace WordGit
     internal sealed class ImportReviewOptions
     {
         internal string FilePath, Branch, Reviewer;
-        internal bool MergeAfterImport;
+        internal bool CreateMergeDraft;
     }
 
     internal sealed class ImportReviewDialog : Form
@@ -16,16 +16,17 @@ namespace WordGit
         internal readonly TextBox FilePath = new TextBox { Dock = DockStyle.Fill, AccessibleName = "老师返稿文件" };
         internal readonly TextBox BranchName = new TextBox { Dock = DockStyle.Fill, AccessibleName = "返稿分支名" };
         internal readonly TextBox Reviewer = new TextBox { Dock = DockStyle.Fill, Text = "老师返稿", AccessibleName = "返稿来源" };
-        internal readonly CheckBox MergeAfterImport = new CheckBox { AutoSize = true, Checked = true,
-            Text = "导入后与当前分支生成 Word 修订合并稿", Margin = new Padding(0, 10, 0, 8) };
+        internal readonly CheckBox SaveOriginal = new CheckBox { AutoSize = true, Checked = true,
+            Text = "将原始返稿保存为独立分支", Margin = new Padding(0, 10, 0, 8) };
         internal ImportReviewOptions Options { get; private set; }
         private readonly string originalPath;
-        private readonly Button import = DialogLayout.Button("导入返稿");
+        private readonly Button merge = DialogLayout.Button("生成合并稿");
+        private readonly Button saveOnly = DialogLayout.Button("仅保存为分支");
 
-        internal ImportReviewDialog(string originalPath, Revision basis, string currentBranch)
+        internal ImportReviewDialog(string originalPath, Revision basis, string currentBranch, string[] branches)
         {
             this.originalPath = Path.GetFullPath(originalPath);
-            Text = "WordGit · 导入审阅稿为分支";
+            Text = "WordGit · 返稿合并";
             Font = SystemFonts.MessageBoxFont;
             AutoScaleMode = AutoScaleMode.Font;
             StartPosition = FormStartPosition.CenterParent;
@@ -33,17 +34,26 @@ namespace WordGit
             MinimumSize = new Size(550, 435);
             MinimizeBox = false;
             MaximizeBox = false;
-            var layout = DialogLayout.Stack(7);
-            for (var i = 0; i < 7; i++) layout.RowStyles.Add(new RowStyle(i == 5 ? SizeType.Percent : SizeType.AutoSize, i == 5 ? 100 : 0));
-            Controls.Add(layout);
+            var outer = DialogLayout.Stack(2);
+            outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            Controls.Add(outer);
+
+            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Margin = new Padding(0) };
+            outer.Controls.Add(scroll, 0, 0);
+            var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 6 };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (var row = 0; row < 6; row++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            scroll.Controls.Add(layout);
             var subject = basis.Subject.Length > 60 ? basis.Subject.Substring(0, 57) + "…" : basis.Subject;
             var branch = currentBranch.Length > 40 ? currentBranch.Substring(0, 37) + "…" : currentBranch;
             var caption = DialogLayout.Label("送审基准  " + basis.Id.Substring(0, 8) + " · " + subject +
                 Environment.NewLine + "当前分支  " + branch);
             caption.AccessibleDescription = basis.Message + Environment.NewLine + currentBranch;
-            caption.MaximumSize = new Size(480, 0);
             layout.Controls.Add(caption, 0, 0);
-            var fileRow = Field("老师返稿", FilePath);
+            var fileRow = Field("返稿文件", FilePath);
             fileRow.ColumnCount = 3;
             fileRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             var browse = DialogLayout.Button("选择文件…");
@@ -54,42 +64,74 @@ namespace WordGit
             };
             fileRow.Controls.Add(browse, 2, 0);
             layout.Controls.Add(fileRow, 0, 1);
-            BranchName.Text = "review/" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
-            layout.Controls.Add(Field("返稿分支", BranchName), 0, 2);
-            layout.Controls.Add(Field("返稿来源", Reviewer), 0, 3);
-            layout.Controls.Add(MergeAfterImport, 0, 4);
-            var note = new TextBox { Multiline = true, ReadOnly = true, Dock = DockStyle.Fill, BorderStyle = BorderStyle.None,
-                BackColor = SystemColors.Control, ForeColor = SystemColors.ControlText, ScrollBars = ScrollBars.Vertical,
-                MinimumSize = new Size(0, 95), TabStop = false,
-                Text = "返稿按磁盘中已保存的原始文件入库，保留批注与修订。返稿来源只用于 Git 提交作者。\r\n\r\n导入不切换当前分支，也不覆盖当前稿。生成合并稿前，请先提交当前稿的修改；审阅确认后再提交合并结果。" };
+            var defaultBranch = "review-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            BranchName.Text = defaultBranch;
+            for (var suffix = 2; GitHistory.ReviewBranchConflict(BranchName.Text, branches) != null; suffix++)
+                BranchName.Text = defaultBranch + "-" + suffix;
+            layout.Controls.Add(SaveOriginal, 0, 2);
+            var branchRow = Field("返稿分支", BranchName);
+            var reviewerRow = Field("返稿来源", Reviewer);
+            layout.Controls.Add(branchRow, 0, 3);
+            layout.Controls.Add(reviewerRow, 0, 4);
+            var note = DialogLayout.Label("生成合并稿前，请先提交当前稿的修改。");
             layout.Controls.Add(note, 0, 5);
+            Action wrap = () => {
+                var width = Math.Max(120, scroll.ClientSize.Width - SystemInformation.VerticalScrollBarWidth);
+                caption.MaximumSize = new Size(width, 0);
+                note.MaximumSize = new Size(width, 0);
+                SaveOriginal.MaximumSize = new Size(width, 0);
+            };
+            scroll.SizeChanged += (sender, args) => wrap();
+            wrap();
             var buttons = DialogLayout.Buttons(true);
             var cancel = DialogLayout.Button("取消");
             cancel.DialogResult = DialogResult.Cancel;
-            import.Enabled = false;
-            import.Click += (sender, args) => {
+            buttons.WrapContents = true;
+            Action<bool> complete = createMergeDraft => {
                 try {
                     var path = Path.GetFullPath(FilePath.Text.Trim());
                     if (!File.Exists(path) || !String.Equals(Path.GetExtension(path), ".docx", StringComparison.OrdinalIgnoreCase))
                         throw new InvalidOperationException("请选择已经保存的 .docx 返稿。");
                     if (String.Equals(path, this.originalPath, StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidOperationException("请选择独立的老师返稿文件，不能选择当前原稿。");
-                    Options = new ImportReviewOptions { FilePath = path, Branch = BranchName.Text.Trim(),
-                        Reviewer = Reviewer.Text.Trim(), MergeAfterImport = MergeAfterImport.Checked };
+                        throw new InvalidOperationException("请选择收到的返稿文件。");
+                    var branchName = SaveOriginal.Checked ? BranchName.Text.Trim() : null;
+                    var conflict = branchName == null ? null : GitHistory.ReviewBranchConflict(branchName, branches);
+                    if (conflict != null)
+                    {
+                        MessageBox.Show(this, conflict, "WordGit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        BranchName.Focus();
+                        BranchName.SelectAll();
+                        return;
+                    }
+                    Options = new ImportReviewOptions { FilePath = path, Branch = branchName,
+                        Reviewer = branchName == null ? null : Reviewer.Text.Trim(), CreateMergeDraft = createMergeDraft };
                     DialogResult = DialogResult.OK;
                 }
                 catch (Exception error) { MessageBox.Show(this, error.Message, "WordGit", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             };
-            EventHandler validate = (sender, args) => import.Enabled = File.Exists(FilePath.Text.Trim()) &&
-                !String.IsNullOrWhiteSpace(BranchName.Text) && !String.IsNullOrWhiteSpace(Reviewer.Text);
+            merge.Click += (sender, args) => complete(true);
+            saveOnly.Click += (sender, args) => complete(false);
+            EventHandler validate = (sender, args) => {
+                var keepBranch = SaveOriginal.Checked;
+                var hasFile = File.Exists(FilePath.Text.Trim());
+                var branchReady = !String.IsNullOrWhiteSpace(BranchName.Text) && !String.IsNullOrWhiteSpace(Reviewer.Text);
+                branchRow.Visible = keepBranch;
+                reviewerRow.Visible = keepBranch;
+                saveOnly.Visible = keepBranch;
+                saveOnly.Enabled = hasFile && branchReady;
+                merge.Enabled = hasFile && (!keepBranch || branchReady);
+            };
             FilePath.TextChanged += validate;
             BranchName.TextChanged += validate;
             Reviewer.TextChanged += validate;
+            SaveOriginal.CheckedChanged += validate;
+            buttons.Controls.Add(merge);
+            buttons.Controls.Add(saveOnly);
             buttons.Controls.Add(cancel);
-            buttons.Controls.Add(import);
-            layout.Controls.Add(buttons, 0, 6);
-            AcceptButton = import;
+            outer.Controls.Add(buttons, 0, 1);
+            AcceptButton = merge;
             CancelButton = cancel;
+            validate(this, EventArgs.Empty);
         }
 
         private TableLayoutPanel Field(string label, Control value)

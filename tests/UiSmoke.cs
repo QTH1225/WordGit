@@ -55,6 +55,7 @@ namespace WordGit
                 VerifyRevisionActions(args[0]);
                 VerifyAsyncHistoryPane(args[0], items);
                 VerifyPaneReuse(items);
+                VerifyMergeDraftPane(args[0], one, three);
                 using (var compare = new HistoryDialog("论文独创性声明.docx", items, true, one, command: HistoryAction.Compare))
                 {
                     compare.Size = compare.MinimumSize;
@@ -249,7 +250,7 @@ namespace WordGit
                 commit.PerformClick();
                 if (!commit.Enabled || selected.Last() != "Commit::")
                     throw new InvalidOperationException("Pane commit must target its current document and branch");
-                var import = Descendants(pane).OfType<Button>().Single(button => button.Text == "导入返稿");
+                var import = Descendants(pane).OfType<Button>().Single(button => button.Text == "返稿合并");
                 import.PerformClick();
                 if (!import.Enabled || selected.Last() != "ImportReview::")
                     throw new InvalidOperationException("Pane review import did not target its document");
@@ -482,6 +483,49 @@ namespace WordGit
             }
         }
 
+        private static void VerifyMergeDraftPane(string output, string head, string sourceTip)
+        {
+            using (var host = new Form { ClientSize = new Size(420, 720), Opacity = 0, ShowInTaskbar = false })
+            {
+                host.Show();
+                var original = Path.Combine(output, "原稿.docx");
+                var resultPath = Path.Combine(output, "分支合并稿.docx");
+                var draftWindow = new PaneTestWindow { Hwnd = host.Handle.ToInt32() };
+                var draft = new PaneTestDraft { ActiveWindow = draftWindow };
+                draftWindow.Document = draft;
+                var originalWindow = new PaneTestWindow { Hwnd = 0 };
+                dynamic application = new System.Dynamic.ExpandoObject();
+                application.ActiveWindow = originalWindow;
+                application.Windows = new List<PaneTestWindow> { originalWindow, draftWindow };
+
+                const System.Reflection.BindingFlags fields = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var connect = new Connect();
+                typeof(Connect).GetField("application", fields).SetValue(connect, (object)application);
+                var factory = new PaneTestFactory(host);
+                connect.CTPFactoryAvailable(factory);
+                Array custom = null;
+                try
+                {
+                    var reviewType = typeof(Connect).GetNestedType("PendingReview", System.Reflection.BindingFlags.NonPublic);
+                    var review = Activator.CreateInstance(reviewType, true);
+                    reviewType.GetField("Original").SetValue(review, original);
+                    reviewType.GetField("Branch").SetValue(review, "main");
+                    reviewType.GetField("SourceBranch").SetValue(review, "review");
+                    reviewType.GetField("SourceTip").SetValue(review, sourceTip);
+                    typeof(Connect).GetMethod("SaveMergeDraft", fields).Invoke(connect, new object[] { draft, resultPath, review, head });
+                    if (factory.Creates != 1 || !factory.Pane.Visible || !factory.Pane.Control.CanReuse(resultPath) ||
+                        !File.ReadAllLines(resultPath + ".wordgit").SequenceEqual(new[] { original, head, "main", "review", sourceTip }))
+                        throw new InvalidOperationException("The saved merge draft did not get its own visible review pane");
+                    Console.WriteLine("PASS: the saved merge draft opens its own pane while preserving both history parents.");
+                }
+                finally
+                {
+                    connect.OnDisconnection(0, ref custom);
+                    File.Delete(resultPath + ".wordgit");
+                }
+            }
+        }
+
         private static void VerifyRevisionActions(string output)
         {
             var pending = new List<DocumentReviewItem> {
@@ -582,7 +626,10 @@ namespace WordGit
                 throw new InvalidOperationException("Storage optimization is exposed as a primary Ribbon button");
             var buttons = ribbon.GetElementsByTagName("button").Cast<System.Xml.XmlElement>().ToArray();
             var callbacks = buttons.Select(button => button.GetAttribute("onAction")).ToArray();
-            if (buttons.Length != 19 || callbacks.Distinct().Count() != 19 || !callbacks.Contains("OnDeleteBranch") ||
+            if (buttons.Length != 18 || callbacks.Distinct().Count() != 18 || !callbacks.Contains("OnDeleteBranch") ||
+                callbacks.Contains("OnMergeReview") ||
+                !buttons.Any(button => button.GetAttribute("id") == "WordGitImportReview" &&
+                    button.GetAttribute("label").Replace("\u2060", "").Replace("\u200B", "") == "返稿合并") ||
                 !buttons.Any(button => button.GetAttribute("label").Replace('\u00A0', ' ') == "WordGit " + AppInfo.DisplayVersion && button.GetAttribute("onAction") == "OnAbout") ||
                 !callbacks.Contains("OnCheckUpdates") || !callbacks.Contains("OnImportReview") ||
                 new[] { "OnLinkRemote", "OnCloneRemote", "OnFetchRemote", "OnPullRemote", "OnPushRemote" }.Any(action => !callbacks.Contains(action)) ||
@@ -650,39 +697,58 @@ namespace WordGit
 
         private static void VerifyImportReview(string output, List<Revision> items)
         {
+            foreach (var twoVersions in new[] { false, true })
             using (var picker = new HistoryDialog("论文.docx", items, true, items[1].Id, command: HistoryAction.ImportReview))
             {
                 Render(picker, Path.Combine(output, "review-basis-picker.png"));
                 var grid = Descendants(picker).OfType<DataGridView>().Single();
-                if (grid.MultiSelect || grid.SelectedRows[0].Index != 1 || Descendants(picker).OfType<Button>().Count() != 2)
-                    throw new InvalidOperationException("Review import must select exactly one submission basis");
+                if (!grid.MultiSelect || grid.SelectedRows[0].Index != 1 || Descendants(picker).OfType<Button>().Count() != 2)
+                    throw new InvalidOperationException("The merge entry should accept one basis or two historical versions");
                 picker.Show();
                 grid.CurrentCell = grid.Rows[3].Cells[1];
+                grid.ClearSelection();
+                grid.Rows[3].Selected = true;
+                if (twoVersions) grid.Rows[1].Selected = true;
                 ((Button)picker.AcceptButton).PerformClick();
-                if (picker.Action != HistoryAction.ImportReview || picker.Basis.Id != items[3].Id)
-                    throw new InvalidOperationException("Review import lost the selected older basis");
+                if (picker.Basis.Id != items[3].Id ||
+                    (twoVersions ? picker.Action != HistoryAction.Merge || picker.Other.Id != items[1].Id :
+                        picker.Action != HistoryAction.ImportReview || picker.Other != null))
+                    throw new InvalidOperationException("The merge entry lost the selected versions");
             }
             var file = Path.Combine(output, "导入界面测试返稿.docx");
             File.WriteAllBytes(file, new byte[] { 1, 2, 3 });
             try
             {
-                using (var dialog = new ImportReviewDialog(Path.Combine(output, "当前稿.docx"), items[3], "main"))
+                foreach (var mode in new[] { "直接合并", "先保存再合并", "仅保存为分支" })
+                using (var dialog = new ImportReviewDialog(Path.Combine(output, "当前稿.docx"), items[3], "main", new[] { "main", "review" }))
                 {
                     if (((Button)dialog.AcceptButton).Enabled) throw new InvalidOperationException("Review file is optional");
-                    Render(dialog, Path.Combine(output, "review-import.png"));
+                    Render(dialog, Path.Combine(output, "returned-draft-empty.png"));
                     dialog.FilePath.Text = file;
-                    dialog.BranchName.Text = "review/老师一审";
+                    if (!dialog.BranchName.Text.StartsWith("review-", StringComparison.Ordinal))
+                        throw new InvalidOperationException("Default review branch conflicts with an existing review branch");
+                    dialog.BranchName.Text = "review-老师一审";
                     dialog.Reviewer.Text = "导师甲";
                     dialog.Size = dialog.MinimumSize;
-                    Render(dialog, Path.Combine(output, "review-import-min.png"));
-                    var note = Descendants(dialog).OfType<TextBox>().Single(box => box.Multiline);
-                    if (note.Bottom > ((Button)dialog.AcceptButton).Parent.Top)
-                        throw new InvalidOperationException("Review import instructions overlap the action row");
+                    dialog.Font = new Font(dialog.Font.FontFamily, 16f);
+                    var keep = mode != "直接合并";
+                    dialog.SaveOriginal.Checked = keep;
+                    if (!keep) dialog.BranchName.Text = "";
+                    Render(dialog, Path.Combine(output, "返稿合并-" + mode + ".png"));
                     dialog.Show();
-                    ((Button)dialog.AcceptButton).PerformClick();
+                    var merge = (Button)dialog.AcceptButton;
+                    var saveOnly = Descendants(dialog).OfType<Button>().Single(button => button.Text == "仅保存为分支");
+                    if (dialog.BranchName.Visible != keep || dialog.Reviewer.Visible != keep || saveOnly.Visible != keep || !merge.Enabled)
+                        throw new InvalidOperationException("Optional review branch settings did not follow the checkbox");
+                    foreach (var button in Descendants(dialog).OfType<Button>().Where(button => button.Visible))
+                        if (!dialog.ClientRectangle.Contains(dialog.RectangleToClient(button.Parent.RectangleToScreen(button.Bounds))))
+                            throw new InvalidOperationException("Review merge action is outside the visible dialog");
+                    var createMerge = mode != "仅保存为分支";
+                    (createMerge ? merge : saveOnly).PerformClick();
                     if (dialog.DialogResult != DialogResult.OK || dialog.Options.FilePath != file ||
-                        dialog.Options.Branch != "review/老师一审" || dialog.Options.Reviewer != "导师甲" || !dialog.Options.MergeAfterImport)
-                        throw new InvalidOperationException("Review import lost selected options");
+                        dialog.Options.Branch != (keep ? "review-老师一审" : null) ||
+                        dialog.Options.Reviewer != (keep ? "导师甲" : null) || dialog.Options.CreateMergeDraft != createMerge)
+                        throw new InvalidOperationException("Review merge lost selected options");
                 }
             }
             finally { File.Delete(file); }
@@ -818,7 +884,19 @@ namespace WordGit
         }
     }
 
-    internal sealed class PaneTestWindow { public int Hwnd { get; set; } }
+    internal sealed class PaneTestWindow
+    {
+        public int Hwnd { get; set; }
+        public object Document { get; set; }
+    }
+
+    internal sealed class PaneTestDraft
+    {
+        public PaneTestWindow ActiveWindow { get; set; }
+        public string FullName { get; private set; }
+        public string Path { get { return System.IO.Path.GetDirectoryName(FullName); } }
+        public void SaveAs2(string FileName, int FileFormat, bool AddToRecentFiles) { FullName = FileName; }
+    }
 
     internal sealed class PaneTestFactory : ICTPFactory
     {

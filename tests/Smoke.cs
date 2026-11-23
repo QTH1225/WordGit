@@ -430,8 +430,22 @@ namespace WordGit
             var basis = repo.CommitFile(path, "送审版本", "作者", null);
             File.WriteAllBytes(path, current);
             var target = repo.CommitFile(path, "继续修改", "作者", basis);
+            repo.CreateBranch("review", basis);
+            repo.CreateBranch("notes/审阅", basis);
+            var before = repo.ReferenceState();
+            foreach (var conflict in new[] { new[] { "review/老师审阅", "review" }, new[] { "notes", "notes/审阅" } })
+            {
+                var explained = false;
+                try { repo.ImportReviewFile(returned, basis, conflict[0], "导师甲", "main", target); }
+                catch (InvalidOperationException error)
+                {
+                    explained = error.Message.Contains("已有分支「" + conflict[1] + "」");
+                }
+                Require(explained && repo.ReferenceState() == before, "Review path conflict changed history or lacked guidance");
+            }
+
             string imported;
-            using (repo.Lock()) imported = repo.ImportReviewFile(returned, basis, "review/一审", "导师甲", "main", target);
+            using (repo.Lock()) imported = repo.ImportReviewFile(returned, basis, "review-一审", "导师甲", "main", target);
             var row = repo.History().Single(item => item.Id == imported);
             Require(repo.Head() == target && repo.ActiveBranch() == "main" && File.ReadAllBytes(path).SequenceEqual(current),
                 "Review import changed the working copy or HEAD");
@@ -440,25 +454,26 @@ namespace WordGit
                 "Imported review lost its submission basis or author");
             Require(repo.Extract(imported).SequenceEqual(incoming) && File.ReadAllBytes(returned).SequenceEqual(incoming),
                 "Review import changed original DOCX bytes");
-            foreach (var branch in new[] { "REVIEW/一审", "bad branch", "../bad", "review/一审/nested" })
+            var afterImport = repo.ReferenceState();
+            foreach (var branch in new[] { "REVIEW-一审", "bad branch", "../bad", "review-一审/nested" })
             {
                 var refused = false;
                 try { repo.ImportReviewFile(returned, basis, branch, "导师甲", "main", target); }
                 catch (Exception) { refused = true; }
-                Require(refused && repo.Head() == target && repo.Branches().Length == 2, "Invalid import published a branch");
+                Require(refused && repo.ReferenceState() == afterImport, "Invalid import published a branch");
             }
             var stale = false;
-            try { repo.ImportReviewFile(returned, basis, "review/过期", "导师甲", "main", basis); }
+            try { repo.ImportReviewFile(returned, basis, "review-过期", "导师甲", "main", basis); }
             catch (InvalidOperationException) { stale = true; }
-            Require(stale && repo.BranchTip("review/过期") == null, "Stale HEAD imported a review");
+            Require(stale && repo.BranchTip("review-过期") == null, "Stale HEAD imported a review");
             var invalid = Path.Combine(root, "损坏返稿.docx");
             File.WriteAllText(invalid, "not a docx");
             var corrupt = false;
-            try { repo.ImportReviewFile(invalid, basis, "review/损坏", "导师甲", "main", target); }
+            try { repo.ImportReviewFile(invalid, basis, "review-损坏", "导师甲", "main", target); }
             catch (InvalidDataException) { corrupt = true; }
-            Require(corrupt && repo.BranchTip("review/损坏") == null && repo.Head() == target, "Corrupt review was published");
+            Require(corrupt && repo.BranchTip("review-损坏") == null && repo.Head() == target, "Corrupt review was published");
             var merge = repo.Commit(Fixture("审阅确认后的合并结果"), "确认老师返稿", "作者",
-                target, "main", "review/一审", imported);
+                target, "main", "review-一审", imported);
             Require(repo.History().Single(item => item.Id == merge).Parents.SequenceEqual(new[] { target, imported }),
                 "Review merge lost one parent");
             repo.Repack();

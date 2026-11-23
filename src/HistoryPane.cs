@@ -40,7 +40,7 @@ namespace WordGit
         private readonly Button compareLatest = DialogLayout.Button("对比最新提交");
         private readonly Timer workingTimer = new Timer { Interval = 1200 };
         private readonly Button commit = DialogLayout.Button("提交版本");
-        private readonly Button importReview = DialogLayout.Button("导入返稿");
+        private readonly Button importReview = DialogLayout.Button("返稿合并");
         private readonly Label remoteStatus = new Label { AutoSize = false, Dock = DockStyle.Fill, AutoEllipsis = true, AccessibleName = "远程同步状态" };
         private readonly Button linkRemote = DialogLayout.Button("关联");
         private readonly Button fetchRemote = DialogLayout.Button("获取");
@@ -292,7 +292,7 @@ namespace WordGit
             importReview.Click += (sender, args) => openVersion(DocumentPath, HistoryAction.ImportReview, null, null);
             layout.Controls.Add(actions, 0, 5);
             hints.SetToolTip(commit, "保存当前文档，并提交到当前分支。");
-            hints.SetToolTip(importReview, "选择送审版本和老师返稿，创建可追溯的返稿分支。");
+            hints.SetToolTip(importReview, "选择送审版本和返稿，生成修订合并稿，可选择保留原始返稿分支。");
             hints.SetToolTip(preview, "双击提交也可在 Word 中只读打开。");
             hints.SetToolTip(compare, "按 Ctrl 可选择两个历史版本。");
             loadingFrame.ReviewHeight = () => split.Panel1.Height;
