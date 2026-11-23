@@ -26,17 +26,8 @@ namespace WordGit
                     RevisionFor(three, new[] { four }, day.AddMinutes(-8), "导师审阅版", "review"),
                     RevisionFor(four, new string[0], day.AddHours(-1), "初稿", "v0.1")
                 };
-                TextBox field;
-                using (var form = Dialogs.CommitForm("提交到「论文独创性声明.docx」", "", out field))
-                {
-                    Render(form, Path.Combine(args[0], "commit-dialog.png"));
-                    var submit = Descendants(form).OfType<Button>().Single(button => button.Text == "提交");
-                    if (submit.Enabled) throw new InvalidOperationException("Empty message is allowed");
-                    field.Text = "校正封面\r\n补充 Word 版本管理记录。";
-                    if (!submit.Enabled) throw new InvalidOperationException("Valid message is rejected");
-                    form.Size = form.MinimumSize;
-                    Render(form, Path.Combine(args[0], "commit-dialog-min.png"));
-                }
+                VerifyCommitDialog(args[0]);
+                VerifyDialogPlacement();
                 using (var history = new HistoryDialog("论文独创性声明.docx", items, true, one, "main",
                     new[] { "main", "review" }, branch => branch == "review" ? new List<Revision> { items[2], items[3] } : items))
                 {
@@ -63,6 +54,7 @@ namespace WordGit
                 VerifyHistoryPane(args[0], items, one, three);
                 VerifyRevisionActions(args[0]);
                 VerifyAsyncHistoryPane(args[0], items);
+                VerifyPaneReuse(items);
                 using (var compare = new HistoryDialog("论文独创性声明.docx", items, true, one, command: HistoryAction.Compare))
                 {
                     compare.Size = compare.MinimumSize;
@@ -103,6 +95,90 @@ namespace WordGit
                 Console.Error.WriteLine(error.GetType().Name + ": " + error.Message);
                 Environment.ExitCode = 1;
             }
+        }
+
+        private static void VerifyCommitDialog(string output)
+        {
+            TextBox subject, body;
+            using (var form = Dialogs.CommitForm("提交到「论文独创性声明.docx」 · main", "", out subject, out body))
+            {
+                var submit = Descendants(form).OfType<Button>().Single(button => button.Text == "提交");
+                if (submit.Enabled || subject.Multiline || !body.Multiline || !body.AcceptsReturn)
+                    throw new InvalidOperationException("Commit title/body inputs are invalid");
+                body.Text = "补充试验条件。";
+                if (submit.Enabled) throw new InvalidOperationException("A commit without a title was accepted");
+                subject.Text = "校正封面";
+                body.Text = "补充 Word 版本管理记录。\r\n\r\n第二段保留换行。";
+                if (!submit.Enabled || Dialogs.ComposeMessage(subject.Text, body.Text) !=
+                    "校正封面\n\n补充 Word 版本管理记录。\n\n第二段保留换行。" ||
+                    Dialogs.ComposeMessage("  标题  ", "  ") != "标题")
+                    throw new InvalidOperationException("Commit title/body message formatting changed");
+                Render(form, Path.Combine(output, "commit-dialog.png"));
+                VerifyNoOverlap(form);
+                if (body.Height < 180) throw new InvalidOperationException("Commit details area is too small");
+                form.Size = form.MinimumSize;
+                Render(form, Path.Combine(output, "commit-dialog-min.png"));
+                VerifyNoOverlap(form);
+            }
+            using (var form = Dialogs.CommitForm("确认合并", "旧标题\n\n第一段\n第二段", out subject, out body))
+            {
+                if (subject.Text != "旧标题" || body.Text.Replace("\r\n", "\n") != "第一段\n第二段")
+                    throw new InvalidOperationException("Existing commit text was not split correctly");
+                form.Font = new Font(form.Font.FontFamily, 13.5f);
+                Render(form, Path.Combine(output, "commit-dialog-large-font.png"));
+                VerifyNoOverlap(form);
+            }
+            using (var branch = Dialogs.CommitForm("从旧版新建分支", "review/老师", out subject, out body, true))
+            {
+                if (body != null || subject.Multiline || branch.AcceptButton == null)
+                    throw new InvalidOperationException("The branch-name dialog acquired a commit body field");
+                Render(branch, Path.Combine(output, "create-branch-input.png"));
+            }
+        }
+
+        private static void VerifyNoOverlap(Control root)
+        {
+            var form = root as Form;
+            var show = form != null && !form.Visible;
+            if (show) { form.Show(); Application.DoEvents(); }
+            try
+            {
+                foreach (Control parent in Descendants(root).Concat(new[] { root }))
+                {
+                    var controls = parent.Controls.Cast<Control>().Where(control => control.Visible &&
+                        (control is Label || control is TextBoxBase || control is Button)).ToArray();
+                    for (var i = 0; i < controls.Length; i++)
+                        for (var j = i + 1; j < controls.Length; j++)
+                            if (controls[i].Bounds.IntersectsWith(controls[j].Bounds))
+                                throw new InvalidOperationException("Overlapping controls: " + controls[i].Text + " / " + controls[j].Text);
+                }
+            }
+            finally { if (show) form.Hide(); }
+        }
+
+        private static void VerifyDialogPlacement()
+        {
+            var area = Screen.PrimaryScreen.WorkingArea;
+            using (var owner = new Form { StartPosition = FormStartPosition.Manual,
+                Bounds = new Rectangle(area.Left + 80, area.Top + 60, Math.Min(900, area.Width - 120), Math.Min(680, area.Height - 100)),
+                Opacity = 0, ShowInTaskbar = false })
+            {
+                owner.Show();
+                var gate = new System.Threading.Tasks.TaskCompletionSource<string>();
+                Dialogs.ShowBackgroundOperation(owner, "居中测试", () => gate.Task);
+                var dialog = Application.OpenForms.Cast<Form>().Single(form => form.Text == "WordGit · 居中测试");
+                Application.DoEvents();
+                var expected = DialogPlacement.CenteredBounds(dialog.Size, owner.Bounds, Screen.FromControl(owner).WorkingArea);
+                if (Math.Abs(dialog.Left - expected.Left) > 2 || Math.Abs(dialog.Top - expected.Top) > 2)
+                    throw new InvalidOperationException("The modeless status dialog was not centered on its document owner");
+                gate.SetResult("完成。");
+                PumpUntil(() => Descendants(dialog).OfType<Button>().Single(button => button.Text == "关闭").Enabled);
+                dialog.Close();
+            }
+            var clipped = DialogPlacement.CenteredBounds(new Size(460, 220), new Rectangle(-3000, -900, 500, 300),
+                new Rectangle(-1920, 0, 1920, 1080));
+            if (clipped.Left < -1920 || clipped.Top < 0 || clipped.Right > 0 || clipped.Bottom > 1080)
+                throw new InvalidOperationException("The centered dialog escaped its monitor");
         }
 
         private static void VerifyHistoryPane(string output, List<Revision> items, string mainTip, string reviewTip)
@@ -326,6 +402,86 @@ namespace WordGit
             }
         }
 
+        private static void VerifyPaneReuse(List<Revision> items)
+        {
+            using (var host = new Form { ClientSize = new Size(420, 720), Opacity = 0, ShowInTaskbar = false })
+            {
+                host.Show();
+                var factory = new PaneTestFactory(host);
+                using (var panes = new TaskPanes(factory))
+                {
+                    var window = new PaneTestWindow { Hwnd = host.Handle.ToInt32() };
+                    var path = @"C:\test\异步稿件.docx";
+                    var otherPath = @"C:\test\另一稿件.docx";
+                    var result = new System.Threading.Tasks.TaskCompletionSource<HistoryPaneData>();
+                    var reads = 0;
+                    Func<System.Threading.Tasks.Task<HistoryPaneData>> load = () => { reads++; return result.Task; };
+                    Action<string, HistoryAction, string, string> open = (p, action, one, two) => { };
+                    panes.Show(window, path, load, open);
+                    panes.Show(window, path, load, open);
+                    PumpUntil(() => reads == 1);
+                    var pane = factory.Pane.Control;
+                    var frame = Descendants(pane).OfType<PaneLoadingFrame>().Single();
+                    panes.Show(window, path, load, open);
+                    Application.DoEvents();
+                    if (reads != 1 || !frame.Visible || factory.Creates != 1)
+                        throw new InvalidOperationException("Repeated clicks restarted a pending pane load");
+                    var data = AsyncPaneData(items, "main");
+                    data.InitialHistory = items;
+                    result.SetResult(data);
+                    var submit = Descendants(pane).OfType<Button>().Single(button => button.Text == "提交版本");
+                    PumpUntil(() => !frame.Visible && submit.Enabled);
+                    var filter = Descendants(pane).OfType<ComboBox>().Single(box => box.Items.Contains("review"));
+                    filter.SelectedItem = "review";
+                    var preview = Descendants(pane).OfType<Button>().Single(button => button.Text == "预览");
+                    PumpUntil(() => preview.Enabled);
+                    var grid = Descendants(pane).OfType<DataGridView>().Single();
+                    grid.CurrentCell = grid.Rows[2].Cells[1];
+                    grid.ClearSelection();
+                    grid.Rows[2].Selected = true;
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    for (var i = 0; i < 10; i++) panes.Show(window, path, load, open);
+                    Application.DoEvents();
+                    if (reads != 1 || frame.Visible || (string)filter.SelectedItem != "review" ||
+                        grid.SelectedRows.Count != 1 || grid.SelectedRows[0].Index != 2)
+                        throw new InvalidOperationException("Showing an open pane reloaded or reset its selection");
+                    Console.WriteLine("PASS: ten repeated pane clicks " + clock.ElapsedMilliseconds + " ms, zero extra loads.");
+                    factory.Pane.Visible = false;
+                    panes.Show(window, path, load, open);
+                    if (reads != 1 || frame.Visible || !factory.Pane.Visible)
+                        throw new InvalidOperationException("Reopening a cached pane restarted loading");
+                    if (!panes.Refresh(window)) throw new InvalidOperationException("Explicit refresh was ignored");
+                    PumpUntil(() => reads == 2 && submit.Enabled);
+                    result = new System.Threading.Tasks.TaskCompletionSource<HistoryPaneData>();
+                    panes.Show(window, otherPath, load, open);
+                    PumpUntil(() => reads == 3);
+                    var other = AsyncPaneData(items, "review");
+                    other.DocumentPath = other.HistoryPath = otherPath;
+                    other.InitialHistory = items;
+                    result.SetResult(other);
+                    PumpUntil(() => !frame.Visible && submit.Enabled);
+                    if (pane.DocumentPath != otherPath) throw new InvalidOperationException("A changed document reused the previous content");
+                    result = new System.Threading.Tasks.TaskCompletionSource<HistoryPaneData>();
+                    panes.Show(window, path, load, open);
+                    panes.Show(window, otherPath, load, open);
+                    PumpUntil(() => reads == 4);
+                    result.SetException(new IOException("加载失败"));
+                    PumpUntil(() => !frame.Visible && !pane.CanReuse(otherPath));
+                    result = new System.Threading.Tasks.TaskCompletionSource<HistoryPaneData>();
+                    result.SetResult(other);
+                    panes.Show(window, otherPath, load, open);
+                    PumpUntil(() => reads == 5 && !frame.Visible && submit.Enabled);
+                    factory.Pane.Visible = false;
+                    if (panes.Refresh(window)) throw new InvalidOperationException("A hidden pane reported a visible refresh");
+                    Application.DoEvents();
+                    if (reads != 5) throw new InvalidOperationException("A hidden pane loaded eagerly");
+                    panes.Show(window, otherPath, load, open);
+                    PumpUntil(() => reads == 6 && !frame.Visible && submit.Enabled);
+                    Console.WriteLine("PASS: queued loads, cached reopening, explicit refresh, document changes, retry and hidden-pane invalidation.");
+                }
+            }
+        }
+
         private static void VerifyRevisionActions(string output)
         {
             var pending = new List<DocumentReviewItem> {
@@ -542,8 +698,17 @@ namespace WordGit
                 if (links.Count == 0 || links.Any(link => !(link.Tag is string) || !AppInfo.IsAllowed((string)link.Tag)))
                     throw new InvalidOperationException("About dialog contains a link that OpenLink would reject");
                 Render(dialog, Path.Combine(output, "about-dialog.png"));
+                VerifyNoOverlap(dialog);
                 dialog.Size = dialog.MinimumSize;
                 Render(dialog, Path.Combine(output, "about-dialog-min.png"));
+                VerifyNoOverlap(dialog);
+                dialog.Font = new Font(dialog.Font.FontFamily, 13.5f);
+                Render(dialog, Path.Combine(output, "about-dialog-large-font.png"));
+                VerifyNoOverlap(dialog);
+                dialog.Font = new Font(dialog.Font.FontFamily, 18f);
+                Render(dialog, Path.Combine(output, "about-dialog-largest-font.png"));
+                VerifyNoOverlap(dialog);
+                dialog.Font = SystemFonts.MessageBoxFont;
                 if (!Descendants(dialog).OfType<Label>().Any(label => label.Text.Contains(AppInfo.DisplayVersion)) ||
                     !Descendants(dialog).OfType<LinkLabel>().Any(link => link.Text == AppInfo.ProjectUrl))
                     throw new InvalidOperationException("About dialog lost product information");
@@ -651,5 +816,32 @@ namespace WordGit
             }
             form.Hide();
         }
+    }
+
+    internal sealed class PaneTestWindow { public int Hwnd { get; set; } }
+
+    internal sealed class PaneTestFactory : ICTPFactory
+    {
+        private readonly Form host;
+        internal PaneTestNative Pane;
+        internal int Creates;
+        internal PaneTestFactory(Form host) { this.host = host; }
+        public object CreateCTP(string controlId, string title, object window)
+        {
+            Creates++;
+            Pane = new PaneTestNative { Control = new HistoryPane { Dock = DockStyle.Fill } };
+            host.Controls.Add(Pane.Control);
+            return Pane;
+        }
+    }
+
+    internal sealed class PaneTestNative
+    {
+        internal HistoryPane Control;
+        public object ContentControl { get { return Control; } }
+        public int DockPosition { get; set; }
+        public int Width { get; set; }
+        public bool Visible { get { return Control.Visible; } set { Control.Visible = value; } }
+        public void Delete() { Control.Dispose(); }
     }
 }

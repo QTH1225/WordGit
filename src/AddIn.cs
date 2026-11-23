@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 [assembly: ComVisible(false)]
-[assembly: System.Reflection.AssemblyVersion("0.11.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.11.2.0")]
 [assembly: System.Reflection.AssemblyFileVersion("0.11.0.0")]
 [assembly: System.Reflection.AssemblyInformationalVersion("0.11.0")]
 [assembly: System.Reflection.AssemblyProduct("WordGit")]
@@ -194,7 +194,7 @@ namespace WordGit
         private void ShowPane(object window)
         {
             var handle = (int)((dynamic)window).Hwnd;
-            panes.Show(window, async () =>
+            panes.Show(window, WordDocuments.LocalPath(DocumentForWindow(handle)), async () =>
             {
                 var data = await LoadPaneAsync(DocumentForWindow(handle));
                 if (!String.Equals(WordDocuments.LocalPath(DocumentForWindow(handle)), data.DocumentPath, StringComparison.OrdinalIgnoreCase))
@@ -277,14 +277,15 @@ namespace WordGit
             var result = await Task.Run(() =>
             {
                 var repo = new GitHistory(historyPath, storage);
-                var remote = repo.SyncState();
+                var view = repo.ReadView();
+                var remote = view.Remote;
                 var head = remote.LocalTip;
                 var workingCopy = new WorkingCopy(path, () => true,
                     head == null ? (Func<string>)null : () => repo.SnapshotChecksum(head));
                 return new HistoryPaneData
                 {
                     DocumentPath = path, HistoryPath = historyPath, Branch = remote.LocalBranch,
-                    Head = head, Branches = repo.Branches().Concat(repo.RemoteBranches()).ToArray(),
+                    Head = head, Branches = view.Branches, InitialHistory = view.History,
                     Load = repo.History, WorkingState = workingCopy.State, Remote = remote
                 };
             });

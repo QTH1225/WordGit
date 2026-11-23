@@ -58,6 +58,25 @@ namespace WordGit
             }
         }
 
+        private static void VerifyView(GitHistory repo, string phase)
+        {
+            var expected = repo.SyncState();
+            var actual = repo.ReadView();
+            var state = actual.Remote;
+            Require(state.Url == expected.Url && state.LocalBranch == expected.LocalBranch &&
+                state.RemoteBranch == expected.RemoteBranch && state.RemoteReference == expected.RemoteReference &&
+                state.LocalTip == expected.LocalTip && state.RemoteTip == expected.RemoteTip &&
+                state.Ahead == expected.Ahead && state.Behind == expected.Behind && state.Unrelated == expected.Unrelated,
+                "Batched pane state differs: " + phase);
+            Require(actual.Branches.SequenceEqual(repo.Branches().Concat(repo.RemoteBranches())),
+                "Batched branch list differs: " + phase);
+            var history = repo.History();
+            Require(actual.History.Select(row => row.Id).SequenceEqual(history.Select(row => row.Id)) &&
+                actual.History.Zip(history, (left, right) => left.Parents.SequenceEqual(right.Parents) &&
+                    left.References.SequenceEqual(right.References) && left.Message == right.Message).All(same => same),
+                "Batched history differs: " + phase);
+        }
+
         private static void Run(string root)
         {
             Require(GitHistory.NormalizeRemoteUrl("https://github.com/owner/paper") == "https://github.com/owner/paper.git", "HTTPS normalization");
@@ -75,12 +94,15 @@ namespace WordGit
             var aBytes = Fixture("送审 A");
             File.WriteAllBytes(aPath, aBytes);
             var a = new GitHistory(aPath, Path.Combine(root, "a"));
+            VerifyView(a, "empty");
             var first = a.CommitFile(aPath, "初稿", "甲", null);
+            VerifyView(a, "local");
             a.CreateBranch("保留的本地分支", first);
             a.ConfigureRemote(server, "main", true);
             Require(a.Head() == first && a.Extract(first).SequenceEqual(aBytes), "Link changed existing history");
             var state = a.PushRemote(true);
             Require(state.Ahead == 0 && state.Behind == 0 && state.RemoteTip == first, "Initial push did not update tracking state");
+            VerifyView(a, "equal remote tips");
             var b = GitHistory.CloneRemote(server, "main", bPath, Path.Combine(root, "b"), true);
             Require(b.Head() == first && File.ReadAllBytes(bPath).SequenceEqual(aBytes), "Clone changed commit IDs or document bytes");
             Require(ZoneMarker.IsMarked(bPath) && !ZoneMarker.IsMarked(aPath), "Cloned document was not marked as downloaded content");
@@ -93,6 +115,7 @@ namespace WordGit
             Require(a.RemoteBackupNamespaces().Length == backupsBefore, "A fast-forward fetch created a remote backup");
             Require(a.Head() == first && File.ReadAllBytes(aPath).SequenceEqual(aBytes) && state.Ahead == 0 && state.Behind == 1,
                 "Fetch overwrote the current document or computed wrong behind count");
+            VerifyView(a, "behind");
             Require(a.History(state.RemoteReference).First().Id == second &&
                 a.History().Any(row => row.References.Contains("origin/main")), "Remote branches are missing from history");
             File.WriteAllBytes(aPath, bBytes);
@@ -112,6 +135,7 @@ namespace WordGit
             state = a.FetchRemote(true);
             Require(state.Ahead == 1 && state.Behind == 1 && !state.Unrelated &&
                 a.MergeBase(local, remote) == second, "Divergence or merge base is wrong");
+            VerifyView(a, "divergence");
             var mergedBytes = Fixture("甲乙确认的合并稿");
             File.WriteAllBytes(aPath, mergedBytes);
             var merged = a.CommitFile(aPath, "确认远程合并", "甲", local, "main", state.RemoteReference, remote);
@@ -168,6 +192,7 @@ namespace WordGit
             unrelated.PushRemote(true);
             a.ConfigureRemote(server, "unrelated", true);
             Require(a.FetchRemote(true).Unrelated && a.Head() == concurrent, "Unrelated history was treated as mergeable");
+            VerifyView(a, "unrelated tracking branch");
             a.ConfigureRemote(server, "main", true);
 
             var before = File.ReadAllBytes(aPath);
@@ -208,6 +233,7 @@ namespace WordGit
             Require(!a.RemoteBackupNamespaces().Contains("legacy00") && a.RemoteBackupNamespaces().Length <= 20,
                 "Legacy remote backups were not cleaned");
             a.Repack();
+            VerifyView(a, "packed refs");
             Require(a.Extract(side).SequenceEqual(sideBytes) && a.Extract(first).SequenceEqual(aBytes) &&
                 a.Branches().Contains("保留的本地分支"), "Remote operations/repack lost existing versions or branches");
             Console.WriteLine("PASS: two clients, link/clone/push/fetch/fast-forward/divergent merge, remote graph/counts, refused push, concurrent changes, unrelated history, fetch cancellation, archive retention and existing-history protection.");

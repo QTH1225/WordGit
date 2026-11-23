@@ -14,6 +14,7 @@ namespace WordGit
         public string DocumentPath, HistoryPath, Branch, Head;
         public string[] Branches;
         public Func<string, List<Revision>> Load;
+        public List<Revision> InitialHistory;
         public Func<WorkingCopyState> WorkingState;
         public Func<bool> IsSaved;
         public Func<List<DocumentReviewItem>> LoadReviewItems;
@@ -83,6 +84,8 @@ namespace WordGit
         private int reloadGeneration, graphGeneration;
         private bool loading, graphLoading, workingQuery;
         private string graphError;
+        private string requestedPath;
+        private bool showQueued;
         private readonly Panel content = new Panel { Dock = DockStyle.Fill };
         private readonly PaneLoadingFrame loadingFrame = new PaneLoadingFrame();
         private Action<string, HistoryAction, string, string> openVersion;
@@ -112,8 +115,8 @@ namespace WordGit
                 AutoSize = true, AccessibleName = "WordGit 版本与作者", Margin = new Padding(0, 0, 14, 2) };
             var updates = new LinkLabel { Text = "检查更新", AutoSize = true,
                 AccessibleName = "检查 WordGit 更新", Margin = new Padding(0, 0, 0, 2) };
-            about.LinkClicked += (sender, args) => AboutDialog.ShowWindow(FindForm(), false);
-            updates.LinkClicked += (sender, args) => AboutDialog.ShowWindow(FindForm(), true);
+            about.LinkClicked += (sender, args) => AboutDialog.ShowWindow(DialogPlacement.OwnerFor(this), false);
+            updates.LinkClicked += (sender, args) => AboutDialog.ShowWindow(DialogPlacement.OwnerFor(this), true);
             hints.SetToolTip(about, "查看版本、作者和项目链接。");
             hints.SetToolTip(updates, "查询 GitHub 正式发布版本。");
             information.Controls.Add(about);
@@ -310,8 +313,10 @@ namespace WordGit
             }
         }
 
-        internal void PrepareForShow()
+        internal void PrepareForShow(string path = null)
         {
+            requestedPath = path;
+            showQueued = path != null;
             ++reloadGeneration;
             ++graphGeneration;
             ShowLoadingFrame();
@@ -319,6 +324,23 @@ namespace WordGit
             PerformLayout();
             PrepareChildHandles(content);
             var ready = loadingFrame.Handle;
+        }
+
+        internal bool CanReuse(string path)
+        {
+            return !IsDisposed && !Disposing && String.Equals(requestedPath, path, StringComparison.OrdinalIgnoreCase) &&
+                (showQueued || loading || (data != null && String.Equals(data.DocumentPath, path, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        internal void QueueReload()
+        {
+            var generation = reloadGeneration;
+            BeginInvoke(new Action(() =>
+            {
+                if (!CurrentLoad(generation)) return;
+                showQueued = false;
+                Reload();
+            }));
         }
 
         private static void PrepareChildHandles(Control root)
@@ -442,6 +464,7 @@ namespace WordGit
         {
             UiThread.EnsureContext();
             if (IsDisposed || Disposing || (load == null && loadAsync == null)) return;
+            showQueued = false;
             var generation = ++reloadGeneration;
             ++graphGeneration;
             var previousFilter = filter.SelectedIndex > 0 ? (string)filter.SelectedItem : null;
@@ -465,6 +488,7 @@ namespace WordGit
                 var next = loadAsync == null ? load() : await loadAsync();
                 if (!CurrentLoad(generation)) return;
                 data = next;
+                requestedPath = next.DocumentPath;
                 if (!String.Equals(previousPath, DocumentPath, StringComparison.OrdinalIgnoreCase))
                 {
                     previousFilter = null;
@@ -483,7 +507,9 @@ namespace WordGit
                     filter.SelectedIndex = previousFilter == null ? 0 : Math.Max(0, filter.Items.IndexOf(previousFilter));
                 }
                 finally { updating = false; }
-                await LoadGraphAsync(previousSelection.Select(item => item.Id).ToArray());
+                var keep = previousSelection.Select(item => item.Id).ToArray();
+                if (previousFilter == null && data.InitialHistory != null) ShowGraph(data.InitialHistory, keep);
+                else await LoadGraphAsync(keep);
                 if (!CurrentLoad(generation)) return;
             }
             catch (Exception error)

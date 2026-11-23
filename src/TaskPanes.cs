@@ -21,7 +21,7 @@ namespace WordGit
         [DispId(1)] void CTPFactoryAvailable([MarshalAs(UnmanagedType.Interface)] ICTPFactory factory);
     }
 
-    internal sealed class TaskPanes
+    internal sealed class TaskPanes : IDisposable
     {
         private const int DockRight = 2;
         private readonly ICTPFactory factory;
@@ -31,11 +31,12 @@ namespace WordGit
         {
             public dynamic Native;
             public HistoryPane Control;
+            public bool NeedsRefresh;
         }
 
         public TaskPanes(ICTPFactory factory) { this.factory = factory; }
 
-        public void Show(object window, Func<Task<HistoryPaneData>> load, Action<string, HistoryAction, string, string> openVersion)
+        public void Show(object window, string documentPath, Func<Task<HistoryPaneData>> load, Action<string, HistoryAction, string, string> openVersion)
         {
             Prune();
             var handle = (int)((dynamic)window).Hwnd;
@@ -58,12 +59,18 @@ namespace WordGit
                     throw;
                 }
             }
-            pane.Control.PrepareForShow();
+            if (!pane.NeedsRefresh && pane.Control.CanReuse(documentPath))
+            {
+                if (!(bool)pane.Native.Visible) pane.Native.Visible = true;
+                return;
+            }
+            pane.NeedsRefresh = false;
+            pane.Control.PrepareForShow(documentPath);
             if (!(bool)pane.Native.Visible) pane.Native.Visible = true;
             // Paint the single loading surface before posting the background-load callback.
             pane.Control.Refresh();
             // Return to Word's message loop so the docked pane can paint before loading.
-            pane.Control.BeginInvoke(new Action(pane.Control.Reload));
+            pane.Control.QueueReload();
         }
 
         public string VisiblePath(object window)
@@ -76,7 +83,12 @@ namespace WordGit
         {
             Prune();
             Pane pane;
-            if (!panes.TryGetValue((int)((dynamic)window).Hwnd, out pane) || !(bool)pane.Native.Visible) return false;
+            if (!panes.TryGetValue((int)((dynamic)window).Hwnd, out pane)) return false;
+            if (!(bool)pane.Native.Visible)
+            {
+                pane.NeedsRefresh = true;
+                return false;
+            }
             pane.Control.Reload();
             return true;
         }

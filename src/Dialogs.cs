@@ -328,17 +328,19 @@ namespace WordGit
                 return dialog.ShowDialog(owner) == DialogResult.OK ? (string)field.SelectedItem : null;
         }
 
-        internal static Form CommitForm(string title, string initial, out TextBox field, bool branchName = false)
+        internal static Form CommitForm(string title, string initial, out TextBox subject, out TextBox details, bool branchName = false)
         {
-            var dialog = new Form { Text = branchName ? "WordGit · 新建分支" : "WordGit · 提交版本", StartPosition = FormStartPosition.CenterParent,
-                FormBorderStyle = FormBorderStyle.Sizable, MaximizeBox = false, MinimizeBox = false,
-                ClientSize = new Size(570, 255), MinimumSize = new Size(440, 260), Font = SystemFonts.MessageBoxFont, AutoScaleMode = AutoScaleMode.Font };
-            var layout = DialogLayout.Stack(5);
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var dialog = new Form { Text = branchName ? "WordGit · 新建分支" : "WordGit · 提交版本",
+                StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.Sizable,
+                MaximizeBox = false, MinimizeBox = false, ShowInTaskbar = false, KeyPreview = true,
+                Font = SystemFonts.MessageBoxFont, AutoScaleMode = AutoScaleMode.Font,
+                ClientSize = branchName ? new Size(570, 230) : new Size(680, 450),
+                MinimumSize = branchName ? new Size(440, 260) : new Size(540, 380) };
+            var layout = DialogLayout.Stack(branchName ? 5 : 7);
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (var row = 0; row < layout.RowCount; row++)
+                layout.RowStyles.Add(new RowStyle(row == (branchName ? 2 : 4) ? SizeType.Percent : SizeType.AutoSize,
+                    row == (branchName ? 2 : 4) ? 100 : 0));
             dialog.Controls.Add(layout);
             var heading = DialogLayout.Label(title);
             heading.AutoEllipsis = true;
@@ -346,45 +348,65 @@ namespace WordGit
             heading.Dock = DockStyle.Fill;
             heading.Height = dialog.Font.Height + 8;
             layout.Controls.Add(heading, 0, 0);
-            var caption = branchName ? "分支名称" : "提交说明";
+            var caption = branchName ? "分支名称" : "提交标题";
             layout.Controls.Add(DialogLayout.Label(caption), 0, 1);
-            var input = new TextBox { Text = initial, Dock = branchName ? DockStyle.Top : DockStyle.Fill, Multiline = !branchName,
-                ScrollBars = branchName ? ScrollBars.None : ScrollBars.Vertical,
-                MaxLength = branchName ? 150 : 1000, AcceptsReturn = !branchName, AccessibleName = caption };
+            var message = (initial ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+            var newline = branchName ? -1 : message.IndexOf('\n');
+            var input = new TextBox { Text = newline < 0 ? message : message.Substring(0, newline),
+                Dock = DockStyle.Top, MaxLength = branchName ? 150 : 200, AccessibleName = caption };
             layout.Controls.Add(input, 0, 2);
+            TextBox body = null;
+            if (!branchName)
+            {
+                layout.Controls.Add(DialogLayout.Label("详细内容（可选）"), 0, 3);
+                body = new TextBox { Text = newline < 0 ? "" : message.Substring(newline + 1).TrimStart(),
+                    Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Vertical,
+                    MaxLength = 32000, AcceptsReturn = true, AccessibleName = "详细内容" };
+                layout.Controls.Add(body, 0, 4);
+                input.KeyDown += (sender, args) => {
+                    if (args.KeyCode == Keys.Enter && !args.Control) { args.SuppressKeyPress = true; body.Focus(); }
+                };
+            }
             layout.Controls.Add(DialogLayout.Label(branchName ? "例如 review/导师意见。新建后可用「切换分支」打开。"
-                : "首行用作提交标题。Ctrl + Enter 提交，Esc 取消。"), 0, 3);
+                : "标题必填，详细内容可选。Ctrl + Enter 提交，Esc 取消。"), 0, branchName ? 3 : 5);
             var actions = DialogLayout.Buttons(true);
             var cancel = DialogLayout.Button("取消");
             cancel.DialogResult = DialogResult.Cancel;
             var commit = DialogLayout.Button(branchName ? "创建" : "提交");
             commit.DialogResult = DialogResult.OK;
-            commit.Enabled = !String.IsNullOrWhiteSpace(initial);
+            commit.Enabled = !String.IsNullOrWhiteSpace(input.Text);
             actions.Controls.Add(cancel);
             actions.Controls.Add(commit);
-            layout.Controls.Add(actions, 0, 4);
+            layout.Controls.Add(actions, 0, branchName ? 4 : 6);
             input.TextChanged += (sender, args) => commit.Enabled = !String.IsNullOrWhiteSpace(input.Text);
-            input.KeyDown += (sender, args) => {
+            dialog.KeyDown += (sender, args) => {
                 if (args.Control && args.KeyCode == Keys.Enter && commit.Enabled)
                 { args.SuppressKeyPress = true; dialog.DialogResult = DialogResult.OK; }
             };
             dialog.CancelButton = cancel;
             if (branchName) dialog.AcceptButton = commit;
             dialog.ActiveControl = input;
-            field = input;
+            subject = input;
+            details = body;
             return dialog;
         }
 
         public static string Ask(IWin32Window owner, string title, string initial, bool branchName = false)
         {
-            TextBox field;
-            using (var dialog = CommitForm(title, initial, out field, branchName))
+            TextBox subject, details;
+            using (var dialog = CommitForm(title, initial, out subject, out details, branchName))
             {
+                owner = DialogPlacement.Prepare(dialog, owner);
                 if (dialog.ShowDialog(owner) != DialogResult.OK) return null;
-                var message = field.Text.Trim().Replace("\r\n", "\n");
-                var newline = message.IndexOf('\n');
-                return newline < 0 ? message : message.Substring(0, newline).TrimEnd() + "\n\n" + message.Substring(newline + 1).TrimStart();
+                return branchName ? subject.Text.Trim() : ComposeMessage(subject.Text, details.Text);
             }
+        }
+
+        internal static string ComposeMessage(string subject, string details)
+        {
+            var title = subject.Trim();
+            var body = (details ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+            return body.Length == 0 ? title : title + "\n\n" + body;
         }
 
         public static void ShowBackgroundOperation(IWin32Window owner, string title, Func<Task<string>> operation, Action finished = null,
@@ -470,7 +492,7 @@ namespace WordGit
                 }
             };
             dialog.FormClosed += (sender, args) => { cancellation.Cancel(); cancellation.Dispose(); };
-            dialog.Show(owner);
+            DialogPlacement.Show(dialog, owner);
         }
     }
 }

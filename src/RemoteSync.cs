@@ -108,16 +108,23 @@ namespace WordGit
             var branch = merge != null && merge.StartsWith(Heads, StringComparison.Ordinal) ? merge.Substring(Heads.Length) : local;
             var state = new RemoteState { Url = RemoteUrl, LocalBranch = local, RemoteBranch = branch,
                 LocalTip = BranchTip(local), RemoteReference = RemotePrefix + branch };
-            if (!state.Linked) return state;
-            state.RemoteTip = BranchTip(state.RemoteReference);
-            if (state.RemoteTip == null || state.LocalTip == null) return state;
+            if (state.Linked) state.RemoteTip = BranchTip(state.RemoteReference);
+            return CompleteSyncState(state);
+        }
+
+        private RemoteState CompleteSyncState(RemoteState state)
+        {
+            if (!state.Linked || state.RemoteTip == null || state.LocalTip == null || state.LocalTip == state.RemoteTip) return state;
             var counts = Text(Run(null, null, "rev-list", "--left-right", "--count", state.LocalTip + "..." + state.RemoteTip))
                 .Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
             state.Ahead = Int32.Parse(counts[0], CultureInfo.InvariantCulture);
             state.Behind = Int32.Parse(counts[1], CultureInfo.InvariantCulture);
-            var common = Invoke(null, null, "merge-base", state.LocalTip, state.RemoteTip);
-            if (common.Code == 1) state.Unrelated = true;
-            else Id(Text(common));
+            if (state.Ahead > 0 && state.Behind > 0)
+            {
+                var common = Invoke(null, null, "merge-base", state.LocalTip, state.RemoteTip);
+                if (common.Code == 1) state.Unrelated = true;
+                else Id(Text(common));
+            }
             return state;
         }
 

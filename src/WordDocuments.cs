@@ -191,7 +191,7 @@ namespace WordGit
         public WordDocuments(object application) { word = application; }
         public IWin32Window Owner
         {
-            get { return word.Windows.Count == 0 ? null : new WordWindow(new IntPtr((int)word.ActiveWindow.Hwnd)); }
+            get { return word.Windows.Count == 0 ? null : DialogPlacement.RootOwner(new WordWindow(new IntPtr((int)word.ActiveWindow.Hwnd))); }
         }
 
         public object Current()

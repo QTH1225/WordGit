@@ -1,4 +1,4 @@
-# WordGit 0.11.0
+# WordGit 0.11.2
 
 在 Windows 桌面版 Word 中提交版本、管理分支、查看历史，并通过 GitHub 同步稿件。文档预览、版本对比和合并审阅使用 Word 原生功能。
 
@@ -13,12 +13,12 @@
 | Git | [Git for Windows 2.51+](https://git-scm.com/install/windows) |
 | 运行时 | [.NET Framework 4.8+](https://dotnet.microsoft.com/download/dotnet-framework/net48) |
 
-1. 准备 `WordGit-0.11.0-Setup.exe` 安装包。
+1. 准备 `WordGit-0.11.2-Setup.exe` 安装包。
 2. 保存文档，关闭所有 Word 窗口。
 3. 运行安装程序，点击 **安装 / 更新**。
 4. 重新打开 Word，进入顶部 **WordGit** 选项卡。没有出现时见下文 [在 Word 中载入插件](#在-word-中载入插件)。
 
-ZIP 包的用法相同：完整解压 `WordGit-0.11.0-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装、`Check.cmd` 检查环境。
+ZIP 包的用法相同：完整解压 `WordGit-0.11.2-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装、`Check.cmd` 检查环境。
 
 安装作用于当前 Windows 用户。升级时直接运行新版安装程序，已有提交、分支和审阅稿继续保留。卸载可从 Windows“已安装的应用”或安装程序进入，历史数据也会保留。
 
@@ -81,7 +81,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ## 快速开始
 
 1. 将稿件保存为本地 `.docx`，例如 `D:\Manuscripts\paper.docx`。WordGit 需要能直接读取的本地文件：OneDrive / SharePoint 中以网址打开的稿件，请打开同步到本机文件夹里的那份副本。需要切换分支、原地恢复或合并时，使用 OneDrive 等同步目录之外的本地文件夹。
-2. 点击 **WordGit → 提交版本**，填写提交说明。插件保存当前稿并创建提交。
+2. 点击 **WordGit → 提交版本**，填写提交标题，按需补充详细内容。点击“提交”或按 Ctrl + Enter，插件保存当前稿并创建提交。
 3. 点击 **提交图** 打开右侧窗格，选中历史版本后点击 **预览** 或 **对比当前稿**。
 4. 继续修改，在需要保留进展时再次提交。
 
@@ -209,7 +209,7 @@ WordGit/
 | --- | --- |
 | `AddIn.cs` | 插件入口、WordGit 功能区和各项操作的流程。 |
 | `Operations.cs` | 按稿件区分的后台操作状态、退出前等待，以及界面线程同步上下文。 |
-| `TaskPanes.cs`、`HistoryPane.cs`、`PaneLoadingFrame.cs`、`CommitGraph.cs` | 右侧窗格、加载框架、批注与修订列表、提交图。 |
+| `TaskPanes.cs`、`HistoryPane.cs`、`PaneLoadingFrame.cs`、`RepositoryView.cs`、`CommitGraph.cs` | 右侧窗格、加载框架、批注与修订列表、提交图。 |
 | `WordDocuments.cs` | Word 文档操作、原生对比与修订合并、替换当前稿。 |
 | `WorkingCopyJournal.cs` | 替换当前稿的意图记录；Word 中途退出后启动时自动还原或完成。 |
 | `GitHistory.cs` | 本地提交、分支、历史查询、版本取回和存储维护。 |
@@ -218,7 +218,7 @@ WordGit/
 | `ImportReviewDialog.cs` | 送审版本与老师返稿的选择、导入设置。 |
 | `DocumentSnapshot.cs`、`DocxFormat.cs` | 文档分块快照、DOCX 校验与旧历史格式读取。 |
 | `HistoryMaintenance.cs` | 空闲时自动整理仓库存储。 |
-| `Dialogs.cs` | 提交、分支和历史操作对话框，后台操作进度窗口。 |
+| `Dialogs.cs`、`DialogPlacement.cs` | 提交标题和详细内容、分支和历史操作对话框、居中显示的进度窗口。 |
 | `AppInfo.cs`、`AboutDialog.cs`、`UpdateChecker.cs` | 版本信息、作者链接和更新检查。 |
 
 ## 数据位置与备份

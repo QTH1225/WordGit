@@ -29,6 +29,7 @@ namespace WordGit
                 application.Visible = false;
                 application.DisplayAlerts = 0;
                 var word = new WordDocuments(application);
+                if (args.Contains("--dialogs-only")) { VerifyDialogOwners(application, word); return; }
                 if (args.Contains("--pane-only")) { VerifyPaneLoading(application, root); return; }
                 if (args.Contains("--remote-only")) { VerifyRemoteCollaboration(application, word, root); return; }
                 VerifyRevisionActions(application, word, root);
@@ -496,7 +497,8 @@ namespace WordGit
 
         private static void VerifyPaneLoading(dynamic application, string root)
         {
-            var path = Path.Combine(root, "侧栏异步验证.docx");
+            // User documents live outside WordGit\'s protected preview/session directory.
+            var path = Path.Combine(Path.GetTempPath(), "wg-pane-" + Guid.NewGuid().ToString("N") + ".docx");
             var storage = Path.Combine(root, "pane-repositories");
             dynamic source = application.Documents.Add();
             try
@@ -531,7 +533,7 @@ namespace WordGit
                     Require(loaded.IsCompleted, "Word pane loading timed out");
                     loaded.GetAwaiter().GetResult();
                     Require(ticks > 0 && PaneLabels(pane).Contains("当前分支  main") &&
-                        PaneLabels(pane).Contains("与最新提交一致"), "Word pane did not update after background loading");
+                        PaneLabels(pane).Contains("与最新提交一致"), "Word pane did not update after background loading: " + String.Join(" / ", PaneLabels(pane)));
                     source.TrackRevisions = true;
                     source.Content.InsertAfter("继续编辑。");
                     pane.UpdateWorkingState();
@@ -540,8 +542,51 @@ namespace WordGit
                         " ms, complete " + clock.ElapsedMilliseconds + " ms, UI heartbeat " + ticks + ".");
                 }
             }
-            finally { source.Close(false); }
+            finally { source.Close(false); File.Delete(path); }
         }
+
+        private static void VerifyDialogOwners(dynamic application, WordDocuments word)
+        {
+            dynamic document = application.Documents.Add();
+            try
+            {
+                var owner = word.Owner;
+                Require(owner != null && owner.Handle != IntPtr.Zero, "Word dialog owner was not found");
+                using (var about = new AboutDialog { Opacity = 0 })
+                {
+                    DialogPlacement.Show(about, owner);
+                    System.Windows.Forms.Application.DoEvents();
+                    VerifyNativeCenter(about, owner);
+                }
+                System.Windows.Forms.TextBox subject, details;
+                using (var commit = Dialogs.CommitForm("对话框位置验证", "", out subject, out details))
+                {
+                    commit.Opacity = 0;
+                    DialogPlacement.Show(commit, owner);
+                    System.Windows.Forms.Application.DoEvents();
+                    VerifyNativeCenter(commit, owner);
+                    Require(details.Height > 180 && subject.Height < details.Height, "Native commit input layout");
+                }
+                Console.WriteLine("PASS: Word-owned commit and about windows centered on the native document frame.");
+            }
+            finally { document.Close(false); }
+        }
+
+        private static void VerifyNativeCenter(System.Windows.Forms.Form dialog, System.Windows.Forms.IWin32Window owner)
+        {
+            DialogRectangle rectangle;
+            Require(GetDialogWindowRect(owner.Handle, out rectangle), "Cannot read native Word window bounds");
+            var bounds = System.Drawing.Rectangle.FromLTRB(rectangle.Left, rectangle.Top, rectangle.Right, rectangle.Bottom);
+            var expected = DialogPlacement.CenteredBounds(dialog.Size, bounds,
+                System.Windows.Forms.Screen.FromHandle(owner.Handle).WorkingArea);
+            Require(Math.Abs(expected.Left - dialog.Left) <= 2 && Math.Abs(expected.Top - dialog.Top) <= 2,
+                "Word dialog did not appear in the center of its document window");
+        }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct DialogRectangle { internal int Left, Top, Right, Bottom; }
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowRect")]
+        private static extern bool GetDialogWindowRect(IntPtr handle, out DialogRectangle rectangle);
 
         private static System.Collections.Generic.IEnumerable<string> PaneLabels(System.Windows.Forms.Control root)
         {
