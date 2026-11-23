@@ -235,6 +235,13 @@ namespace WordGit
             return result;
         }
 
+        internal static int DocumentRevisionCount(object value)
+        {
+            dynamic revisions = ((dynamic)value).Revisions;
+            try { return (int)revisions.Count; }
+            finally { Release(revisions); }
+        }
+
         // Changes whenever comments or revisions are added, removed or resolved, or the text
         // length changes; cheap enough to poll, unlike ReviewItems, which repaginates.
         public static string ReviewSignature(object value)

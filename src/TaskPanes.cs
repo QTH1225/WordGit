@@ -83,7 +83,19 @@ namespace WordGit
         {
             Prune();
             Pane pane;
-            if (!panes.TryGetValue((int)((dynamic)window).Hwnd, out pane)) return false;
+            return panes.TryGetValue((int)((dynamic)window).Hwnd, out pane) && Refresh(pane);
+        }
+
+        internal void RefreshDocument(string documentPath)
+        {
+            Prune();
+            foreach (var pane in panes.Values)
+                if (String.Equals(pane.Control.DocumentPath, documentPath, StringComparison.OrdinalIgnoreCase))
+                    Refresh(pane);
+        }
+
+        private static bool Refresh(Pane pane)
+        {
             if (!(bool)pane.Native.Visible)
             {
                 pane.NeedsRefresh = true;

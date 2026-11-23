@@ -18,6 +18,8 @@ namespace WordGit
         public Func<WorkingCopyState> WorkingState;
         public Func<bool> IsSaved;
         public Func<List<DocumentReviewItem>> LoadReviewItems;
+        public string MergeTargetBranch;
+        public Func<int> DocumentRevisionCount;
         // Cheap change detector for the review list; null means "always reload".
         public Func<string> ReviewSignature;
         public Action<DocumentReviewItem> NavigateReviewItem;
@@ -55,6 +57,7 @@ namespace WordGit
         private readonly Label reviewStatus = DialogLayout.Label("");
         private bool resolvingRevision;
         private bool reviewItemsCurrent;
+        private int remainingRevisions;
         private readonly ComboBox reviewFilter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList,
             Width = 78, AccessibleName = "筛选批注与修订" };
         private readonly ListBox comments = new ListBox
@@ -497,7 +500,7 @@ namespace WordGit
                 updating = true;
                 try
                 {
-                    branch.Text = "当前分支  " + data.Branch;
+                    branch.Text = data.MergeTargetBranch == null ? "当前分支  " + data.Branch : "合入分支  " + data.MergeTargetBranch;
                     filename.Text = Path.GetFileName(data.HistoryPath);
                     hints.SetToolTip(branch, branch.Text);
                     hints.SetToolTip(filename, data.HistoryPath);
@@ -536,7 +539,10 @@ namespace WordGit
             }
             if (!CurrentLoad(generation)) return;
             filter.Enabled = data != null && data.Branches.Length > 0;
-            commit.Enabled = data != null;
+            var merging = data != null && data.MergeTargetBranch != null;
+            commit.Text = merging ? "完成合并" : "提交版本";
+            commit.Enabled = data != null && !merging;
+            hints.SetToolTip(commit, merging ? "处理完剩余修订后，确认并提交合并结果。" : "保存当前文档，并提交到当前分支。");
             importReview.Enabled = data != null && data.Head != null && String.Equals(data.DocumentPath, data.HistoryPath, StringComparison.OrdinalIgnoreCase);
             compareLatest.Enabled = data != null && data.Head != null;
             var original = data != null && String.Equals(data.DocumentPath, data.HistoryPath, StringComparison.OrdinalIgnoreCase);
@@ -574,8 +580,14 @@ namespace WordGit
                     (left, right) => left.Key == right.Key && left.Text == right.Text && left.Author == right.Author &&
                         left.Page == right.Page && left.ScopeStart == right.ScopeStart && left.ScopeEnd == right.ScopeEnd &&
                         left.RevisionType == right.RevisionType).All(equal => equal);
+                var commentCount = entries.Count(entry => entry.IsComment);
+                var listedRevisions = entries.Count - commentCount;
+                var merging = data != null && data.MergeTargetBranch != null;
+                var wordCount = merging && data.DocumentRevisionCount != null ? data.DocumentRevisionCount() : 0;
+                remainingRevisions = Math.Max(listedRevisions, wordCount);
                 reviewItemsCurrent = true;
-                commentsTitle.Text = "批注 " + entries.Count(entry => entry.IsComment) + " · 修订 " + entries.Count(entry => !entry.IsComment);
+                commentsTitle.Text = merging ? "剩余修订 " + remainingRevisions + " 条 · 批注 " + commentCount :
+                    "批注 " + commentCount + " · 修订 " + listedRevisions;
                 if (!unchanged)
                 {
                     allReviewItems = entries;
@@ -618,6 +630,8 @@ namespace WordGit
                 data.CanResolveRevisions && data.ResolveReviewItem != null;
             acceptRevision.Enabled = enabled;
             rejectRevision.Enabled = enabled;
+            if (data != null && data.MergeTargetBranch != null)
+                commit.Enabled = !loading && reviewItemsCurrent && !resolvingRevision && remainingRevisions == 0 && data.CanResolveRevisions;
         }
 
         private void ResolveSelectedRevision(bool accept)
@@ -656,7 +670,8 @@ namespace WordGit
                 updating = true;
                 try { comments.SelectedIndex = next == null ? -1 : commentItems.IndexOf(next); }
                 finally { updating = false; }
-                reviewStatus.Text = next == null ? "修订已全部处理。" : accept ? "已接受，定位下一条。" : "已拒绝，定位下一条。";
+                reviewStatus.Text = next == null ? (remainingRevisions == 0 ? "修订已全部处理。" : "请在 Word 的「审阅」中处理剩余修订。")
+                    : accept ? "已接受，定位下一条。" : "已拒绝，定位下一条。";
                 UpdateWorkingState();
             }
             finally

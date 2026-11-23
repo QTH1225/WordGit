@@ -538,6 +538,9 @@ namespace WordGit
             var decisions = new List<string>();
             var fail = false;
             var editable = true;
+            var merging = true;
+            var nativeCount = 0;
+            var commits = 0;
             using (var host = new Form { ClientSize = new Size(420, 640), Opacity = 0 })
             using (var pane = new HistoryPane { Dock = DockStyle.Fill })
             {
@@ -546,7 +549,8 @@ namespace WordGit
                     DocumentPath = @"C:\test\审阅.docx", HistoryPath = @"C:\test\审阅.docx", Branch = "main",
                     Branches = new string[0], Load = branch => new List<Revision>(), WorkingState = () => WorkingCopyState.Unsaved,
                     LoadReviewItems = () => pending.ToList(), NavigateReviewItem = item => navigated.Add(item.Text),
-                    CanResolveRevisions = editable,
+                    CanResolveRevisions = editable, MergeTargetBranch = merging ? "main" : null,
+                    DocumentRevisionCount = () => nativeCount,
                     ResolveReviewItem = (item, accept) => {
                         if (fail) return false;
                         decisions.Add((accept ? "accept:" : "reject:") + item.Text);
@@ -558,9 +562,19 @@ namespace WordGit
                         foreach (var change in pending.Where(entry => !entry.IsComment)) change.Index = number++;
                         return true;
                     }
-                }, (path, action, first, second) => { });
+                }, (path, action, first, second) => {
+                    if (action == HistoryAction.Commit) commits++;
+                });
                 host.Show();
                 pane.Reload();
+                var finish = Descendants(pane).OfType<Button>().Single(button => button.Text == "完成合并");
+                var labels = Descendants(pane).OfType<Label>().ToList();
+                var reviewFilter = Descendants(pane).OfType<ComboBox>().Single(box => box.AccessibleName == "筛选批注与修订");
+                reviewFilter.SelectedItem = "批注";
+                if (finish.Enabled || labels.All(label => label.Text != "剩余修订 3 条 · 批注 1") ||
+                    labels.All(label => label.Text != "合入分支  main"))
+                    throw new InvalidOperationException("Filtering comments hid the pending revisions or enabled merge");
+                reviewFilter.SelectedItem = "全部";
                 var list = Descendants(pane).OfType<ListBox>().Single();
                 var acceptButton = Descendants(pane).OfType<Button>().Single(button => button.Text == "接受");
                 var rejectButton = Descendants(pane).OfType<Button>().Single(button => button.Text == "拒绝");
@@ -571,8 +585,9 @@ namespace WordGit
                 Render(host, Path.Combine(output, "revision-actions.png"));
                 host.Show();
                 acceptButton.PerformClick();
-                if (decisions.Single() != "accept:新增方法" || navigated.Last() != "重复段落" || list.SelectedIndex != 1)
-                    throw new InvalidOperationException("Accept did not advance to the next revision");
+                if (decisions.Single() != "accept:新增方法" || navigated.Last() != "重复段落" || list.SelectedIndex != 1 ||
+                    labels.All(label => label.Text != "剩余修订 2 条 · 批注 1") || finish.Enabled)
+                    throw new InvalidOperationException("Accept did not update the remaining count or advance to the next revision");
                 fail = true;
                 var navigationCount = navigated.Count;
                 rejectButton.PerformClick();
@@ -586,6 +601,16 @@ namespace WordGit
                 if (pending.Count != 1 || list.SelectedIndex != -1 || acceptButton.Enabled || rejectButton.Enabled ||
                     Descendants(pane).OfType<Label>().All(label => label.Text != "修订已全部处理。"))
                     throw new InvalidOperationException("Finished revisions left an enabled action or lost a comment");
+                if (!finish.Enabled || labels.All(label => label.Text != "剩余修订 0 条 · 批注 1"))
+                    throw new InvalidOperationException("Remaining comments should not block a finished merge");
+                nativeCount = 1;
+                pane.ReloadComments();
+                if (finish.Enabled) throw new InvalidOperationException("A remaining Word revision was ignored");
+                nativeCount = 0;
+                pane.ReloadComments();
+                finish.PerformClick();
+                if (commits != 1) throw new InvalidOperationException("The finish button did not use the existing commit flow");
+
                 pending.Add(new DocumentReviewItem { Index = 1, StoryType = 1, Page = 1, RevisionType = 1, Author = "作者", Text = "前一条", RangeText = "前一条", ScopeStart = 10 });
                 pending.Add(new DocumentReviewItem { Index = 2, StoryType = 1, Page = 2, RevisionType = 1, Author = "作者", Text = "最后一条", RangeText = "最后一条", ScopeStart = 30 });
                 pane.Reload();
@@ -609,6 +634,10 @@ namespace WordGit
                 Render(host, Path.Combine(output, "revision-actions-narrow.png"));
                 var graph = Descendants(pane).OfType<DataGridView>().Single();
                 if (graph.Height < pane.Font.Height + 8) throw new InvalidOperationException("Review actions hid the commit graph");
+                merging = false;
+                pane.Reload();
+                if (finish.Text != "提交版本" || !finish.Enabled)
+                    throw new InvalidOperationException("The normal commit button did not return after merge completion");
             }
         }
 
@@ -697,34 +726,36 @@ namespace WordGit
 
         private static void VerifyImportReview(string output, List<Revision> items)
         {
-            foreach (var twoVersions in new[] { false, true })
-            using (var picker = new HistoryDialog("论文.docx", items, true, items[1].Id, command: HistoryAction.ImportReview))
+            using (var picker = new HistoryDialog("论文.docx", items, true, items[1].Id, command: HistoryAction.Merge))
             {
-                Render(picker, Path.Combine(output, "review-basis-picker.png"));
-                var grid = Descendants(picker).OfType<DataGridView>().Single();
-                if (!grid.MultiSelect || grid.SelectedRows[0].Index != 1 || Descendants(picker).OfType<Button>().Count() != 2)
-                    throw new InvalidOperationException("The merge entry should accept one basis or two historical versions");
                 picker.Show();
-                grid.CurrentCell = grid.Rows[3].Cells[1];
+                var grid = Descendants(picker).OfType<DataGridView>().Single();
+                var confirm = (Button)picker.AcceptButton;
+                if (confirm.Enabled) throw new InvalidOperationException("Historical merge enabled before two versions were selected");
                 grid.ClearSelection();
                 grid.Rows[3].Selected = true;
-                if (twoVersions) grid.Rows[1].Selected = true;
-                ((Button)picker.AcceptButton).PerformClick();
-                if (picker.Basis.Id != items[3].Id ||
-                    (twoVersions ? picker.Action != HistoryAction.Merge || picker.Other.Id != items[1].Id :
-                        picker.Action != HistoryAction.ImportReview || picker.Other != null))
-                    throw new InvalidOperationException("The merge entry lost the selected versions");
+                grid.Rows[1].Selected = true;
+                confirm.PerformClick();
+                if (picker.Action != HistoryAction.Merge || picker.Basis.Id != items[3].Id || picker.Other.Id != items[1].Id)
+                    throw new InvalidOperationException("Historical merge lost the selected versions");
             }
             var file = Path.Combine(output, "导入界面测试返稿.docx");
             File.WriteAllBytes(file, new byte[] { 1, 2, 3 });
             try
             {
                 foreach (var mode in new[] { "直接合并", "先保存再合并", "仅保存为分支" })
-                using (var dialog = new ImportReviewDialog(Path.Combine(output, "当前稿.docx"), items[3], "main", new[] { "main", "review" }))
+                using (var dialog = new ImportReviewDialog(Path.Combine(output, "当前稿.docx"), items, "main", new[] { "main", "review" }))
                 {
-                    if (((Button)dialog.AcceptButton).Enabled) throw new InvalidOperationException("Review file is optional");
+                    if (((Button)dialog.AcceptButton).Enabled || dialog.BasisPicker.SelectedIndex != 0)
+                        throw new InvalidOperationException("The submission basis must not default to a commit");
                     Render(dialog, Path.Combine(output, "returned-draft-empty.png"));
                     dialog.FilePath.Text = file;
+                    var saveDraft = Descendants(dialog).OfType<Button>().Single(button => button.Text == "仅保存为分支");
+                    if (((Button)dialog.AcceptButton).Enabled || saveDraft.Enabled)
+                        throw new InvalidOperationException("Choosing only the return file enabled the workflow");
+                    var target = Descendants(dialog).OfType<TextBox>().Single(box => box.AccessibleName == "合入分支");
+                    if (!target.ReadOnly || target.Text != "main") throw new InvalidOperationException("The checked-out target branch is not visible");
+                    dialog.BasisPicker.SelectedIndex = 4;
                     if (!dialog.BranchName.Text.StartsWith("review-", StringComparison.Ordinal))
                         throw new InvalidOperationException("Default review branch conflicts with an existing review branch");
                     dialog.BranchName.Text = "review-老师一审";
@@ -736,6 +767,12 @@ namespace WordGit
                     if (!keep) dialog.BranchName.Text = "";
                     Render(dialog, Path.Combine(output, "返稿合并-" + mode + ".png"));
                     dialog.Show();
+                    var historical = Descendants(dialog).OfType<LinkLabel>().Single(link => link.Text == "合并两个历史版本…");
+                    var scroll = Descendants(dialog).OfType<Panel>().Single(panel => panel.AutoScroll);
+                    var linkBounds = dialog.RectangleToClient(historical.Parent.RectangleToScreen(historical.Bounds));
+                    var scrollBounds = dialog.RectangleToClient(scroll.Parent.RectangleToScreen(scroll.Bounds));
+                    if (!historical.Visible || !dialog.ClientRectangle.Contains(linkBounds) || linkBounds.Top < scrollBounds.Bottom)
+                        throw new InvalidOperationException("Historical merge link is clipped by the scrolling form");
                     var merge = (Button)dialog.AcceptButton;
                     var saveOnly = Descendants(dialog).OfType<Button>().Single(button => button.Text == "仅保存为分支");
                     if (dialog.BranchName.Visible != keep || dialog.Reviewer.Visible != keep || saveOnly.Visible != keep || !merge.Enabled)
@@ -745,7 +782,7 @@ namespace WordGit
                             throw new InvalidOperationException("Review merge action is outside the visible dialog");
                     var createMerge = mode != "仅保存为分支";
                     (createMerge ? merge : saveOnly).PerformClick();
-                    if (dialog.DialogResult != DialogResult.OK || dialog.Options.FilePath != file ||
+                    if (dialog.DialogResult != DialogResult.OK || dialog.Options.FilePath != file || dialog.Options.Basis.Id != items[3].Id ||
                         dialog.Options.Branch != (keep ? "review-老师一审" : null) ||
                         dialog.Options.Reviewer != (keep ? "导师甲" : null) || dialog.Options.CreateMergeDraft != createMerge)
                         throw new InvalidOperationException("Review merge lost selected options");
@@ -761,36 +798,37 @@ namespace WordGit
             using (var dialog = new AboutDialog(token => { calls++; return pending.Task; }))
             {
                 var links = Descendants(dialog).OfType<LinkLabel>().ToList();
-                if (links.Count == 0 || links.Any(link => !(link.Tag is string) || !AppInfo.IsAllowed((string)link.Tag)))
-                    throw new InvalidOperationException("About dialog contains a link that OpenLink would reject");
+                var urls = new[] { AppInfo.AuthorUrl, AppInfo.LicenseUrl, AppInfo.ProjectUrl, AppInfo.ReleasesUrl, AppInfo.IssuesUrl };
+                if (!links.Select(link => (string)link.Tag).SequenceEqual(urls) ||
+                    links.Any(link => link.Text.Contains("://")) || links.Single(link => (string)link.Tag == AppInfo.ProjectUrl).Text != "GitHub 仓库")
+                    throw new InvalidOperationException("About dialog lost a named link or shows a raw URL");
+                var status = Descendants(dialog).OfType<Label>().Single(label => label.Name == "updateStatus");
+                VerifyAboutContent(dialog);
+                if (status.Visible || Descendants(dialog).OfType<Button>().Count() != 2 ||
+                    !Descendants(dialog).OfType<Label>().Any(label => label.Text == "版本 " + AppInfo.DisplayVersion))
+                    throw new InvalidOperationException("About overview has redundant content or lacks the current version");
                 Render(dialog, Path.Combine(output, "about-dialog.png"));
-                VerifyNoOverlap(dialog);
-                dialog.Size = dialog.MinimumSize;
-                Render(dialog, Path.Combine(output, "about-dialog-min.png"));
-                VerifyNoOverlap(dialog);
-                dialog.Font = new Font(dialog.Font.FontFamily, 13.5f);
-                Render(dialog, Path.Combine(output, "about-dialog-large-font.png"));
-                VerifyNoOverlap(dialog);
                 dialog.Font = new Font(dialog.Font.FontFamily, 18f);
+                VerifyAboutContent(dialog);
                 Render(dialog, Path.Combine(output, "about-dialog-largest-font.png"));
-                VerifyNoOverlap(dialog);
                 dialog.Font = SystemFonts.MessageBoxFont;
-                if (!Descendants(dialog).OfType<Label>().Any(label => label.Text.Contains(AppInfo.DisplayVersion)) ||
-                    !Descendants(dialog).OfType<LinkLabel>().Any(link => link.Text == AppInfo.ProjectUrl))
-                    throw new InvalidOperationException("About dialog lost product information");
                 dialog.Show();
                 var running = dialog.CheckForUpdatesAsync();
                 var duplicate = dialog.CheckForUpdatesAsync();
                 var check = Descendants(dialog).OfType<Button>().Single(button => button.Text == "检查更新");
-                if (calls != 1 || running.IsCompleted || check.Enabled)
-                    throw new InvalidOperationException("Update check blocked the UI or allowed duplicate requests");
-                pending.SetResult(new UpdateResult(UpdateState.Available, "发现新版本 0.9.10。请打开发布页下载安装。"));
+                if (calls != 1 || running.IsCompleted || check.Enabled || !status.Visible)
+                    throw new InvalidOperationException("Update check blocked the UI or did not show progress");
+                pending.SetResult(new UpdateResult(UpdateState.Available,
+                    "发现新版本 0.9.10。请打开发布页下载安装；安装前保存并关闭 Word，现有历史会保留。"));
                 var deadline = DateTime.UtcNow.AddSeconds(3);
                 while (!running.IsCompleted && DateTime.UtcNow < deadline) Application.DoEvents();
-                if (!running.IsCompleted || !check.Enabled ||
-                    !Descendants(dialog).OfType<TextBox>().Single().Text.Contains("0.9.10"))
+                if (!running.IsCompleted || !check.Enabled || !status.Visible || !status.Text.Contains("0.9.10"))
                     throw new InvalidOperationException("Update result was not displayed");
+                VerifyAboutContent(dialog);
                 Render(dialog, Path.Combine(output, "about-update-result.png"));
+                dialog.Font = new Font(dialog.Font.FontFamily, 18f);
+                VerifyAboutContent(dialog);
+                Render(dialog, Path.Combine(output, "about-update-large-font.png"));
             }
             var cancellation = new System.Threading.Tasks.TaskCompletionSource<UpdateResult>();
             var closing = new AboutDialog(token => {
@@ -803,6 +841,19 @@ namespace WordGit
             Application.DoEvents();
             closing.Dispose();
             if (!cancellation.Task.IsCanceled) throw new InvalidOperationException("Closed update dialog kept its request alive");
+        }
+
+        private static void VerifyAboutContent(AboutDialog dialog)
+        {
+            if (!dialog.Visible) dialog.Show();
+            Application.DoEvents();
+            VerifyNoOverlap(dialog);
+            if (Descendants(dialog).OfType<ScrollableControl>().Any(control => control.AutoScroll) ||
+                Descendants(dialog).OfType<TextBoxBase>().Any())
+                throw new InvalidOperationException("About information requires scrolling");
+            foreach (var control in Descendants(dialog).Where(control => control.Visible && (control is Label || control is Button)))
+                if (!dialog.ClientRectangle.Contains(dialog.RectangleToClient(control.Parent.RectangleToScreen(control.Bounds))))
+                    throw new InvalidOperationException("About information is outside the window: " + control.Text);
         }
 
         private static void VerifyBackgroundOperationCancel()

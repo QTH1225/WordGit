@@ -106,7 +106,7 @@ namespace WordGit
             }
             layout.Controls.Add(branchBar, 0, 1);
             layout.Controls.Add(DialogLayout.Label(SelectionHint(command)), 0, 2);
-            history.MultiSelect = !command.HasValue || command == HistoryAction.Compare || command == HistoryAction.ImportReview;
+            history.MultiSelect = !command.HasValue || command == HistoryAction.Compare || command == HistoryAction.Merge;
             ConfigureGrid();
             layout.Controls.Add(history, 0, 3);
             layout.Controls.Add(DialogLayout.Label("提交详情"), 0, 4);
@@ -118,16 +118,17 @@ namespace WordGit
             AddVersionAction(actions, "另存旧版", HistoryAction.Export, command);
             if (allowRestore) AddVersionAction(actions, "恢复为当前稿", HistoryAction.Restore, command);
             if (allowRestore) AddVersionAction(actions, "返稿合并", HistoryAction.ImportReview, command);
+            if (command == HistoryAction.Merge) AddVersionAction(actions, "合并两版", HistoryAction.Merge, command);
             if (command == HistoryAction.CreateBranch) AddVersionAction(actions, "新建分支", HistoryAction.CreateBranch, command);
             var close = DialogLayout.Button(command.HasValue ? "取消" : "关闭");
             close.DialogResult = DialogResult.Cancel;
             actions.Controls.Add(close);
             CancelButton = close;
             history.SelectionChanged += (sender, args) => ShowSelection();
-            history.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0 && history.SelectedRows.Count == 1) Complete(command == HistoryAction.ImportReview ? HistoryAction.ImportReview : HistoryAction.Preview); };
+            history.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0 && history.SelectedRows.Count == 1) Complete(HistoryAction.Preview); };
             if (revisions.Count > 0)
             {
-                var preferred = command == HistoryAction.CreateBranch || command == HistoryAction.ImportReview ? revisions.FindIndex(revision => revision.Id == head) : 0;
+                var preferred = command == HistoryAction.CreateBranch ? revisions.FindIndex(revision => revision.Id == head) : 0;
                 var row = history.Rows[Math.Max(0, preferred)];
                 history.CurrentCell = row.Cells[1];
                 row.Selected = true;
@@ -155,7 +156,7 @@ namespace WordGit
                 case HistoryAction.Export: return "选择要另存为新文档的版本。";
                 case HistoryAction.Restore: return "选择要恢复为当前稿的版本。";
                 case HistoryAction.CreateBranch: return "选择新分支的起始版本。";
-                case HistoryAction.ImportReview: return "选中实际发给对方的版本，再选择返稿。也可按 Ctrl 选两个历史版本直接合并。";
+                case HistoryAction.Merge: return "按 Ctrl 选择两个历史版本，较早的一版作为基准。";
                 default: return "单击查看详情，Ctrl 选两版对比；双击只读打开历史版本。";
             }
         }
@@ -244,11 +245,9 @@ namespace WordGit
             foreach (var action in buttons)
                 action.Value.Enabled = action.Key == HistoryAction.SwitchBranch || action.Key == HistoryAction.MergeBranch
                     ? SelectedBranch != null && SelectedBranch != branch
-                    : selection.Length == 1 ||
-                    (selection.Length == 2 && (action.Key == HistoryAction.Compare || action.Key == HistoryAction.ImportReview));
-            Button review;
-            if (buttons.TryGetValue(HistoryAction.ImportReview, out review))
-                review.Text = selection.Length == 2 ? "合并两版" : "选择返稿…";
+                    : action.Key == HistoryAction.ImportReview ? revisions.Count > 0
+                    : action.Key == HistoryAction.Merge ? selection.Length == 2
+                    : selection.Length == 1 || (selection.Length == 2 && action.Key == HistoryAction.Compare);
             if (selection.Length == 0) { details.Text = "请选择一个提交查看详情。"; return; }
             var revision = selection[selection.Length - 1];
             if (selection.Length == 2)
@@ -268,7 +267,7 @@ namespace WordGit
             var selected = history.SelectedRows.Cast<DataGridViewRow>().Select(row => row.Index).OrderBy(index => index).ToArray();
             Basis = selected.Length > 0 ? revisions[selected[selected.Length - 1]] : null;
             Other = selected.Length == 2 ? revisions[selected[0]] : null;
-            Action = action == HistoryAction.ImportReview && Other != null ? HistoryAction.Merge : action;
+            Action = action;
             DialogResult = DialogResult.OK;
         }
     }
