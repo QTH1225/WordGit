@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/core.js"></script>
+</head>
+<body class="dialog">
+    <div class="grow"><p id="status" class="message"></p><p class="hint">可以继续编辑正文。网络操作可随时取消，不会留下半个版本。</p></div>
+    <div class="buttons"><button id="cancel">取消</button></div>
+    <script>
+        var key = WordGit.dialogKey();
+        var app = WordGit.app();
+        function read() { try { return JSON.parse(app.PluginStorage.getItem(key)) || {}; } catch (e) { return {}; } }
+        var state = read();
+        document.getElementById("status").textContent = state.status || "正在处理…";
+        document.getElementById("cancel").onclick = async function () {
+            this.disabled = true;
+            this.textContent = "正在取消…";
+            try { await WordGit.call("cancel", { operation: state.operation }); } catch (e) { /* the operation may be done */ }
+        };
+        setInterval(function () {
+            if (read().done) { app.PluginStorage.removeItem(key); window.close(); }
+        }, 250);
+    </script>
+</body>
+</html>

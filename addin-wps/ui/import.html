@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/core.js"></script>
+</head>
+<body class="dialog">
+    <div class="grow">
+        <div class="field"><label>返稿文件</label>
+            <div class="row"><input id="file" type="text" placeholder="收到的 .docx 返稿路径"><button id="browse">选择文件…</button></div></div>
+        <div class="field"><label>送审版本</label><select id="basis"></select></div>
+        <div class="field"><label>合入分支</label><input id="target" type="text" readonly></div>
+        <label class="row" style="margin:10px 0 4px"><input id="keep" type="checkbox" checked> 将原始返稿保存为独立分支</label>
+        <div id="branchFields">
+            <div class="field"><label>返稿分支</label><input id="branch" type="text"></div>
+            <div class="field"><label>返稿来源</label><input id="reviewer" type="text" value="老师返稿"></div>
+        </div>
+        <p class="hint">生成合并稿前，请先提交当前稿的修改。</p>
+        <a id="historical">合并两个历史版本…</a>
+        <div id="error" class="error"></div>
+    </div>
+    <div class="buttons">
+        <button id="cancel">取消</button>
+        <button id="saveOnly">仅保存为分支</button>
+        <button id="merge" class="primary">生成合并稿</button>
+    </div>
+    <script>
+        var data = WordGit.dialogData();
+        var $ = function (id) { return document.getElementById(id); };
+        $("target").value = data.branch || "";
+        $("basis").innerHTML = '<option value="">请选择实际发出的送审版本</option>' + (data.history || []).map(function (r) {
+            return '<option value="' + r.id + '">' + WordGit.escape(r.label) + "</option>";
+        }).join("");
+        function pad(n) { return (n < 10 ? "0" : "") + n; }
+        var now = new Date();
+        var base = "review-" + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + "-" + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+        function conflicts(name) {
+            var lower = name.toLowerCase();
+            return (data.branches || []).some(function (b) {
+                var other = b.toLowerCase();
+                return other === lower || lower.indexOf(other + "/") === 0 || other.indexOf(lower + "/") === 0;
+            });
+        }
+        var candidate = base, suffix = 2;
+        while (conflicts(candidate)) candidate = base + "-" + suffix++;
+        $("branch").value = candidate;
+        if ((data.history || []).length < 2) $("historical").style.display = "none";
+
+        function validate() {
+            var keep = $("keep").checked;
+            $("branchFields").style.display = keep ? "block" : "none";
+            $("saveOnly").style.display = keep ? "" : "none";
+            var ready = $("file").value.trim() && $("basis").value;
+            var branchReady = $("branch").value.trim() && $("reviewer").value.trim();
+            $("saveOnly").disabled = !(ready && branchReady);
+            $("merge").disabled = !(ready && (!keep || branchReady));
+        }
+        ["file", "basis", "branch", "reviewer", "keep"].forEach(function (id) {
+            $(id).addEventListener("input", validate);
+            $(id).addEventListener("change", validate);
+        });
+        $("browse").onclick = function () {
+            var path = WordGit.pickFile("选择收到的返稿", false);
+            if (path) { $("file").value = path; validate(); }
+        };
+        function complete(createMergeDraft) {
+            var file = $("file").value.trim();
+            if (!/\.docx$/i.test(file)) { $("error").textContent = "请选择已经保存的 .docx 返稿。"; return; }
+            if (WordGit.samePath(file, data.document)) { $("error").textContent = "请选择收到的返稿文件。"; return; }
+            var keep = $("keep").checked;
+            var branch = keep ? $("branch").value.trim() : null;
+            if (branch && conflicts(branch)) { $("error").textContent = "返稿分支「" + branch + "」与已有分支冲突，请换一个名称。"; return; }
+            WordGit.finishDialog({ file: file, basis: $("basis").value, branch: branch,
+                reviewer: keep ? $("reviewer").value.trim() : ($("reviewer").value.trim() || "返稿"), createMergeDraft: createMergeDraft });
+        }
+        $("merge").onclick = function () { complete(true); };
+        $("saveOnly").onclick = function () { complete(false); };
+        $("historical").onclick = function () { WordGit.finishDialog({ historical: true }); };
+        $("cancel").onclick = function () { WordGit.finishDialog(null); };
+        document.addEventListener("keydown", function (e) { if (e.key === "Escape") WordGit.finishDialog(null); });
+        validate();
+    </script>
+</body>
+</html>

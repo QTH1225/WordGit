@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/core.js"></script>
+</head>
+<body class="dialog">
+    <p id="hint" class="hint"></p>
+    <div id="list" class="list grow"></div>
+    <div class="buttons">
+        <button id="cancel">取消</button>
+        <button id="ok" class="primary" disabled>确定</button>
+    </div>
+    <script>
+        var data = WordGit.dialogData();
+        var chosen = null, ok = document.getElementById("ok");
+        document.getElementById("hint").textContent = data.hint || "";
+        if (data.action) ok.textContent = data.action;
+        var list = document.getElementById("list");
+        list.innerHTML = (data.branches || []).map(function (name, i) {
+            var label = name.replace(/^refs\/remotes\//, "");
+            return '<div class="item" data-i="' + i + '">' + WordGit.escape(label) + "</div>";
+        }).join("");
+        list.onclick = function (e) {
+            var node = e.target.closest(".item");
+            if (!node) return;
+            chosen = data.branches[+node.dataset.i];
+            Array.prototype.forEach.call(list.children, function (n) { n.classList.toggle("selected", n === node); });
+            ok.disabled = false;
+        };
+        list.ondblclick = function () { if (chosen) WordGit.finishDialog(chosen); };
+        ok.onclick = function () { WordGit.finishDialog(chosen); };
+        document.getElementById("cancel").onclick = function () { WordGit.finishDialog(null); };
+        document.addEventListener("keydown", function (e) { if (e.key === "Escape") WordGit.finishDialog(null); });
+    </script>
+</body>
+</html>

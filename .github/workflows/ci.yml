@@ -37,3 +37,33 @@ jobs:
           name: wordgit-package
           path: dist/
           if-no-files-found: error
+
+  rust:
+    # Rust core and service: unit tests, real-git integration tests and the HTTP service tests.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup component add clippy
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked --workspace
+      - name: Add-in scripts parse
+        if: runner.os == 'Linux'
+        run: for f in addin-wps/js/*.js addin-wps/test/*.js; do node --check "$f"; done
+
+  rust-csharp-compat:
+    # The C# add-in and the Rust core must read each other's repositories.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross-implementation check
+        shell: pwsh
+        run: ./tests/rust-compat.ps1

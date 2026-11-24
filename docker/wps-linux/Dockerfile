@@ -1,14 +1,18 @@
 # syntax=docker/dockerfile:1
-# WordGit P0: Linux WPS (personal edition) with the probe add-in and probe service.
+# WordGit on Linux WPS (personal edition): the WordGit service and add-in, plus the P0 probe.
 # Build from the repository root:
 #   docker compose -f docker/wps-linux/compose.yaml build
 # The WPS package must already be in docker/wps-linux/cache/ (see docker/wps-linux/README.md).
 
-FROM rust:1.96.1-bookworm AS probe-build
+FROM rust:1.96.1-bookworm AS rust-build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
+COPY crates crates
 COPY poc/probe-server poc/probe-server
-RUN cargo build --release --locked -p wordgit-probe
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p wordgit -p wordgit-probe \
+ && mkdir -p /out && cp target/release/wordgit target/release/wordgit-probe /out/
 
 FROM ubuntu:24.04
 ARG WPS_DEB=wps-office_12.1.2.29183_amd64.deb
@@ -40,10 +44,21 @@ RUN --mount=type=bind,source=docker/wps-linux/cache,target=/cache \
  && apt-get install -y --no-install-recommends /cache/${WPS_DEB} \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=probe-build /src/target/release/wordgit-probe /usr/local/bin/wordgit-probe
+# WordGit's runtime dependency (git) and curl for the test scripts.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git curl openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=rust-build /out/wordgit /out/wordgit-probe /usr/local/bin/
 COPY poc/wps-addin /opt/wordgit/addin
-COPY docker/wps-linux/entrypoint.sh docker/wps-linux/probe-run.sh docker/wps-linux/make-docx.py /opt/wordgit/
-RUN chmod 755 /opt/wordgit/entrypoint.sh /opt/wordgit/probe-run.sh
+COPY addin-wps /opt/wordgit/addin-wps-src
+RUN cp -r /opt/wordgit/addin-wps-src /opt/wordgit/addin-wps \
+ && rm -rf /opt/wordgit/addin-wps/test \
+ && mkdir -p /opt/wordgit/addin-wps-test \
+ && cp /opt/wordgit/addin-wps-src/test/e2e.js /opt/wordgit/addin-wps-test/ \
+ && rm -rf /opt/wordgit/addin-wps-src
+COPY docker/wps-linux/entrypoint.sh docker/wps-linux/probe-run.sh docker/wps-linux/e2e-run.sh docker/wps-linux/make-docx.py /opt/wordgit/
+RUN chmod 755 /opt/wordgit/entrypoint.sh /opt/wordgit/probe-run.sh /opt/wordgit/e2e-run.sh
 
 USER ubuntu
 WORKDIR /home/ubuntu

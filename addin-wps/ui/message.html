@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/core.js"></script>
+</head>
+<body class="dialog">
+    <div class="grow"><div id="message" class="message"></div></div>
+    <div class="buttons">
+        <button id="cancel">取消</button>
+        <button id="ok" class="primary">确定</button>
+    </div>
+    <script>
+        var data = WordGit.dialogData();
+        document.getElementById("message").textContent = data.message || "";
+        var ok = document.getElementById("ok"), cancel = document.getElementById("cancel");
+        if (data.kind !== "confirm") cancel.style.display = "none";
+        if (data.ok) ok.textContent = data.ok;
+        ok.onclick = function () { WordGit.finishDialog(true); };
+        cancel.onclick = function () { WordGit.finishDialog(false); };
+        document.addEventListener("keydown", function (e) {
+            if (e.key === "Enter") ok.click();
+            if (e.key === "Escape") WordGit.finishDialog(false);
+        });
+        ok.focus();
+    </script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/core.js"></script>
+</head>
+<body class="dialog">
+    <div class="grow">
+        <label id="label" class="hint"></label>
+        <input id="value" type="text">
+        <div id="detailBox" style="display:none; margin-top:10px">
+            <label id="detailLabel" class="hint"></label>
+            <textarea id="detail"></textarea>
+        </div>
+        <div id="error" class="error"></div>
+    </div>
+    <div class="buttons">
+        <button id="cancel">取消</button>
+        <button id="ok" class="primary">确定</button>
+    </div>
+    <script>
+        var data = WordGit.dialogData();
+        var value = document.getElementById("value"), detail = document.getElementById("detail");
+        document.getElementById("label").textContent = data.label || "";
+        value.value = data.value || "";
+        if (data.multiline) {
+            document.getElementById("detailBox").style.display = "block";
+            document.getElementById("detailLabel").textContent = data.detailLabel || "详细内容";
+        }
+        if (data.ok) document.getElementById("ok").textContent = data.ok;
+        function submit() {
+            var text = value.value.trim();
+            if (!text) { document.getElementById("error").textContent = "请填写" + (data.label || "内容") + "。"; value.focus(); return; }
+            WordGit.finishDialog(data.multiline ? { value: text, detail: detail.value.trim() } : { value: text });
+        }
+        document.getElementById("ok").onclick = submit;
+        document.getElementById("cancel").onclick = function () { WordGit.finishDialog(null); };
+        document.addEventListener("keydown", function (e) {
+            if (e.key === "Enter" && (e.target === value || e.ctrlKey)) { e.preventDefault(); submit(); }
+            if (e.key === "Escape") WordGit.finishDialog(null);
+        });
+        value.focus();
+        value.select();
+    </script>
+</body>
+</html>

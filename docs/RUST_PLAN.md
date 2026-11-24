@@ -10,24 +10,47 @@
 - WPS 跨平台的扩展方式是 **JS 加载项**（wpsjs）：HTML + JS 运行在 WPS 内置浏览器中，`window.Application` 提供仿 VBA 的文字对象模型。
 - JS 加载项无法启动本地进程（`OAAssist.ShellExecute` 仍可调用，但官方已以安全为由让它失效），也不能直接运行 Git。所以 Rust 服务要跟随用户登录自启，不能依赖加载项按需拉起。
 
-因此采用 **Rust 本地服务 + Web 加载项** 的结构：
+因此采用 **Rust 本地服务 + Web 加载项** 的结构（已实现，见下文「当前状态」）：
 
 ```text
 crates/wordgit-core     分块快照、DOCX 校验、提交/分支/历史、远程同步、恢复记录、存储整理
-crates/wordgit-service  只监听 127.0.0.1 的 HTTP + JSON 服务：令牌、Host/Origin 校验、长任务进度与取消
-crates/wordgit-cli      同一内核的命令行，用于测试、排障和脚本
-addin-wps/              WPS JS 加载项：ribbon.xml、任务窗格、对话框
-src/ (C#)               过渡期保留的 Windows Word COM 加载项，之后改为调用同一内核
+crates/wordgit          二进制 wordgit：本地 HTTP 服务（serve）、安装（install）与命令行
+addin-wps/              WPS JS 加载项：功能区、"批注、修订与提交"侧栏、对话框
+src/ (C#)               Windows Word COM 加载项，与 Rust 内核共用同一份仓库格式
 ```
 
 同一套 Web 界面和服务以后也可用于 Word for Mac（Office.js）。
+
+## 当前状态（2026-11-25）
+
+| 部分 | 状态 | 验证 |
+| --- | --- | --- |
+| `wordgit-core` | 全部移植：三种存储格式读写、分块快照、提交/分支/切换/删除、返稿导入、合并提交、远程关联/获取/推送/快进/克隆、强推备份、替换当前稿与崩溃恢复、后台压缩 | 22 个单元测试、8 个集成测试（真实 git，含双客户端远程），Windows 与 Linux 均通过 |
+| 与 C# 版互通 | 仓库位置、分块快照树、整文件校验和完全一致；两边互相读取对方的提交并逐字节还原 | `tests/rust-compat.ps1`（8 项） |
+| `wordgit` 服务 | 25 个接口；令牌、Host、Origin 校验；长任务取消；替换计划（准备 → 编辑器关闭文档 → 应用） | 服务 HTTP 测试（安全检查、提交/分支/切换/恢复往返） |
+| WPS 加载项 | 功能区 17 个按钮、侧栏（批注与修订、状态、远程、提交图）、9 个对话框 | Docker 内 Linux WPS 个人版端到端 20 步，整合窗口与独立窗口模式 |
+
+### 合并在 WPS 中的做法
+
+Word 的 `MergeDocuments` 能把两份各带修订的稿子合成一份三方合并稿；WPS 实测做不到：
+
+| 调用 | WPS 12.1.2 实测 |
+| --- | --- |
+| `Application.MergeDocuments(a, b, …)` | 只是激活第二份文档，不生成合并稿 |
+| `Document.Merge(file, wdMergeTargetCurrent)` | 把两份的差异写成修订，但会丢掉两侧原有修订的作者，所有修订作者都变成"未知" |
+| `Application.CompareDocuments(a, b, …)` | 正常，修订作者可指定 |
+
+所以 WordGit 在 WPS 上统一用 `CompareDocuments` 生成合并稿：
+
+- **当前分支自共同版本以来没有修改**（例如老师返稿后自己还没动过、拉取时只有对方有新提交）：用"当前稿 → 对方版本"对比，结果正好是对方的修改，作者显示为对方，精确无误。
+- **双方都有修改**：合并稿里除了对方的修改，还会出现"撤销当前分支修改"的修订。加载项会另外打开一份"当前分支的修改"对照稿，并提示作者把与对照稿相反的修订拒绝掉。这比 Word 版多一步，但不会丢内容。
 
 ## 已核实的事实
 
 | 事项 | 结论 | 来源 |
 | --- | --- | --- |
 | 原生比较 | `Application.CompareDocuments`、`Document.Compare` 在 Linux 个人版 12.1.2 实测可用，能生成带修订和原批注的对比稿。参数顺序与 Word 完全一致，第 13 位是 `CompareMoves`（旧版 WPS 文档漏写了它）。JS 只能按位置传参 | P0 实测 |
-| 合并 | `Application.MergeDocuments` 调用成功，但在测试用例中返回了未带修订的返稿。合并语义还要单独验证，必要时改用 `CompareDocuments` | P0 实测 |
+| 合并 | `Application.MergeDocuments` 不生成合并稿；`Document.Merge` 丢失修订作者。改用 `CompareDocuments`，见上文「合并在 WPS 中的做法」 | P0 实测 |
 | 启动本地进程 | `OAAssist.ShellExecute` 已失效。社区插件改用 JSA 宏的 `Shell()` 绕过，但这要求用户降低宏安全级别，WordGit 不采用 | WPS 官方社区、Zotero-WPSJS |
 | 本地文件 | `wps.FileSystem` 提供 `ReadFile`、`WriteFile`、`readdirSync`、`stat`、`copyFileSync` 等方法；`Application.Env` 提供主目录、临时目录、AppData 等系统路径 | P0 实测 |
 | 加载项目录 | Windows：`%APPDATA%\kingsoft\wps\jsaddons`；Linux：`~/.local/share/Kingsoft/wps/jsaddons`；macOS：`~/Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons` | wpsjs 2.2.3 源码、Zotero-WPSJS |
@@ -55,7 +78,7 @@ src/ (C#)               过渡期保留的 Windows Word COM 加载项，之后�
 
 | 平台 | 方式 | 状态 |
 | --- | --- | --- |
-| Linux WPS 个人版 12.1.2 | `docker/wps-linux/`：容器内全自动运行，noVNC 可观看 | **通过**（`MergeDocuments` 的语义待验证） |
+| Linux WPS 个人版 12.1.2 | `docker/wps-linux/`：容器内全自动运行，noVNC 可观看 | **通过** |
 | Windows WPS | 本机安装 WPS 后部署 `poc/wps-addin` 与探测服务 | 待做 |
 | macOS WPS（M 芯片、Intel） | 真机。Docker 不能运行 macOS，社区的 Docker-OSX 只能模拟 Intel，而且不符合苹果许可 | 需要真机 |
 
@@ -92,11 +115,12 @@ P0 的判定：
 
 ## 后续阶段
 
-1. **P1 Rust 内核**：按 C# 版行为移植 `DocumentSnapshot`、`DocxFormat`、`GitHistory`、`RemoteSync`、`WorkingCopyJournal`、`HistoryMaintenance`。用 C# 版生成的真实仓库做对照测试。
-2. **P2 服务与 CLI**：本地服务、令牌、长任务进度与取消，以及跟随登录自启（Windows 启动项、macOS LaunchAgent、Linux systemd --user）。
-3. **P3 WPS 加载项界面**：功能区、"批注、修订与提交"窗格、提交图、对话框。
-4. **P4 安装包**：Windows、Linux（deb/rpm）、macOS，写入 `jsaddons` 与 `publish.xml`。
-5. **P5 统一**：Windows Word 的 C# 加载项改为调用 Rust 内核，删除重复的 C# 历史实现。
+1. ~~**P1 Rust 内核**~~：已完成，并与 C# 版做了交叉验证。
+2. ~~**P2 服务与 CLI**~~：已完成。登录自启：Linux 用 `~/.config/autostart/wordgit.desktop`，macOS 用 LaunchAgent，Windows 用 HKCU Run。
+3. ~~**P3 WPS 加载项界面**~~：已完成，Linux WPS 端到端通过。
+4. **P4 安装包**：Linux deb/rpm（声明 git 与 CEF 依赖库，安装后执行 `wordgit install`）、Windows、macOS。
+5. **P5 统一**：Windows Word 的 C# 加载项改为调用 Rust 服务，删除重复的 C# 历史实现。
+6. **待实机验证**：Windows 版 WPS、macOS 版 WPS（沙盒内的会话目录、`FileDialog`）。
 
 ## 内核移植约束
 

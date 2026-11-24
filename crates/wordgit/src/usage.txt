@@ -1,0 +1,15 @@
+WordGit — Word/WPS 文档版本管理
+
+用法：
+  wordgit serve [--port N]          启动本地服务（WPS 加载项通过它管理版本）
+  wordgit install [--addin 目录] [--no-autostart]
+                                    安装 WPS 加载项、设置登录自启动并启动服务
+  wordgit uninstall                 移除加载项和自启动；稿件历史保留
+  wordgit status <文档.docx>        查看当前分支、提交与远程状态
+  wordgit log <文档.docx>           列出提交历史
+  wordgit commit <文档.docx> -m <说明> [--author 作者]
+  wordgit call <操作> [JSON]        直接执行一个服务操作，例如：
+                                    wordgit call branch/create '{"document":"/x/a.docx","name":"review"}'
+  wordgit version
+
+数据目录可用环境变量 WORDGIT_HOME 指定；git 路径可用 WORDGIT_GIT 指定。

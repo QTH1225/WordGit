@@ -1,9 +1,31 @@
 [workspace]
 resolver = "2"
-members = ["poc/probe-server"]
+members = ["crates/wordgit-core", "crates/wordgit", "poc/probe-server"]
 
 [workspace.package]
+version = "0.12.0"
 edition = "2021"
 license = "GPL-3.0-only"
 authors = ["QTH1225"]
 repository = "https://github.com/QTH1225/WordGit"
+
+[workspace.dependencies]
+wordgit-core = { path = "crates/wordgit-core" }
+sha1 = "0.10"
+sha2 = "0.10"
+flate2 = "1"
+crc32fast = "1"
+base64 = "0.22"
+getrandom = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+libc = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_Security"] }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

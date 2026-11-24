@@ -1,0 +1,37 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+    <ribbon startFromScratch="false">
+        <tabs>
+            <tab id="WordGitTab" label="WordGit">
+                <group id="WordGitVersions" label="本地提交">
+                    <button id="WordGitCommit" label="提交版本" size="large" getImage="GetImage" onAction="OnAction" supertip="保存当前文档并创建本地提交。"/>
+                    <button id="WordGitHistory" label="提交图" size="large" getImage="GetImage" onAction="OnAction" supertip="在右侧查看批注、修订、分支和提交记录。"/>
+                    <button id="WordGitPreview" label="预览版本" size="large" getImage="GetImage" onAction="OnAction" supertip="选一个历史版本，只读打开。"/>
+                </group>
+                <group id="WordGitBranches" label="分支">
+                    <button id="WordGitCreateBranch" label="新建分支" size="large" getImage="GetImage" onAction="OnAction" supertip="选择起始版本并输入新分支名称。"/>
+                    <button id="WordGitSwitchBranch" label="切换分支" size="large" getImage="GetImage" onAction="OnAction" supertip="将当前稿切换到另一个分支的版本。"/>
+                    <button id="WordGitMergeBranch" label="合并分支" size="large" getImage="GetImage" onAction="OnAction" supertip="将所选分支合入当前分支，先审阅修订。"/>
+                    <button id="WordGitDeleteBranch" label="删除分支" size="large" getImage="GetImage" onAction="OnAction" supertip="删除已经合入当前分支的其他本地分支。"/>
+                </group>
+                <group id="WordGitReview" label="比较与审阅">
+                    <button id="WordGitImportReview" label="返稿合并" size="large" getImage="GetImage" onAction="OnAction" supertip="选择返稿和送审版本，生成修订合并稿，可将原始返稿保存为独立分支。"/>
+                    <button id="WordGitCompare" label="对比版本" size="large" getImage="GetImage" onAction="OnAction" supertip="选一版与当前稿对比，或选两版对比。"/>
+                </group>
+                <group id="WordGitRemote" label="远程协作">
+                    <button id="WordGitLinkRemote" label="关联仓库" size="large" getImage="GetImage" onAction="OnAction" supertip="为当前稿件关联 GitHub 或 Gitee 仓库并获取远程历史。"/>
+                    <button id="WordGitCloneRemote" label="克隆稿件" size="large" getImage="GetImage" onAction="OnAction" supertip="从已有 WordGit 仓库下载历史，还原为新的本地稿件。"/>
+                    <button id="WordGitFetchRemote" label="获取" size="large" getImage="GetImage" onAction="OnAction" supertip="下载远程提交和分支，不改动当前文档。"/>
+                    <button id="WordGitPullRemote" label="拉取" size="large" getImage="GetImage" onAction="OnAction" supertip="获取后更新当前稿；双方有修改时生成修订合并稿。"/>
+                    <button id="WordGitPushRemote" label="推送" size="large" getImage="GetImage" onAction="OnAction" supertip="推送当前分支已经提交的版本。"/>
+                </group>
+                <group id="WordGitRetrieve" label="取回版本">
+                    <button id="WordGitExport" label="另存旧版" size="large" getImage="GetImage" onAction="OnAction" supertip="将所选版本另存为新的 DOCX。"/>
+                    <button id="WordGitRestore" label="恢复旧版" size="large" getImage="GetImage" onAction="OnAction" supertip="先保存当前稿，再恢复所选版本，并记录一次新提交。"/>
+                </group>
+                <group id="WordGitInformation" label="关于">
+                    <button id="WordGitAbout" getLabel="GetLabel" size="large" getImage="GetImage" onAction="OnAction" supertip="查看版本、服务状态、作者和项目链接。"/>
+                </group>
+            </tab>
+        </tabs>
+    </ribbon>
+</customUI>

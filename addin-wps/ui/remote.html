@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/core.js"></script>
+</head>
+<body class="dialog">
+    <div class="grow">
+        <p id="hint" class="hint"></p>
+        <div class="field"><label>仓库地址</label><input id="url" type="text" placeholder="https://github.com/用户/仓库.git 或 git@gitee.com:用户/仓库.git"></div>
+        <div class="field"><label>远程分支</label><input id="branch" type="text" value="main"></div>
+        <div id="documentField" class="field" style="display:none"><label>保存位置</label>
+            <div class="row"><input id="document" type="text"><button id="browse">选择…</button></div></div>
+        <div id="error" class="error"></div>
+    </div>
+    <div class="buttons">
+        <button id="cancel">取消</button>
+        <button id="ok" class="primary">确定</button>
+    </div>
+    <script>
+        var data = WordGit.dialogData();
+        var $ = function (id) { return document.getElementById(id); };
+        $("url").value = data.url || "";
+        $("branch").value = data.branch || "main";
+        if (data.clone) {
+            $("hint").textContent = "从对方已推送的 WordGit 仓库下载历史，并还原为新的本地 DOCX。不会替换同名文档或已有历史。" +
+                "HTTPS 首次连接会使用 Git 的凭据管理；SSH 使用已配置的密钥。";
+            $("documentField").style.display = "grid";
+            var home = WordGit.homePath();
+            $("document").value = home ? home.replace(/[\\/]$/, "") + (home.indexOf("\\") >= 0 ? "\\" : "/") + "协作稿件.docx" : "";
+            $("ok").textContent = "克隆稿件";
+        } else {
+            $("hint").textContent = "一份稿件关联一个 GitHub 或 Gitee 仓库。首次上传请选择空仓库。关联后先获取远程历史，推送由你另外点击。";
+            $("ok").textContent = "关联并获取";
+        }
+        $("browse").onclick = function () {
+            var path = WordGit.pickFile("选择克隆稿件的保存位置", true, $("document").value);
+            if (path) $("document").value = /\.docx$/i.test(path) ? path : path + ".docx";
+        };
+        $("ok").onclick = function () {
+            var url = $("url").value.trim(), branch = $("branch").value.trim();
+            if (!/^(https:\/\/(github|gitee)\.com\/|git@(github|gitee)\.com:|ssh:\/\/git@(github|gitee)\.com\/)/i.test(url)) {
+                $("error").textContent = "请输入 GitHub 或 Gitee 仓库的 HTTPS 或 SSH 地址。"; return;
+            }
+            if (!branch) { $("error").textContent = "请填写远程分支。"; return; }
+            var result = { url: url, branch: branch };
+            if (data.clone) {
+                result.document = $("document").value.trim();
+                if (!/\.docx$/i.test(result.document)) { $("error").textContent = "请选择一个尚不存在的 .docx 文件名。"; return; }
+            }
+            WordGit.finishDialog(result);
+        };
+        $("cancel").onclick = function () { WordGit.finishDialog(null); };
+        document.addEventListener("keydown", function (e) { if (e.key === "Escape") WordGit.finishDialog(null); });
+        $("url").focus();
+    </script>
+</body>
+</html>

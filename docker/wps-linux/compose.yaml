@@ -7,7 +7,7 @@ services:
       dockerfile: docker/wps-linux/Dockerfile
     image: wordgit-wps-linux:p0
     environment:
-      PROBE_MODE: ${PROBE_MODE:-offline}
+      PROBE_MODE: ${PROBE_MODE:-e2e}
       WPS_WINDOW_MODE: ${WPS_WINDOW_MODE:-fusion}
     ports:
       - "127.0.0.1:6080:6080"

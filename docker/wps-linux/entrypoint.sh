@@ -3,7 +3,9 @@
 # add-in in PROBE_MODE, then runs one probe pass with probe-run.sh.
 #   PROBE_MODE=offline  files in jsaddons/WordGitProbe_<version>, registered like the Zotero add-ins
 #   PROBE_MODE=online   pages served by the probe service (jspluginonline)
+#   PROBE_MODE=e2e      the real WordGit service and add-in, driven by addin-wps/test/e2e.js
 # Rerun a pass later with: docker exec <container> /opt/wordgit/probe-run.sh /out/report-<mode>.jsonl
+# or: docker exec <container> /opt/wordgit/e2e-run.sh
 set -eu
 
 MODE="${PROBE_MODE:-offline}"
@@ -26,6 +28,14 @@ websockify --web /usr/share/novnc 6080 localhost:5900 >"$OUT/novnc.log" 2>&1 &
 
 wordgit-probe --port "$PORT" --addin-dir /opt/wordgit/addin \
     --report "$OUT/report-$MODE.jsonl" --work-dir "$WORK" >"$OUT/server-$MODE.log" 2>&1 &
+
+if [ "$MODE" = "e2e" ]; then
+    /opt/wordgit/e2e-run.sh | tee -a "$OUT/runs.log" || true
+    while true; do
+        sleep 5
+        import -window root "$OUT/screen.png" 2>/dev/null || true
+    done
+fi
 
 rm -rf "$JSADDONS"/WordGitProbe_*
 case "$MODE" in

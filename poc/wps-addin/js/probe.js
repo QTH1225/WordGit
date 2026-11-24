@@ -168,6 +168,137 @@ function compareVariant(name, invoke, outputPath) {
     });
 }
 
+function authorsOf(document) {
+    var authors = {};
+    for (var i = 1; i <= document.Revisions.Count; i++) {
+        var author = document.Revisions.Item(i).Author;
+        authors[author] = (authors[author] || 0) + 1;
+    }
+    return authors;
+}
+
+function documentNames(App) {
+    var names = [];
+    for (var i = 1; i <= App.Documents.Count; i++) names.push(App.Documents.Item(i).FullName);
+    return names;
+}
+
+// Finds the document a merge/compare produced: the return value, else a document that was not
+// open before the call.
+function producedDocument(App, returned, before) {
+    if (returned && typeof returned === "object" && returned.Revisions) return { doc: returned, via: "return" };
+    for (var i = 1; i <= App.Documents.Count; i++) {
+        var d = App.Documents.Item(i);
+        if (before.indexOf(d.FullName) < 0) return { doc: d, via: "new-document" };
+    }
+    return { doc: App.ActiveDocument, via: "active" };
+}
+
+function compareToFile(App, original, revised, author, output) {
+    var a = openDocument(original, false), b = openDocument(revised, false), r = null;
+    try {
+        var before = documentNames(App);
+        var returned = App.CompareDocuments(a, b, 2, 1, true, true, true, true, true, true, true, true, true, true, author, true);
+        r = producedDocument(App, returned, before).doc;
+        var info = { revisions: r.Revisions.Count, authors: authorsOf(r) };
+        r.SaveAs2(output, 16);
+        return info;
+    } finally { closeQuietly(r); closeQuietly(b); closeQuietly(a); }
+}
+
+// Three-way merge needs both sides' tracked changes in one document. Try every API WPS offers.
+async function mergeExperiments(App) {
+    var work = paths.a.replace(/[\\/][^\\/]*$/, "");
+    var base = paths.a, t1 = join(work, "probe-t1.docx"), t2 = join(work, "probe-t2.docx");
+    var side1 = join(work, "probe-side1.docx"), side2 = join(work, "probe-side2.docx");
+    step("merge.setup", function () {
+        var d = App.Documents.Add();
+        try { d.Content.Text = "WordGit 探测文档\r第一段：原稿内容。\r第二段：这一段会在返稿中被修改。\r第三段：这一段会被删除。\r第四段：目标分支修改这里。"; saveAs(d, t1); } finally { closeQuietly(d); }
+        d = App.Documents.Add();
+        try { d.Content.Text = "WordGit 探测文档\r第一段：原稿内容（来源分支改）。\r第二段：这一段会在返稿中被修改。\r第三段：这一段会被删除。"; saveAs(d, t2); } finally { closeQuietly(d); }
+        return { side1: compareToFile(App, base, t1, "目标分支", side1), side2: compareToFile(App, base, t2, "来源分支", side2) };
+    });
+    await pause();
+    var variants = [
+        ["merge.MergeDocuments(plain)", function (a, b) { return App.MergeDocuments(a, b, 2, 1, true, true, true, true, true, true, true, true, true, true, "原稿", "返稿", 0); }, base, t2],
+        ["merge.MergeDocuments(sides)", function (a, b) { return App.MergeDocuments(a, b, 2, 1, true, true, true, true, true, true, true, true, true, true, "目标分支", "来源分支", 0); }, side1, side2],
+        ["merge.MergeDocuments(sides,short)", function (a, b) { return App.MergeDocuments(a, b); }, side1, side2],
+        ["merge.MergeDocuments(sides,dest0)", function (a, b) { return App.MergeDocuments(a, b, 0); }, side1, side2]
+    ];
+    for (var v = 0; v < variants.length; v++) {
+        (function (name, invoke, left, right) {
+            step(name, function () {
+                var a = openDocument(left, false), b = openDocument(right, false), r = null;
+                try {
+                    var before = documentNames(App);
+                    var returned = invoke(a, b);
+                    var found = producedDocument(App, returned, before);
+                    r = found.doc;
+                    return { returnedType: typeof returned, via: found.via, result: r.FullName, revisions: r.Revisions.Count,
+                        authors: authorsOf(r), text: String(r.Content.Text).substring(0, 200), documents: documentNames(App) };
+                } finally {
+                    if (r && r !== a && r !== b) closeQuietly(r);
+                    closeQuietly(b); closeQuietly(a);
+                }
+            });
+        })(variants[v][0], variants[v][1], variants[v][2], variants[v][3]);
+        await pause();
+    }
+    step("merge.Document.Merge", function () {
+        var a = openDocument(side1, false), r = null;
+        try {
+            var before = documentNames(App);
+            var returned = a.Merge(side2, 2, true, 0, false);
+            var found = producedDocument(App, returned, before);
+            r = found.doc;
+            return { returnedType: typeof returned, via: found.via, result: r.FullName, revisions: r.Revisions.Count,
+                authors: authorsOf(r), text: String(r.Content.Text).substring(0, 200) };
+        } finally {
+            if (r && r !== a) closeQuietly(r);
+            closeQuietly(a);
+        }
+    });
+    await pause();
+    step("merge.Document.Merge(inplace)", function () {
+        var a = openDocument(side1, false);
+        try {
+            var returned = a.Merge(side2, 0, true, 0, false);
+            return { returnedType: typeof returned, active: App.ActiveDocument.FullName, revisions: a.Revisions.Count, authors: authorsOf(a),
+                activeRevisions: App.ActiveDocument.Revisions.Count, activeAuthors: authorsOf(App.ActiveDocument),
+                text: String(a.Content.Text).substring(0, 200) };
+        } finally { closeQuietly(a); }
+    });
+    await pause();
+    var cases = [["merge.Merge(side1<-side2,current)", side1, side2, 1], ["merge.Merge(t1<-side2,current)", t1, side2, 1],
+     ["merge.Merge(side1<-t2,current)", side1, t2, 1], ["merge.Merge(side2<-side1,current)", side2, side1, 1]];
+    for (var k = 0; k < cases.length; k++) {
+        (function (c) {
+        step(c[0], function () {
+            var a = openDocument(c[1], false);
+            try {
+                var before = documentNames(App);
+                var returned = a.Merge(c[2], c[3], true, 0, false);
+                var found = producedDocument(App, returned, before);
+                var r = found.doc;
+                var info = { via: found.via, sameAsTarget: r === a || r.FullName === a.FullName, revisions: r.Revisions.Count,
+                    authors: authorsOf(r), text: String(r.Content.Text).substring(0, 220), targetRevisions: a.Revisions.Count,
+                    targetAuthors: authorsOf(a), targetText: String(a.Content.Text).substring(0, 260), targetSaved: a.Saved };
+                if (c[0].indexOf("side1<-side2") >= 0) {
+                    var accepted = [];
+                    for (var i = 1; i <= a.Revisions.Count; i++) accepted.push(a.Revisions.Item(i).Type + ":" + a.Revisions.Item(i).Author + ":" + String(a.Revisions.Item(i).Range.Text).substring(0, 30));
+                    info.targetRevisionList = accepted;
+                    a.AcceptAllRevisions();
+                    info.afterAcceptAll = String(a.Content.Text).substring(0, 260);
+                }
+                if (r !== a && r.FullName !== a.FullName) closeQuietly(r);
+                return info;
+            } finally { closeQuietly(a); }
+        });
+        })(cases[k]);
+        await pause();
+    }
+}
+
 var paths = {};
 var eventLog = [];
 // <work>/probe-options.txt, one option per line, used to bisect host crashes:
@@ -308,6 +439,9 @@ async function runProbeSteps() {
     compareVariant("compare.MergeDocuments(objects)", function (a, b) {
         return App.MergeDocuments(a, b, 2, 1, true, true, true, true, true, true, true, true, true, true, "原稿", "返稿", 0);
     }, paths.merged);
+
+    await pause();
+    await mergeExperiments(App);
 
     await pause();
     step("compare.Document.Compare", function () {

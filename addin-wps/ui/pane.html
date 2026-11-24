@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/version.js"></script>
+    <script src="../js/core.js"></script>
+    <script src="../js/graph.js"></script>
+    <script src="../js/flows.js"></script>
+</head>
+<body class="pane">
+    <section class="review">
+        <div class="head">
+            <span class="title" id="reviewTitle">批注与修订</span>
+            <select id="filter" style="width:auto"><option value="all">全部</option><option value="comment">批注</option><option value="revision">修订</option></select>
+        </div>
+        <div class="tools">
+            <button id="accept" class="small" disabled title="接受选中的修订，并定位下一条。">接受</button>
+            <button id="reject" class="small" disabled title="拒绝选中的修订，并定位下一条。">拒绝</button>
+            <button id="finish" class="small primary" style="display:none" title="处理完剩余修订后，确认并提交合并结果。">完成合并</button>
+        </div>
+        <div id="items" class="items"></div>
+    </section>
+    <section>
+        <div class="head">
+            <span class="title" id="file">—</span>
+            <button id="refresh" class="small">刷新</button>
+        </div>
+        <div class="muted" id="branch">当前分支 —</div>
+        <div class="status" id="state">正在读取…</div>
+        <div class="tools">
+            <button id="commit" class="small">提交版本</button>
+            <button id="compareLatest" class="small">对比最新提交</button>
+            <button id="importReview" class="small">返稿合并</button>
+        </div>
+    </section>
+    <section>
+        <div class="head"><span class="title">远程协作</span><span id="remoteCaption" class="muted"></span></div>
+        <div class="tools">
+            <button id="link" class="small">关联</button>
+            <button id="fetch" class="small">获取</button>
+            <button id="pull" class="small">拉取</button>
+            <button id="push" class="small">推送</button>
+        </div>
+    </section>
+    <section class="history">
+        <div class="head">
+            <span class="title">提交图</span>
+            <select id="branchFilter" style="width:auto"><option value="">全部分支</option></select>
+        </div>
+        <div class="tools">
+            <button id="preview" class="small" disabled>预览</button>
+            <button id="compare" class="small" disabled>对比</button>
+            <span class="muted">Ctrl 选两版对比，双击预览</span>
+        </div>
+        <div id="graph" class="graph"></div>
+    </section>
+    <div class="footer"><span>WordGit <span id="version"></span></span><a id="about">关于</a></div>
+    <script>
+    window.onerror = function (message, source, line) {
+        try { window.WordGit.app().PluginStorage.setItem("wordgit.pane.error", message + " @" + line); } catch (e) { /* ignore */ }
+    };
+    (function () {
+        var WG = window.WordGit;
+        var app = WG.app();
+        var $ = function (id) { return document.getElementById(id); };
+        var status = null, items = [], selectedItem = -1, graphView = null, lastSignature = "", lastChange = "", loading = false;
+        $("version").textContent = window.WORDGIT_VERSION || "";
+
+        function document_() {
+            try { return WG.activeDocument(); } catch (e) { return null; }
+        }
+
+        function renderItems() {
+            var doc = document_();
+            var filter = $("filter").value;
+            var shown = items.filter(function (item) { return filter === "all" || (filter === "comment") === item.comment; });
+            var revisions = items.filter(function (i) { return !i.comment; }).length;
+            $("reviewTitle").textContent = "批注 " + (items.length - revisions) + " · 修订 " + revisions;
+            if (!shown.length) {
+                $("items").innerHTML = '<div class="empty">' + (doc ? "没有" + (filter === "comment" ? "批注" : filter === "revision" ? "修订" : "批注或修订") : "请先打开文档") + "</div>";
+            } else {
+                $("items").innerHTML = shown.map(function (item) {
+                    var index = items.indexOf(item);
+                    return '<div class="review-item' + (index === selectedItem ? " selected" : "") + '" data-index="' + index + '">' +
+                        '<div class="caption">' + WG.escape(item.kind + " · " + (item.author || "未知") + " · 第 " + item.page + " 页") + "</div>" +
+                        '<div class="body">' + WG.escape(item.text) + "</div></div>";
+                }).join("");
+            }
+            var current = items[selectedItem];
+            $("accept").disabled = $("reject").disabled = !current || current.comment || (doc && doc.ReadOnly);
+        }
+
+        function loadItems() {
+            var doc = document_();
+            try { items = doc ? WG.reviewItems(doc) : []; } catch (e) { items = []; }
+            if (selectedItem >= items.length) selectedItem = -1;
+            renderItems();
+        }
+
+        $("items").onclick = function (e) {
+            var node = e.target.closest(".review-item");
+            if (!node) return;
+            selectedItem = +node.dataset.index;
+            renderItems();
+            try { WG.goToItem(WG.activeDocument(), items[selectedItem]); } catch (error) { WG.notify(WG.errorText(error)); }
+        };
+        $("filter").onchange = renderItems;
+
+        function resolve(accept) {
+            var item = items[selectedItem];
+            if (!item) return;
+            try {
+                WG.resolveItem(WG.activeDocument(), item, accept);
+                loadItems();
+                // Jump to the next revision at or after the handled one.
+                var next = items.findIndex(function (i) { return !i.comment && i.start >= item.start; });
+                selectedItem = next >= 0 ? next : -1;
+                renderItems();
+                if (selectedItem >= 0) WG.goToItem(WG.activeDocument(), items[selectedItem]);
+                updateFinish();
+            } catch (error) { WG.notify(WG.errorText(error)); loadItems(); }
+        }
+        $("accept").onclick = function () { resolve(true); };
+        $("reject").onclick = function () { resolve(false); };
+
+        function updateFinish() {
+            var review = status && status.review;
+            var pending = review && (review.source_branch || review.apply_to_original || review.record_only_merge);
+            $("finish").style.display = pending ? "" : "none";
+            if (pending) {
+                var remaining = items.filter(function (i) { return !i.comment; }).length;
+                $("finish").disabled = remaining > 0;
+                $("finish").title = remaining > 0 ? "剩余修订 " + remaining + " 条，请先逐条接受或拒绝。" : "确认并提交合并结果。";
+            }
+        }
+
+        function renderGraph(history, graph) {
+            graphView = WG.renderGraph($("graph"), history, graph, status && status.head, {
+                multi: true,
+                onSelect: function (ids) {
+                    $("preview").disabled = ids.length !== 1;
+                    $("compare").disabled = ids.length === 0;
+                },
+                onOpen: function (id) { WG.preview(id); }
+            });
+            $("preview").disabled = $("compare").disabled = true;
+        }
+
+        async function load() {
+            if (loading) return;
+            loading = true;
+            try {
+                loadItems();
+                var doc = document_();
+                if (!doc) { $("file").textContent = "未打开文档"; $("state").textContent = ""; renderGraph([], []); return; }
+                var path;
+                try { path = WG.localPath(doc, false); }
+                catch (e) { $("file").textContent = doc.Name; $("state").textContent = WG.errorText(e); renderGraph([], []); return; }
+                $("file").textContent = path.replace(/^.*[\\/]/, "");
+                status = await WG.call("status", { document: path });
+                if (status.session) {
+                    $("branch").textContent = "临时预览或比较稿";
+                    $("state").textContent = "这份文档没有自己的版本历史。";
+                    renderGraph([], []);
+                    return;
+                }
+                var label = status.review ? "合入分支  " + status.review.branch : "当前分支  " + status.branch;
+                $("branch").textContent = label;
+                var state = $("state");
+                state.className = "status";
+                if (status.review) {
+                    state.textContent = status.review.source_branch || status.review.apply_to_original || status.review.record_only_merge
+                        ? "合并审阅稿：处理完修订后点击「完成合并」。" : "审阅稿";
+                } else if (!doc.Saved) { state.textContent = "有未保存修改"; state.className = "status warn"; }
+                else if (status.workingState === "noCommit") state.textContent = "尚无提交";
+                else if (status.workingState === "clean") { state.textContent = "与最新提交一致"; state.className = "status ok"; }
+                else { state.textContent = "有未提交修改"; state.className = "status warn"; }
+                $("remoteCaption").textContent = status.remote ? status.remote.caption : "";
+                var filter = $("branchFilter"), chosen = filter.value;
+                filter.innerHTML = '<option value="">全部分支</option>' + status.branches.map(function (b) {
+                    return '<option value="' + WG.escape(b) + '">' + WG.escape(b.replace(/^refs\/remotes\//, "")) + "</option>";
+                }).join("");
+                if (status.branches.indexOf(chosen) >= 0) filter.value = chosen;
+                if (filter.value) {
+                    var filtered = await WG.call("history", { document: path, branch: filter.value });
+                    renderGraph(filtered.history, filtered.graph);
+                } else {
+                    renderGraph(status.history, status.graph);
+                }
+                updateFinish();
+                app.PluginStorage.setItem("wordgit.pane.rendered", JSON.stringify({ commits: (status.history || []).length, branch: status.branch, at: Date.now() }));
+            } catch (error) {
+                $("state").className = "status warn";
+                $("state").textContent = WG.errorText(error);
+            } finally {
+                loading = false;
+            }
+        }
+
+        $("branchFilter").onchange = load;
+        $("refresh").onclick = load;
+        $("commit").onclick = function () { WG.commit().then(load); };
+        $("compareLatest").onclick = function () { WG.compareLatest(); };
+        $("importReview").onclick = function () { WG.importReview().then(load); };
+        $("finish").onclick = function () { WG.finishMergeAction().then(load); };
+        $("link").onclick = function () { WG.linkRemote().then(load); };
+        $("fetch").onclick = function () { WG.fetchRemote().then(load); };
+        $("pull").onclick = function () { WG.pullRemote().then(load); };
+        $("push").onclick = function () { WG.pushRemote().then(load); };
+        $("preview").onclick = function () { var ids = graphView.selected(); if (ids.length === 1) WG.preview(ids[0]); };
+        $("compare").onclick = function () {
+            var ids = graphView.selected();
+            if (!ids.length) return;
+            var order = status.history.map(function (r) { return r.id; });
+            ids.sort(function (a, b) { return order.indexOf(b) - order.indexOf(a); });
+            WG.compareVersions(ids[0], ids[1] || null);
+        };
+        $("about").onclick = function () { WG.about(); };
+
+        // Refresh when the active document changes, when review marks change, and after any
+        // WordGit action anywhere in WPS.
+        try {
+            ["WindowActivate", "DocumentOpen", "DocumentAfterClose", "DocumentAfterSave"].forEach(function (name) {
+                app.ApiEvent.AddApiEventListener(name, function () { setTimeout(load, 300); });
+            });
+        } catch (e) { /* events are optional; polling below still refreshes */ }
+        setInterval(function () {
+            var changed = app.PluginStorage.getItem("wordgit.changed") || "";
+            if (changed !== lastChange) { lastChange = changed; load(); return; }
+            var doc = document_();
+            var signature = "";
+            try { signature = doc ? doc.FullName + "|" + WG.reviewSignature(doc) + "|" + doc.Saved : ""; } catch (e) { signature = ""; }
+            if (signature !== lastSignature) {
+                var sameDocument = lastSignature.split("|")[0] === signature.split("|")[0];
+                lastSignature = signature;
+                if (sameDocument) { loadItems(); updateFinish(); if (status && !status.review) load(); } else load();
+            }
+        }, 1500);
+        lastChange = app.PluginStorage.getItem("wordgit.changed") || "";
+        load();
+    })();
+    </script>
+</body>
+</html>

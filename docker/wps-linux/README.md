@@ -1,25 +1,43 @@
-# Linux WPS 探测环境
+# Linux WPS 测试环境
 
-在 Docker 中运行 Linux 版 WPS 个人版、WordGit 探测加载项和探测服务，自动执行 `docs/RUST_PLAN.md` 中 P0 的检查项。
+在 Docker 中运行 Linux 版 WPS 个人版，用于两类测试：
 
-## 准备 WPS 安装包
+- **端到端测试**（`PROBE_MODE=e2e`）：真实的 `wordgit` 服务与 `addin-wps` 加载项，在 WPS 中跑完整的用户流程。
+- **能力探测**（`PROBE_MODE=offline` / `online`）：`poc/` 下的探测加载项，检查 WPS JS 接口的行为，见 `docs/RUST_PLAN.md` 中的 P0。
 
-安装包来自 WPS 官方 CDN，放到 `docker/wps-linux/cache/`（已加入 `.gitignore`）：
+## 端到端测试
+
+先准备 WPS 安装包：从 WPS 官方 CDN 下载后放到 `docker/wps-linux/cache/`（已加入 `.gitignore`），构建时会校验 SHA-256。
 
 | 文件 | SHA-256 |
 | --- | --- |
 | `wps-office_12.1.2.29183_amd64.deb` | `77ffbdc1be76c834e1853c27ff9063e49d5d3b1f30b206d785761b5bf560c83b` |
 
-下载地址需要带时间戳签名，生成方法见 AUR `wps-office-cn` 的 PKGBUILD。构建时会校验 SHA-256。
+下载地址需要带时间戳签名，生成方法见 AUR `wps-office-cn` 的 PKGBUILD。浏览器打开 <http://127.0.0.1:6080/vnc.html> 可观看容器里的 WPS 界面。
 
-## 运行
+```powershell
+docker compose -f docker/wps-linux/compose.yaml build
+$env:PROBE_MODE = "e2e"; docker compose -f docker/wps-linux/compose.yaml up -d
+```
+
+容器会准备干净的数据目录和一个本地裸仓库（充当远程），启动服务，执行 `wordgit install`，再启动 WPS 并注入 `addin-wps/test/e2e.js`。结果在 `out/e2e-report.jsonl`，每步一行，`runs.log` 记录每轮的 `done` / `failed` / `crashed`。
+
+在同一个容器里重复运行，并切换窗口模式：
+
+```powershell
+docker exec -e WPS_WINDOW_MODE=independent wordgit-p0-wps-1 /opt/wordgit/e2e-run.sh
+```
+
+无界面显示下，WPS 侧栏的内容要在鼠标移入后才会重绘；截图前可用 `xdotool` 点一下侧栏。
+
+## 能力探测
 
 在仓库根目录执行：
 
 ```powershell
 docker compose -f docker/wps-linux/compose.yaml build
-# 离线模式（默认，推荐）：加载项复制到 jsaddons/WordGitProbe_0.1.0，publish.xml 写法与 Zotero-WPSJS 相同
-docker compose -f docker/wps-linux/compose.yaml up -d
+# 离线模式：探测加载项复制到 jsaddons/WordGitProbe_0.1.0，publish.xml 写法与 Zotero-WPSJS 相同
+$env:PROBE_MODE = "offline"; docker compose -f docker/wps-linux/compose.yaml up -d
 # 在线模式：加载项页面由探测服务提供（jspluginonline）
 $env:PROBE_MODE = "online"; docker compose -f docker/wps-linux/compose.yaml up -d
 ```

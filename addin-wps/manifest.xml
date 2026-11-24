@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<JsPlugin>
+  <ApiVersion>1.0.0</ApiVersion>
+  <Name>WordGit</Name>
+  <Description>WordGit：Word/WPS 文档版本管理、分支、返稿合并与远程协作</Description>
+</JsPlugin>

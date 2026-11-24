@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/core.js"></script>
+    <script src="../js/graph.js"></script>
+</head>
+<body class="dialog">
+    <p id="hint" class="hint"></p>
+    <div id="graph" class="list grow"></div>
+    <div id="detail" class="muted" style="margin-top:8px; min-height:38px; white-space:pre-wrap"></div>
+    <div class="buttons">
+        <button id="cancel">取消</button>
+        <button id="ok" class="primary" disabled>确定</button>
+    </div>
+    <script>
+        var data = WordGit.dialogData();
+        var ok = document.getElementById("ok");
+        document.getElementById("hint").textContent = data.hint || "";
+        if (data.action) ok.textContent = data.action;
+        var byId = {};
+        (data.history || []).forEach(function (r) { byId[r.id] = r; });
+        var view = WordGit.renderGraph(document.getElementById("graph"), data.history || [], data.graph || [], data.head, {
+            multi: data.multi,
+            preselect: data.preselectHead ? data.head : null,
+            onSelect: function (ids) {
+                ok.disabled = data.requireTwo ? ids.length !== 2 : ids.length === 0;
+                var last = byId[ids[ids.length - 1]];
+                document.getElementById("detail").textContent = last ? WordGit.shortId(last.id) + " · " + last.author + "\n" + last.message : "";
+            },
+            onOpen: function () { if (!ok.disabled) ok.click(); }
+        });
+        // Older version first, so comparing and merging go from old to new.
+        function ordered(ids) {
+            var index = function (id) { return data.history.findIndex(function (r) { return r.id === id; }); };
+            return ids.slice().sort(function (a, b) { return index(b) - index(a); });
+        }
+        ok.onclick = function () {
+            var ids = ordered(view.selected());
+            WordGit.finishDialog({ revision: ids[0], other: ids.length > 1 ? ids[1] : null });
+        };
+        document.getElementById("cancel").onclick = function () { WordGit.finishDialog(null); };
+        document.addEventListener("keydown", function (e) { if (e.key === "Escape") WordGit.finishDialog(null); });
+    </script>
+</body>
+</html>
