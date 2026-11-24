@@ -512,7 +512,9 @@ namespace WordGit
                     reviewType.GetField("Branch").SetValue(review, "main");
                     reviewType.GetField("SourceBranch").SetValue(review, "review");
                     reviewType.GetField("SourceTip").SetValue(review, sourceTip);
-                    typeof(Connect).GetMethod("SaveMergeDraft", fields).Invoke(connect, new object[] { draft, resultPath, review, head });
+                    reviewType.GetMethod("Save").Invoke(review, new object[] { resultPath, head });
+                    draft.FullName = resultPath;
+                    typeof(Connect).GetMethod("ShowMergePane", fields).Invoke(connect, new object[] { draft });
                     if (factory.Creates != 1 || !factory.Pane.Visible || !factory.Pane.Control.CanReuse(resultPath) ||
                         !File.ReadAllLines(resultPath + ".wordgit").SequenceEqual(new[] { original, head, "main", "review", sourceTip }))
                         throw new InvalidOperationException("The saved merge draft did not get its own visible review pane");
@@ -539,6 +541,9 @@ namespace WordGit
             var fail = false;
             var editable = true;
             var merging = true;
+            var failReviewRead = false;
+            var failReviewSignature = false;
+            var signature = "initial";
             var nativeCount = 0;
             var commits = 0;
             using (var host = new Form { ClientSize = new Size(420, 640), Opacity = 0 })
@@ -548,7 +553,15 @@ namespace WordGit
                 pane.Bind(() => new HistoryPaneData {
                     DocumentPath = @"C:\test\审阅.docx", HistoryPath = @"C:\test\审阅.docx", Branch = "main",
                     Branches = new string[0], Load = branch => new List<Revision>(), WorkingState = () => WorkingCopyState.Unsaved,
-                    LoadReviewItems = () => pending.ToList(), NavigateReviewItem = item => navigated.Add(item.Text),
+                    LoadReviewItems = () => {
+                        if (failReviewRead) throw new NullReferenceException("模拟 Word 读取修订时返回空对象");
+                        return pending.ToList();
+                    },
+                    ReviewSignature = () => {
+                        if (failReviewSignature) throw new NullReferenceException("模拟 Word 切换窗口时批注不可用");
+                        return signature;
+                    },
+                    NavigateReviewItem = item => navigated.Add(item.Text),
                     CanResolveRevisions = editable, MergeTargetBranch = merging ? "main" : null,
                     DocumentRevisionCount = () => nativeCount,
                     ResolveReviewItem = (item, accept) => {
@@ -603,6 +616,30 @@ namespace WordGit
                     throw new InvalidOperationException("Finished revisions left an enabled action or lost a comment");
                 if (!finish.Enabled || labels.All(label => label.Text != "剩余修订 0 条 · 批注 1"))
                     throw new InvalidOperationException("Remaining comments should not block a finished merge");
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var poll = typeof(HistoryPane).GetMethod("PollReviewItems", flags);
+                Action refreshReview = () => {
+                    typeof(HistoryPane).GetField("commentPoll", flags).SetValue(pane, 3);
+                    poll.Invoke(pane, null);
+                };
+                var commitGraph = Descendants(pane).OfType<DataGridView>().Single();
+                signature = "changed";
+                failReviewRead = true;
+                refreshReview();
+                if (finish.Enabled || list.Enabled || list.Items.Count != 1 || !commitGraph.Enabled ||
+                    labels.All(label => label.Text != "批注与修订 · 稍后重试"))
+                    throw new InvalidOperationException("A failed timed revision read escaped, cleared the pane or enabled an unsafe merge");
+                failReviewRead = false;
+                failReviewSignature = true;
+                refreshReview();
+                if (finish.Enabled || !commitGraph.Enabled)
+                    throw new InvalidOperationException("A missing review signature blocked the commit graph or enabled an unsafe merge");
+                failReviewSignature = false;
+                refreshReview();
+                if (!finish.Enabled || !list.Enabled || list.Items.Count != 1 ||
+                    labels.All(label => label.Text != "剩余修订 0 条 · 批注 1"))
+                    throw new InvalidOperationException("The next successful poll did not restore the review list or its actions");
+                Console.WriteLine("PASS: the commit pane survives null objects during timed review reads and recovers on the next poll.");
                 nativeCount = 1;
                 pane.ReloadComments();
                 if (finish.Enabled) throw new InvalidOperationException("A remaining Word revision was ignored");
@@ -968,9 +1005,8 @@ namespace WordGit
     internal sealed class PaneTestDraft
     {
         public PaneTestWindow ActiveWindow { get; set; }
-        public string FullName { get; private set; }
+        public string FullName { get; set; }
         public string Path { get { return System.IO.Path.GetDirectoryName(FullName); } }
-        public void SaveAs2(string FileName, int FileFormat, bool AddToRecentFiles) { FullName = FileName; }
     }
 
     internal sealed class PaneTestFactory : ICTPFactory

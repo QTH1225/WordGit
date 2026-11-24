@@ -94,20 +94,54 @@ namespace WordGit
         }
 
         internal static void KeepCurrentChanges(WordDocuments word, object merged, string currentAuthor,
-            List<DocumentReviewItem> continuedProposal = null)
+            List<DocumentReviewItem> continuedProposal, string currentBody)
         {
             var changes = AtBaseline(WordDocuments.ReviewItems(merged));
             var retained = new HashSet<Span>(changes.Where(span => span.Item.Author == currentAuthor));
             Apply(word, merged, KeepSeparate(changes, retained, continuedProposal != null), true);
 
+            if (continuedProposal == null) return;
+            KeepAdjacentParagraphBreaks(word, merged, currentAuthor, continuedProposal, currentBody);
+
             // Combining two comparisons can add a tracked final paragraph mark under the local
             // user name. Preserve explicit paragraph insertions from the actual return.
-            if (continuedProposal == null || continuedProposal.Any(IsParagraphMark)) return;
+            if (continuedProposal.Any(IsParagraphMark)) return;
             var end = (int)((dynamic)merged).Content.End;
             var extra = WordDocuments.ReviewItems(merged).Where(item => IsParagraphMark(item) &&
                 item.StoryType == 1 && item.ScopeEnd >= end - 1 && item.Author != currentAuthor &&
                 !continuedProposal.Any(proposal => !proposal.IsComment && proposal.Author == item.Author)).ToArray();
             if (extra.Length == 1) word.ResolveReviewItem(merged, extra[0], false);
+        }
+
+        private static void KeepAdjacentParagraphBreaks(WordDocuments word, object merged, string currentAuthor,
+            List<DocumentReviewItem> proposal, string currentBody)
+        {
+            var proposedInsertions = proposal.Where(item => !item.IsComment && item.RevisionType == 1 &&
+                !string.IsNullOrWhiteSpace(item.RangeText) && item.RangeText.EndsWith("\r", System.StringComparison.Ordinal)).ToArray();
+            if (proposedInsertions.Length == 0) return;
+
+            var changes = AtBaseline(WordDocuments.ReviewItems(merged));
+            var boundaryCandidates = changes.Where(span => IsParagraphMark(span.Item) && span.Item.StoryType == 1 &&
+                span.Item.Author != currentAuthor && !proposal.Any(item => !item.IsComment && item.Author == span.Item.Author))
+                .OrderBy(span => span.Item.ScopeStart).ToArray();
+            foreach (var candidate in boundaryCandidates)
+            {
+                // The next revision must match a whole incoming paragraph. Check that the
+                // separate mark ends an unchanged paragraph already present in the main draft.
+                var mark = changes.FirstOrDefault(span => span.Item.StoryType == 1 && IsParagraphMark(span.Item) &&
+                    span.Item.ScopeStart == candidate.Item.ScopeStart && span.Item.Author == candidate.Item.Author);
+                if (mark == null || !changes.Any(neighbor => mark.SameStory(neighbor) &&
+                    neighbor.Item.ScopeStart == mark.Item.ScopeEnd && neighbor.Item.RevisionType == 1 &&
+                    proposedInsertions.Any(item => item.Author == neighbor.Item.Author && item.RangeText == neighbor.Item.RangeText))) continue;
+                if (mark.Start <= 0 || mark.Start >= currentBody.Length || currentBody[mark.Start] != '\r') continue;
+                var start = currentBody.LastIndexOf('\r', mark.Start - 1) + 1;
+                var original = currentBody.Substring(start, mark.Start - start + 1);
+                var combined = (string)((dynamic)merged).Range(mark.Item.ScopeStart, mark.Item.ScopeEnd).Paragraphs[1].Range.Text;
+                if (original.Length <= 1 || original != combined) continue;
+
+                word.ResolveReviewItem(merged, mark.Item, true);
+                changes = AtBaseline(WordDocuments.ReviewItems(merged));
+            }
         }
 
         private static bool IsParagraphMark(DocumentReviewItem item)

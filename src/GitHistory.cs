@@ -19,6 +19,12 @@ namespace WordGit
         public override string ToString() { return Date.ToLocalTime().ToString("yyyy-MM-dd HH:mm") + "   " + Id.Substring(0, 8) + "   " + Subject + "   · " + Author; }
     }
 
+    internal sealed class ReviewImport
+    {
+        public string Id, Reference;
+        public bool Reused;
+    }
+
     internal sealed class RepackResult
     {
         public readonly long BeforeBytes, AfterBytes;
@@ -152,6 +158,42 @@ namespace WordGit
         }
 
         internal const string ReviewArchivePrefix = "refs/wordgit/reviews/";
+
+        // Called with the repository lock. The bytes and the actual sent version together
+        // identify a return, regardless of the proposed branch name or its current main tip.
+        internal ReviewImport ImportOrReuseReview(string path, string basis, string newBranch, string reviewer,
+            string targetBranch, string expectedTarget)
+        {
+            basis = Id(basis);
+            if (ActiveBranch() != targetBranch || BranchTip(targetBranch) != expectedTarget)
+                throw new InvalidOperationException("当前分支或提交已变化，请刷新后重试。");
+
+            using (var input = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                string checksum;
+                using (var sha = SHA256.Create()) checksum = Hex(sha.ComputeHash(input));
+                var previous = Text(Run(null, null, "log", "--all", "--format=%H", "--fixed-strings",
+                    "--grep=WordGit-Review-SHA256: " + checksum, "--"));
+                var matches = previous.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(Id).Where(id => ImportedReviewBase(id) == basis && SnapshotChecksum(id) == checksum).ToArray();
+                var merged = matches.FirstOrDefault(id => IsAncestor(id, expectedTarget));
+                if (merged != null) return new ReviewImport { Id = merged, Reused = true };
+                var existing = matches.FirstOrDefault();
+                if (existing != null)
+                {
+                    var branch = Text(Run(null, null, "for-each-ref", "--points-at=" + existing, "--format=%(refname:strip=2)", Heads))
+                        .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                    var reference = branch ?? (ReviewArchivePrefix + existing);
+                    // Keep a stable ref when the branch that originally held the return has advanced.
+                    if (branch == null && BranchTip(reference) == null)
+                        RefTransaction(null, "create " + reference + " " + existing,
+                            "verify " + BranchRef(targetBranch) + " " + Id(expectedTarget));
+                    return new ReviewImport { Id = existing, Reference = reference, Reused = true };
+                }
+                var imported = ImportReviewFile(path, basis, newBranch, reviewer, targetBranch, expectedTarget);
+                return new ReviewImport { Id = imported, Reference = newBranch ?? (ReviewArchivePrefix + imported) };
+            }
+        }
 
         public string ImportReviewFile(string path, string basis, string newBranch, string reviewer,
             string targetBranch, string expectedTarget)

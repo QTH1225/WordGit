@@ -38,7 +38,7 @@ namespace WordGit
                         Author = comment.GetAttribute("author", Word),
                         Date = comment.GetAttribute("date", Word),
                         Text = CommentText(comment, namespaces),
-                        Paragraph = (XmlElement)comment.SelectSingleNode("(.//w:p)[1]", namespaces)
+                        Paragraph = (XmlElement)comment.SelectSingleNode("(.//w:p)[last()]", namespaces)
                     }).ToArray();
 
                 var restored = 0;

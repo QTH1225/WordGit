@@ -455,6 +455,11 @@ namespace WordGit
             Require(repo.Extract(imported).SequenceEqual(incoming) && File.ReadAllBytes(returned).SequenceEqual(incoming),
                 "Review import changed original DOCX bytes");
             var afterImport = repo.ReferenceState();
+            ReviewImport reused;
+            using (repo.Lock()) reused = repo.ImportOrReuseReview(returned, basis, "review-重试", "导师甲", "main", target);
+            Require(reused.Reused && reused.Reference == "review-一审" && reused.Id == imported &&
+                repo.ReferenceState() == afterImport && repo.BranchTip("review-重试") == null,
+                "Retry did not reuse the existing return or created another branch");
             foreach (var branch in new[] { "REVIEW-一审", "bad branch", "../bad", "review-一审/nested" })
             {
                 var refused = false;
@@ -476,10 +481,17 @@ namespace WordGit
                 target, "main", "review-一审", imported);
             Require(repo.History().Single(item => item.Id == merge).Parents.SequenceEqual(new[] { target, imported }),
                 "Review merge lost one parent");
+            using (repo.Lock()) reused = repo.ImportOrReuseReview(returned, basis, "review-重试", "导师甲", "main", merge);
+            Require(reused.Reused && reused.Id == imported && repo.BranchTip("review-重试") == null,
+                "An already merged return was created again after the current draft changed");
+            ReviewImport anotherBasis;
+            using (repo.Lock()) anotherBasis = repo.ImportOrReuseReview(returned, target, null, "导师甲", "main", merge);
+            Require(!anotherBasis.Reused && anotherBasis.Id != imported && repo.ImportedReviewBase(anotherBasis.Id) == target,
+                "The same file returned for a different submitted version was incorrectly reused");
             repo.Repack();
             Require(repo.Extract(imported).SequenceEqual(incoming) && repo.Extract(basis).SequenceEqual(original) &&
                 repo.Extract(target).SequenceEqual(current), "Review history changed after repack");
-            Console.WriteLine("PASS: exact external review import, submission ancestry, unchanged HEAD/work copy, failed-import isolation and two-parent merge.");
+            Console.WriteLine("PASS: exact external review import, retry deduplication by content and submission, intact work copy, and two-parent merge.");
         }
 
         private static void VerifyCompression(string root)

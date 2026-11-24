@@ -48,8 +48,10 @@ namespace WordGit
                 }
                 if (args.Contains("--dialogs-only")) { VerifyDialogOwners(application, word); return; }
                 if (args.Contains("--pane-only")) { VerifyPaneLoading(application, root); return; }
+                if (args.Contains("--window-flow-only")) { VerifyWindowFlow(application, word, root); return; }
                 if (args.Contains("--remote-only")) { VerifyRemoteCollaboration(application, word, root); return; }
                 if (args.Contains("--multi-review-only")) { VerifyRepeatedReviews(application, word, root); return; }
+                if (args.Contains("--multi-comment-only")) { VerifyMultiParagraphComment(application, word, root); return; }
                 if (args.Contains("--review-only"))
                 {
                     VerifyImportedReview(application, word, root);
@@ -59,6 +61,7 @@ namespace WordGit
                 if (!args.Contains("--local-only"))
                 {
                     VerifyRevisionActions(application, word, root);
+                    VerifyWindowFlow(application, word, root);
                     VerifyImportedReview(application, word, root);
                     VerifyRepeatedReviews(application, word, root);
                     VerifyRemoteCollaboration(application, word, root);
@@ -234,6 +237,73 @@ namespace WordGit
             finally { document.Close(SaveChanges: 0); }
         }
 
+        private static void VerifyWindowFlow(dynamic application, WordDocuments word, string root)
+        {
+            var path = Path.Combine(root, "窗口流程主稿.docx");
+            dynamic draft = application.Documents.Add();
+            draft.Content.Text = "送审版正文\r";
+            draft.SaveAs2(FileName: path, FileFormat: 16, AddToRecentFiles: false);
+            var repo = new GitHistory(path, root);
+            var first = repo.CommitFile(path, "送审", "作者", null);
+            draft.Range(0, 0).InsertBefore("已提交修改\r");
+            draft.Save();
+            var second = repo.CommitFile(path, "修改", "作者", first);
+            var savedHash = WordDocuments.FileChecksum(path);
+            var count = (int)application.Documents.Count;
+            var wordExe = Path.Combine((string)application.Path, "WINWORD.EXE");
+
+            draft.TrackRevisions = true;
+            draft.Range(0, 0).InsertBefore("未保存的对比修改\r");
+            var snapshot = WordDocuments.CaptureComparisonSource((object)draft, AppPaths.NewSession());
+            var comparisonPath = Path.Combine(root, "窗口流程对比.docx");
+            QuietWord.Run(wordExe, worker => worker.BuildVersionReviewFile(repo, second, null, snapshot, false, comparisonPath))
+                .GetAwaiter().GetResult();
+            Require((int)application.Documents.Count == count && (string)application.ActiveDocument.FullName == path,
+                "Preparing the comparison changed the foreground document");
+            Require(!(bool)draft.Saved && WordDocuments.FileChecksum(path) == savedHash,
+                "Preparing the comparison saved or changed the original");
+            dynamic comparison = word.Open(comparisonPath, false);
+            Require((string)application.ActiveDocument.FullName == comparisonPath &&
+                (int)application.Documents.Count == count + 1 && (int)comparison.Revisions.Count > 0 &&
+                ((string)comparison.Content.Text).Contains("未保存的对比修改"), "The final native comparison missed unsaved changes");
+            comparison.Close(SaveChanges: 0);
+            draft.Close(SaveChanges: 0);
+            word.Open(path, false);
+
+            var mergePath = Path.Combine(root, "窗口流程历史合并稿.docx");
+            QuietWord.Run(wordExe, worker => worker.BuildVersionReviewFile(repo, first, second, null, true, mergePath))
+                .GetAwaiter().GetResult();
+            Require((int)application.Documents.Count == count && (string)application.ActiveDocument.FullName == path,
+                "Preparing the historical merge changed the foreground document");
+            dynamic merged = word.Open(mergePath, false);
+            Require((string)application.ActiveDocument.FullName == mergePath &&
+                (int)application.Documents.Count == count + 1 && (int)merged.Revisions.Count > 0,
+                "The historical merge did not open a single native review draft");
+            merged.AcceptAllRevisions();
+            merged.Content.InsertAfter("已确认的合并内容");
+            merged.Save();
+            var verifiedHash = WordDocuments.FileChecksum(mergePath);
+            string committed = null;
+            var visible = (bool)application.Visible;
+            try
+            {
+                application.Visible = true;
+                merged.Activate();
+                var updating = (bool)application.ScreenUpdating;
+                using (repo.Lock())
+                    word.ReplaceWorkingCopy(repo, path, savedHash, mergePath, verifiedHash,
+                        () => committed = repo.CommitFile(path, "完成合并", "作者", second), keepActiveWindow: true);
+                Require((string)application.ActiveDocument.FullName == mergePath,
+                    "Finishing the merge activated " + (string)application.ActiveDocument.Name);
+                Require((int)application.Documents.Count == count + 1, "Finishing the merge did not reopen the main draft");
+                Require((bool)application.ScreenUpdating == updating, "Finishing the merge changed ScreenUpdating");
+            }
+            finally { application.Visible = visible; }
+            Require(WordDocuments.FileChecksum(path) == verifiedHash && committed != null && repo.Head() == committed &&
+                repo.History().Count == 3, "Finishing the merge failed to update the main draft and record its history");
+            Console.WriteLine("PASS: only final comparison and historical merge drafts open in foreground; completing a merge keeps the review active.");
+        }
+
         private static void VerifyWpsCompatibility(dynamic application, WordDocuments word, string root)
         {
             var path = Path.Combine(root, "WPS 测试稿.docx");
@@ -267,14 +337,21 @@ namespace WordGit
             draft.TrackRevisions = true;
             draft.Range(0, 0).InsertBefore("未保存的修改\r");
             var sourceRevisions = (int)draft.Revisions.Count;
+            var openDocuments = (int)application.Documents.Count;
+            var visibleWindows = CountVisibleWindows(application);
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 dynamic compared = word.CompareCurrentExtracted(repo, second, (object)draft);
                 Require((int)compared.Revisions.Count > 0 &&
                     ((string)compared.Content.Text).Contains("未保存的修改") &&
                     (int)compared.Tables.Count == 1, "WPS comparison missed tracked edits or table");
+                // WPS keeps two hidden source views attached to its native comparison window.
+                Require(CountVisibleWindows(application) == visibleWindows + 1 &&
+                    (string)application.ActiveDocument.FullName == (string)compared.FullName,
+                    "WPS comparison displayed a source window instead of only its result");
                 compared.Close(SaveChanges: 0);
-                draft.Activate();
+                Require((int)application.Documents.Count == openDocuments &&
+                    (string)application.ActiveDocument.FullName == path, "Closing the WPS comparison did not return to the draft");
             }
             Require(!(bool)draft.Saved && (int)draft.Revisions.Count == sourceRevisions &&
                 TestFiles.ReadDocx(path).SequenceEqual(latest), "WPS comparison changed the working copy");
@@ -314,6 +391,15 @@ namespace WordGit
             Console.WriteLine("PASS: WPS archives review bytes, comments and revisions; automatic tracked merge is unavailable.");
         }
 
+        private static int CountVisibleWindows(dynamic application)
+        {
+            var count = 0;
+            foreach (dynamic document in application.Documents)
+                foreach (dynamic window in document.Windows)
+                    if ((bool)window.Visible) count++;
+            return count;
+        }
+
         private static void VerifyRepeatedReviews(dynamic application, WordDocuments word, string root)
         {
             const string accepted = "第一轮接受的新增句";
@@ -330,6 +416,8 @@ namespace WordGit
             document.RemovePersonalInformation = false;
             document.Content.Text = "多轮测试标题\r接受锚点\r间隔段落\r拒绝锚点\r批注定位位置\r" +
                 acceptedFormat + "\r" + rejectedFormat + "\r第二轮锚点\r第三轮冲突锚点\r";
+            FindReviewAnchor(document, "间隔段落").ParagraphFormat.SpaceAfter = 13;
+            FindReviewAnchor(document, "拒绝锚点").ParagraphFormat.LeftIndent = 17;
             document.SaveAs2(FileName: basisPath, FileFormat: 16, AddToRecentFiles: false);
             document.Close(SaveChanges: 0);
             var history = new GitHistory(basisPath, root);
@@ -377,13 +465,27 @@ namespace WordGit
             document.Save();
             document.Close(SaveChanges: 0);
             var second = history.ImportReviewFile(secondPath, basis, "review-round-two", "老师", "main", target);
-            dynamic secondMerge = word.ReviewBranchesExtracted(history, basis, target, second);
+            var combined = Path.Combine(root, "后台生成的合并稿.docx");
+            document = word.Open(firstResult, true);
+            try
+            {
+                var before = (int)application.Documents.Count;
+                QuietWord.Run(Path.Combine((string)application.Path, "WINWORD.EXE"), worker =>
+                    worker.BuildBranchMergeFile(history, basis, target, second, "main", "review-round-two", false, combined))
+                    .GetAwaiter().GetResult();
+                Require((int)application.Documents.Count == before && (string)application.ActiveDocument.FullName == firstResult,
+                    "The merge opened a temporary document in the main Word session");
+            }
+            finally { document.Close(SaveChanges: 0); }
+            dynamic secondMerge = word.Open(combined, false);
+            Console.WriteLine("PASS: the background Word session produced an editable merge draft without changing the foreground document.");
             var secondItems = WordDocuments.ReviewItems((object)secondMerge, false);
             Require(secondItems.Count == 2 && secondItems.Any(item => item.IsComment && item.Text == newComment) &&
                 secondItems.Any(item => !item.IsComment && item.RangeText.Contains(newText)),
                 "The second round must only show the new revision and unresolved comment");
             Require(WordDocuments.Comments((object)secondMerge, true).Single(item => item.Text == oldComment).Resolved,
                 "The first resolved comment was reopened");
+            VerifyAdjacentParagraphOutcomes(word, (object)secondMerge, firstResult, root, newText, false);
             secondMerge.AcceptAllRevisions();
             secondMerge.TrackRevisions = false;
             dynamic conflictAnchor = FindReviewAnchor(secondMerge, "第三轮冲突锚点");
@@ -397,6 +499,19 @@ namespace WordGit
                 (int)FindReviewAnchor(secondMerge, rejectedFormat).Font.Bold == 0,
                 "An accepted or rejected formatting decision from the first round was lost");
             secondMerge.Close(SaveChanges: 0);
+            var withBlank = Path.Combine(root, "老师实际新增空段.docx");
+            File.Copy(firstPath, withBlank);
+            document = word.Open(withBlank, false);
+            document.TrackRevisions = true;
+            end = (int)FindReviewAnchor(document, "间隔段落").End;
+            document.Range(end, end).InsertAfter("\r" + newText + "\r");
+            document.Save();
+            document.Close(SaveChanges: 0);
+            var blankReturn = history.ImportReviewFile(withBlank, basis, "review-round-blank", "老师", "main", target);
+            var blankMerge = word.ReviewBranchesExtracted(history, basis, target, blankReturn);
+            VerifyAdjacentParagraphOutcomes(word, blankMerge, firstResult, root, newText, true);
+            ((dynamic)blankMerge).Close(SaveChanges: 0);
+            Require(history.Extract(blankReturn).SequenceEqual(TestFiles.ReadDocx(withBlank)), "The raw return with a blank paragraph was changed");
             var nextTip = history.CommitFile(secondResult, "第二轮完成", "测试", target, "main", "review-round-two", second);
 
             var thirdPath = Path.Combine(root, "第三轮修改同一句.docx");
@@ -435,6 +550,95 @@ namespace WordGit
                 history.Extract(third).SequenceEqual(TestFiles.ReadDocx(thirdPath)),
                 "Multi-round review modified an original archive or advanced the main branch");
             Console.WriteLine("PASS: three review rounds using the original baseline, accepted and rejected edits, resolved comments, a conflict, and byte-identical archives.");
+            VerifyMultiParagraphComment(application, word, root);
+        }
+
+        private static void VerifyAdjacentParagraphOutcomes(WordDocuments word, object merge, string baseline,
+            string root, string inserted, bool explicitBlank)
+        {
+            var prefix = explicitBlank ? "相邻改动-老师新增空段" : "相邻改动-修复后";
+            var review = Path.Combine(root, prefix + ".docx");
+            ((dynamic)merge).SaveAs2(FileName: review, FileFormat: 16, AddToRecentFiles: false);
+
+            dynamic main = word.Open(baseline, true);
+            var body = (string)main.Content.Text;
+            main.Close(SaveChanges: 0);
+            var expected = body.Replace("间隔段落\r", "间隔段落\r" + inserted + "\r" + (explicitBlank ? "\r" : ""));
+            foreach (var accept in new[] { false, true })
+            {
+                var path = Path.Combine(root, prefix + (accept ? "-接受.docx" : "-拒绝.docx"));
+                File.Copy(review, path);
+                dynamic copy = word.Open(path, false);
+                try
+                {
+                    if (accept) copy.AcceptAllRevisions();
+                    else copy.RejectAllRevisions();
+                    Require((string)copy.Content.Text == (accept ? expected : body),
+                        "Paragraph breaks differ from the expected " + (accept ? "approved" : "rejected") + " result: " + prefix +
+                        " / " + ((string)copy.Content.Text).Replace('\r', '|'));
+                    Require((float)FindReviewAnchor(copy, "间隔段落").ParagraphFormat.SpaceAfter == 13 &&
+                        (float)FindReviewAnchor(copy, "拒绝锚点").ParagraphFormat.LeftIndent == 17,
+                        "Merging an adjacent review changed the original paragraph spacing or indent");
+                }
+                finally { copy.Close(SaveChanges: 0); }
+            }
+            Console.WriteLine("PASS: accepting and rejecting the adjacent review preserves spacing, indent, and " +
+                (explicitBlank ? "the intentional blank paragraph." : "the original paragraph boundary without an extra blank."));
+        }
+
+        private static void VerifyMultiParagraphComment(dynamic application, WordDocuments word, string root)
+        {
+            const string commentText = "第一段核对正文。\r第二段核对图表。";
+            const string newText = "补充测试结果。";
+            var submission = Path.Combine(root, "多段批注送审稿.docx");
+            var current = Path.Combine(root, "多段批注当前稿.docx");
+            var returned = Path.Combine(root, "多段批注返稿.docx");
+            dynamic document = application.Documents.Add();
+            document.RemovePersonalInformation = false;
+            document.Content.Text = "批注位置\r试验说明\r结果位置\r复核说明";
+            document.Comments.Add(FindReviewAnchor(document, "批注位置"), commentText);
+            document.SaveAs2(FileName: submission, FileFormat: 16, AddToRecentFiles: false);
+            var oldComment = WordDocuments.Comments((object)document, true).Single(item => item.Text == commentText);
+            document.Close(SaveChanges: 0);
+
+            var history = new GitHistory(current, root);
+            var basis = history.CommitFile(submission, "多段批注送审版", "测试", null);
+            File.Copy(submission, current);
+            // Exercise the DOCX fallback even if this Word build allows Comment.Done during a merge.
+            Require(!oldComment.Resolved && ReviewCommentStatus.Restore(current, new[] { oldComment }) == 1,
+                "The DOCX fallback could not resolve the multi-paragraph comment");
+            document = word.Open(current, true);
+            try
+            {
+                Require(WordDocuments.Comments((object)document, true).Single(item => item.Text == commentText).Resolved,
+                    "Word did not read the restored multi-paragraph comment status");
+            }
+            finally { document.Close(SaveChanges: 0); }
+            var target = history.CommitFile(current, "解决多段批注", "测试", basis);
+
+            File.Copy(submission, returned);
+            document = word.Open(returned, false);
+            try
+            {
+                document.TrackRevisions = true;
+                InsertAtReviewAnchor(document, "结果位置", newText);
+                Require(!WordDocuments.Comments((object)document, true).Single(item => item.Text == commentText).Resolved,
+                    "The return must still have the multi-paragraph comment open");
+                document.Save();
+            }
+            finally { document.Close(SaveChanges: 0); }
+            var incoming = history.ImportReviewFile(returned, basis, "review-multiple-paragraphs", "老师", "main", target);
+            document = word.ReviewBranchesExtracted(history, basis, target, incoming);
+            try
+            {
+                Require(WordDocuments.Comments((object)document, true).Single(item => item.Text == commentText).Resolved,
+                    "The merge reopened the resolved multi-paragraph comment");
+                var pending = WordDocuments.ReviewItems((object)document, false);
+                Require(!pending.Any(item => item.IsComment) && pending.Any(item => item.RangeText.Contains(newText)),
+                    "The resolved comment must stay off the review list while the new change stays reviewable");
+            }
+            finally { document.Close(SaveChanges: 0); }
+            Console.WriteLine("PASS: the DOCX fallback resolves a multi-paragraph comment, and the merged draft keeps it resolved.");
         }
 
         private static dynamic FindReviewAnchor(dynamic document, string anchor)
