@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -49,11 +49,18 @@ namespace WordGit
                 if (args.Contains("--dialogs-only")) { VerifyDialogOwners(application, word); return; }
                 if (args.Contains("--pane-only")) { VerifyPaneLoading(application, root); return; }
                 if (args.Contains("--remote-only")) { VerifyRemoteCollaboration(application, word, root); return; }
-                if (args.Contains("--review-only")) { VerifyImportedReview(application, word, root); return; }
+                if (args.Contains("--multi-review-only")) { VerifyRepeatedReviews(application, word, root); return; }
+                if (args.Contains("--review-only"))
+                {
+                    VerifyImportedReview(application, word, root);
+                    VerifyRepeatedReviews(application, word, root);
+                    return;
+                }
                 if (!args.Contains("--local-only"))
                 {
                     VerifyRevisionActions(application, word, root);
                     VerifyImportedReview(application, word, root);
+                    VerifyRepeatedReviews(application, word, root);
                     VerifyRemoteCollaboration(application, word, root);
                 }
                 var sourcePath = Path.Combine(root, "原始 试验报告.docx");
@@ -307,6 +314,142 @@ namespace WordGit
             Console.WriteLine("PASS: WPS archives review bytes, comments and revisions; automatic tracked merge is unavailable.");
         }
 
+        private static void VerifyRepeatedReviews(dynamic application, WordDocuments word, string root)
+        {
+            const string accepted = "第一轮接受的新增句";
+            const string rejected = "第一轮拒绝的新增句";
+            const string oldComment = "第一轮已解决的批注";
+            const string newComment = "第二轮新增批注";
+            const string newText = "第二轮新增说明";
+            const string acceptedFormat = "保留第一轮斜体";
+            const string rejectedFormat = "拒绝第一轮加粗";
+            const string currentConflict = "作者改写一句";
+            const string returnedConflict = "老师另改一句";
+            var basisPath = Path.Combine(root, "多轮测试送审版.docx");
+            dynamic document = application.Documents.Add();
+            document.RemovePersonalInformation = false;
+            document.Content.Text = "多轮测试标题\r接受锚点\r间隔段落\r拒绝锚点\r批注定位位置\r" +
+                acceptedFormat + "\r" + rejectedFormat + "\r第二轮锚点\r第三轮冲突锚点\r";
+            document.SaveAs2(FileName: basisPath, FileFormat: 16, AddToRecentFiles: false);
+            document.Close(SaveChanges: 0);
+            var history = new GitHistory(basisPath, root);
+            var basis = history.CommitFile(basisPath, "原始送审版", "测试", null);
+
+            var firstPath = Path.Combine(root, "第一轮返稿.docx");
+            WordDocuments.ExtractToFile(history, basis, firstPath);
+            document = word.Open(firstPath, false);
+            document.TrackRevisions = true;
+            InsertAtReviewAnchor(document, "接受锚点", accepted);
+            InsertAtReviewAnchor(document, "拒绝锚点", rejected);
+            document.TrackFormatting = true;
+            FindReviewAnchor(document, acceptedFormat).Font.Italic = -1;
+            FindReviewAnchor(document, rejectedFormat).Font.Bold = -1;
+            document.Comments.Add(FindReviewAnchor(document, "批注定位位置"), oldComment);
+            document.Save();
+            document.Close(SaveChanges: 0);
+            var first = history.ImportReviewFile(firstPath, basis, null, "老师", "main", basis);
+            var firstRef = GitHistory.ReviewArchivePrefix + first;
+            dynamic firstMerge = word.ReviewBranchesExtracted(history, basis, basis, first);
+            var reject = WordDocuments.ReviewItems((object)firstMerge).Single(item => !item.IsComment && item.RangeText.Contains(rejected));
+            word.ResolveReviewItem((object)firstMerge, reject, false);
+            var rejectFormat = WordDocuments.ReviewItems((object)firstMerge).Single(item =>
+                !item.IsComment && item.Kind == "格式" && item.RangeText.Contains(rejectedFormat));
+            word.ResolveReviewItem((object)firstMerge, rejectFormat, false);
+            firstMerge.AcceptAllRevisions();
+            firstMerge.Comments[1].Done = true;
+            var firstResult = Path.Combine(root, "第一轮确认后.docx");
+            firstMerge.SaveAs2(FileName: firstResult, FileFormat: 16, AddToRecentFiles: false);
+            firstMerge.Close(SaveChanges: 0);
+            var target = history.CommitFile(firstResult, "第一轮完成", "测试", basis, "main", firstRef, first);
+            Require(history.History("main").First().Parents.SequenceEqual(new[] { basis, first }) &&
+                history.Branches().SequenceEqual(new[] { "main" }), "Unnamed original review was not retained as a parent");
+
+            var secondPath = Path.Combine(root, "第二轮沿用第一轮原始返稿.docx");
+            File.Copy(firstPath, secondPath);
+            document = word.Open(secondPath, false);
+            document.TrackRevisions = true;
+            Require(!WordDocuments.Comments((object)document, true).Single(item => item.Text == oldComment).Resolved,
+                "The raw return must still have the old comment open");
+            dynamic adjacent = FindReviewAnchor(document, "间隔段落");
+            var end = (int)adjacent.End;
+            document.Range(end, end).InsertAfter("\r" + newText);
+            document.Comments.Add(FindReviewAnchor(document, "多轮测试标题"), newComment);
+            document.Save();
+            document.Close(SaveChanges: 0);
+            var second = history.ImportReviewFile(secondPath, basis, "review-round-two", "老师", "main", target);
+            dynamic secondMerge = word.ReviewBranchesExtracted(history, basis, target, second);
+            var secondItems = WordDocuments.ReviewItems((object)secondMerge, false);
+            Require(secondItems.Count == 2 && secondItems.Any(item => item.IsComment && item.Text == newComment) &&
+                secondItems.Any(item => !item.IsComment && item.RangeText.Contains(newText)),
+                "The second round must only show the new revision and unresolved comment");
+            Require(WordDocuments.Comments((object)secondMerge, true).Single(item => item.Text == oldComment).Resolved,
+                "The first resolved comment was reopened");
+            secondMerge.AcceptAllRevisions();
+            secondMerge.TrackRevisions = false;
+            dynamic conflictAnchor = FindReviewAnchor(secondMerge, "第三轮冲突锚点");
+            conflictAnchor.Text = currentConflict;
+            var secondResult = Path.Combine(root, "第二轮确认后.docx");
+            secondMerge.SaveAs2(FileName: secondResult, FileFormat: 16, AddToRecentFiles: false);
+            var body = (string)secondMerge.Content.Text;
+            Require(body.Contains(accepted) && body.Contains(newText) && !body.Contains(rejected),
+                "An accepted or rejected decision from the first round was lost");
+            Require((int)FindReviewAnchor(secondMerge, acceptedFormat).Font.Italic == -1 &&
+                (int)FindReviewAnchor(secondMerge, rejectedFormat).Font.Bold == 0,
+                "An accepted or rejected formatting decision from the first round was lost");
+            secondMerge.Close(SaveChanges: 0);
+            var nextTip = history.CommitFile(secondResult, "第二轮完成", "测试", target, "main", "review-round-two", second);
+
+            var thirdPath = Path.Combine(root, "第三轮修改同一句.docx");
+            WordDocuments.ExtractToFile(history, basis, thirdPath);
+            document = word.Open(thirdPath, false);
+            document.TrackRevisions = true;
+            dynamic thirdAnchor = FindReviewAnchor(document, "第三轮冲突锚点");
+            thirdAnchor.Text = returnedConflict;
+            document.Save();
+            document.Close(SaveChanges: 0);
+            var third = history.ImportReviewFile(thirdPath, basis, null, "老师", "main", nextTip);
+            dynamic thirdMerge = word.ReviewBranchesExtracted(history, basis, nextTip, third);
+            var thirdItems = WordDocuments.ReviewItems((object)thirdMerge, false);
+            Require(thirdItems.Any(item => !item.IsComment && item.RangeText.Contains(returnedConflict)) &&
+                thirdItems.Any(item => !item.IsComment && item.RangeText.Contains(currentConflict)),
+                "Conflicting edits at the same base range must remain reviewable");
+            Require(thirdItems.All(item => item.IsComment || (!item.RangeText.Contains(accepted) && !item.RangeText.Contains(rejected) &&
+                !item.RangeText.Contains(newText))), "A previous non-conflicting decision returned to the review list");
+            var thirdDraftPath = Path.Combine(root, "第三轮待确认稿.docx");
+            thirdMerge.SaveAs2(FileName: thirdDraftPath, FileFormat: 16, AddToRecentFiles: false);
+            thirdMerge.RejectAllRevisions();
+            body = (string)thirdMerge.Content.Text;
+            Require(body.Contains(currentConflict) && !body.Contains(returnedConflict) && !body.Contains("第三轮冲突锚点"),
+                "Rejecting the third-round conflict did not retain the actual current text");
+            thirdMerge.Close(SaveChanges: 0);
+            thirdMerge = word.Open(thirdDraftPath, false);
+            thirdMerge.AcceptAllRevisions();
+            body = (string)thirdMerge.Content.Text;
+            Require(body.Contains(returnedConflict) && !body.Contains(currentConflict) && !body.Contains("第三轮冲突锚点") &&
+                body.Contains(accepted) && body.Contains(newText) && !body.Contains(rejected),
+                "Accepting the third-round conflict duplicated text or changed earlier review decisions");
+            thirdMerge.Close(SaveChanges: 0);
+            Require(history.Head() == nextTip &&
+                history.Extract(first).SequenceEqual(TestFiles.ReadDocx(firstPath)) &&
+                history.Extract(second).SequenceEqual(TestFiles.ReadDocx(secondPath)) &&
+                history.Extract(third).SequenceEqual(TestFiles.ReadDocx(thirdPath)),
+                "Multi-round review modified an original archive or advanced the main branch");
+            Console.WriteLine("PASS: three review rounds using the original baseline, accepted and rejected edits, resolved comments, a conflict, and byte-identical archives.");
+        }
+
+        private static dynamic FindReviewAnchor(dynamic document, string anchor)
+        {
+            dynamic range = document.Content.Duplicate;
+            Require((bool)range.Find.Execute(FindText: anchor), "Missing review fixture anchor " + anchor);
+            return range;
+        }
+
+        private static void InsertAtReviewAnchor(dynamic document, string anchor, string text)
+        {
+            var position = (int)FindReviewAnchor(document, anchor).Start;
+            document.Range(position, position).InsertBefore(text + "\r");
+        }
+
         private static void VerifyRemoteCollaboration(dynamic application, WordDocuments word, string root)
         {
             var originalName = (string)application.UserName;
@@ -494,9 +637,12 @@ namespace WordGit
                 Require(originalRevisionCount > 0 && originalAuthors.Length > 0, "Saved teacher file lost its fixture revisions");
                 sourcePreview.Close(SaveChanges: 0);
 
-                var referencesBeforeDirect = repository.ReferenceState();
-                Console.WriteLine("Running native review without archiving the teacher file…");
-                dynamic direct = word.ReviewReturnedDraft(repository, basis, target, teacherPath, "main");
+                var branchesBeforeDirect = repository.Branches();
+                string directArchive;
+                using (repository.Lock())
+                    directArchive = repository.ImportReviewFile(teacherPath, basis, null, "导师甲", "main", target);
+                Console.WriteLine("Running native review without a separate teacher branch…");
+                dynamic direct = word.ReviewBranchesExtracted(repository, basis, target, directArchive);
                 try
                 {
                     var directItems = WordDocuments.ReviewItems((object)direct);
@@ -506,9 +652,10 @@ namespace WordGit
                     var directBody = (string)direct.Content.Text;
                     Require(directBody.Contains("我在送审后新增的试验结果") && directBody.Contains("老师修改后的试验说明"),
                         "Direct merge lost either the teacher edits or post-submission work");
-                    Require(repository.ReferenceState() == referencesBeforeDirect &&
+                    Require(repository.Head() == target && repository.Branches().SequenceEqual(branchesBeforeDirect) &&
+                        repository.Extract(directArchive).SequenceEqual(raw) &&
                         WordDocuments.FileChecksum(path) == targetHash && TestFiles.ReadDocx(teacherPath).SequenceEqual(raw),
-                        "Generating a direct merge changed refs or an input file");
+                        "Generating a direct merge changed a working branch or failed to archive the original");
                 }
                 finally { direct.Close(SaveChanges: 0); }
 

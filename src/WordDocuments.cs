@@ -93,7 +93,9 @@ namespace WordGit
     internal sealed class DocumentComment
     {
         public int Index, Page, ScopeStart;
-        public string Author, Text;
+        public string Author, Text, ScopeText;
+        public DateTime Date;
+        public bool Resolved;
         public string Caption { get { return Author + " · 第 " + Page + " 页"; } }
     }
 
@@ -101,7 +103,8 @@ namespace WordGit
     {
         public DocumentComment Comment;
         public int Index, Page, ScopeStart, ScopeEnd, StoryType, StoryIndex, RevisionType;
-        public string Author, Text, RangeText;
+        public string Author, Text, RangeText, RevisionFormat;
+        public DateTime Date;
         public bool IsComment { get { return Comment != null; } }
         public string Kind
         {
@@ -223,7 +226,7 @@ namespace WordGit
                 catch (ArgumentException) { }
         }
 
-        public static List<DocumentComment> Comments(object value)
+        public static List<DocumentComment> Comments(object value, bool includeReviewStatus = false)
         {
             dynamic document = value;
             var result = new List<DocumentComment>();
@@ -241,7 +244,10 @@ namespace WordGit
                         result.Add(new DocumentComment
                         {
                             Index = index, Author = (string)comment.Author, Text = ((string)range.Text).Trim(),
-                            ScopeStart = (int)scope.Start, Page = (int)scope.Information[3]
+                            ScopeStart = (int)scope.Start, Page = (int)scope.Information[3],
+                            ScopeText = includeReviewStatus ? ((string)scope.Text ?? "").Trim() : null,
+                            Date = includeReviewStatus ? (DateTime)comment.Date : default(DateTime),
+                            Resolved = includeReviewStatus && CommentResolved(comment)
                         });
                     }
                     finally { Release(range); Release(scope); Release(comment); }
@@ -249,6 +255,13 @@ namespace WordGit
             }
             finally { Release(all); }
             return result;
+        }
+
+        private static bool CommentResolved(dynamic comment)
+        {
+            try { return (bool)comment.Done; }
+            catch (COMException) { return false; }
+            catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException) { return false; }
         }
 
         internal static int DocumentRevisionCount(object value)
@@ -288,11 +301,12 @@ namespace WordGit
             word.ActiveWindow.ScrollIntoView(scope, true);
         }
 
-        public static List<DocumentReviewItem> ReviewItems(object value)
+        public static List<DocumentReviewItem> ReviewItems(object value, bool includeResolvedComments = true, bool includeRevisionDates = false)
         {
             dynamic document = value;
             var result = new List<DocumentReviewItem>();
-            foreach (var comment in Comments(value)) result.Add(DocumentReviewItem.ForComment(comment));
+            foreach (var comment in Comments(value, !includeResolvedComments))
+                if (includeResolvedComments || !comment.Resolved) result.Add(DocumentReviewItem.ForComment(comment));
             var seen = new HashSet<string>(StringComparer.Ordinal);
             dynamic stories = document.StoryRanges;
             try
@@ -305,7 +319,7 @@ namespace WordGit
                     while (story != null)
                     {
                         if (storyType != 4) // Comment text is already represented by the comment entry.
-                            CollectRevisions(story, storyType, storyIndex, seen, result);
+                            CollectRevisions(story, storyType, storyIndex, seen, result, includeRevisionDates);
                         dynamic next = story.NextStoryRange;
                         Release(story);
                         story = next;
@@ -317,7 +331,8 @@ namespace WordGit
             return result;
         }
 
-        private static void CollectRevisions(dynamic story, int storyType, int storyIndex, HashSet<string> seen, List<DocumentReviewItem> result)
+        private static void CollectRevisions(dynamic story, int storyType, int storyIndex, HashSet<string> seen,
+            List<DocumentReviewItem> result, bool includeRevisionDates)
         {
             dynamic changes = story.Revisions;
             try
@@ -338,6 +353,7 @@ namespace WordGit
                         var entry = new DocumentReviewItem { Index = index, Page = (int)anchor.Information[3],
                             ScopeStart = (int)scope.Start, ScopeEnd = (int)scope.End, StoryType = storyType, StoryIndex = storyIndex,
                             RevisionType = (int)change.Type, Author = (string)change.Author, RangeText = text,
+                            Date = includeRevisionDates ? (DateTime)change.Date : default(DateTime), RevisionFormat = format,
                             Text = String.IsNullOrWhiteSpace(description) ? "段落、空白或结构变更" : description.Trim() };
                         if (seen.Add(entry.Key)) result.Add(entry);
                     }
@@ -492,16 +508,6 @@ namespace WordGit
             return ReviewStaged(folder, leftFile, rightFile, false, null);
         }
 
-        private object ReviewReturnAgainstBase(GitHistory repo, string basisRevision, string externalPath)
-        {
-            var folder = AppPaths.NewSession();
-            var leftFile = Path.Combine(folder, "基准版本.docx");
-            var rightFile = Path.Combine(folder, "修订版本.docx");
-            ExtractToFile(repo, basisRevision, leftFile);
-            CopyShared(externalPath, rightFile);
-            return ReviewStaged(folder, leftFile, rightFile, true, null);
-        }
-
         private static void CopyShared(string source, string destination)
         {
             using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
@@ -553,6 +559,9 @@ namespace WordGit
         public object ReviewBranchesExtracted(GitHistory repo, string basisRevision, string targetRevision, string incomingRevision, string targetBranch = "当前分支", string sourceBranch = "来源分支", bool preserveIncomingRevisions = false)
         {
             EnsureTrackedMergeSupported();
+            var submitted = repo.ImportedReviewBase(incomingRevision);
+            if (submitted == basisRevision)
+                return ReviewRepeatedReturn(repo, basisRevision, targetRevision, incomingRevision);
             if (repo.SnapshotChecksum(basisRevision) == repo.SnapshotChecksum(targetRevision))
                 return ReviewFiles(repo, targetRevision, incomingRevision, true);
             var folder = AppPaths.NewSession();
@@ -560,23 +569,154 @@ namespace WordGit
             var sourceFile = Path.Combine(folder, "分支修订-来源.docx");
             SaveBranchRevisionsToFile(repo, basisRevision, targetRevision, targetBranch, targetFile);
             SaveBranchRevisionsToFile(repo, basisRevision, incomingRevision, sourceBranch, sourceFile,
-                repo.ImportedReviewBase(incomingRevision) != null || preserveIncomingRevisions);
+                submitted != null || preserveIncomingRevisions);
             return ReviewStaged(folder, targetFile, sourceFile, true, null);
         }
 
-        internal object ReviewReturnedDraft(GitHistory repo, string basisRevision, string targetRevision, string externalPath, string branch)
+        private object ReviewRepeatedReturn(GitHistory repo, string basis, string target, string incoming)
         {
-            EnsureTrackedMergeSupported();
-            DocxFormat.ValidateFile(externalPath);
-            if (repo.SnapshotChecksum(basisRevision) == repo.SnapshotChecksum(targetRevision))
-                return ReviewReturnAgainstBase(repo, basisRevision, externalPath);
-
             var folder = AppPaths.NewSession();
-            var targetFile = Path.Combine(folder, "当前稿修订.docx");
-            var returnedFile = Path.Combine(folder, "返稿修订.docx");
-            SaveBranchRevisionsToFile(repo, basisRevision, targetRevision, branch, targetFile);
-            SaveReviewToFile(ReviewReturnAgainstBase(repo, basisRevision, externalPath), returnedFile);
-            return ReviewStaged(folder, targetFile, returnedFile, true, null);
+            var currentFile = Path.Combine(folder, "当前稿.docx");
+            var currentRevisions = Path.Combine(folder, "当前稿修订.docx");
+            var incomingRevisions = Path.Combine(folder, "返稿修订.docx");
+            var proposedFile = Path.Combine(folder, "返稿建议稿.docx");
+            var rawReturn = Path.Combine(folder, "返稿副本.docx");
+            var previousReturn = Path.Combine(folder, "上轮返稿副本.docx");
+            var currentAuthor = "当前主稿 " + Guid.NewGuid().ToString("N").Substring(0, 8);
+            object result = null;
+            try
+            {
+                ExtractToFile(repo, target, currentFile);
+                List<DocumentComment> comments;
+                bool hasPendingChanges;
+                var current = Open(currentFile, true, false);
+                try
+                {
+                    comments = Comments(current, true);
+                    hasPendingChanges = basis != target && ReviewItems(current).Any(item => !item.IsComment);
+                }
+                finally { CloseReviewInput(current); }
+
+                if (basis == target)
+                {
+                    ExtractToFile(repo, incoming, incomingRevisions);
+                    result = ReviewStaged(folder, currentFile, incomingRevisions, true, null);
+                }
+                else
+                {
+                    var previousReturns = repo.PreviouslyMergedReturns(target, basis);
+                    var continuedReturn = hasPendingChanges ? null : FindContinuedReturn(repo, previousReturns, incoming, rawReturn, previousReturn);
+                    SaveBranchRevisionsToFile(repo, continuedReturn ?? basis, target, currentAuthor, currentRevisions);
+                    var earlier = new List<List<DocumentReviewItem>>();
+                    if (continuedReturn == null)
+                    {
+                        foreach (var revision in previousReturns)
+                        {
+                            var previous = ReviewFiles(repo, basis, revision, true);
+                            try { earlier.Add(ReviewItems(previous, includeRevisionDates: true)); }
+                            finally { CloseReviewInput(previous); }
+                        }
+                    }
+                    var proposal = continuedReturn == null ? ReviewFiles(repo, basis, incoming, true) :
+                        ReviewFiles(repo, continuedReturn, incoming, false, "返稿");
+                    List<DocumentReviewItem> incomingItems;
+                    try
+                    {
+                        ReturnReviewDecisions.RemoveRepeated(this, proposal, earlier);
+                        incomingItems = ReviewItems(proposal);
+                        ((dynamic)proposal).SaveAs2(FileName: incomingRevisions, FileFormat: 16, AddToRecentFiles: false);
+                    }
+                    finally { CloseReviewInput(proposal); }
+
+                    // Word's native combine may duplicate the original text when both sides replace the
+                    // same range. Build the suggested result from the returned edit and compare it with
+                    // the actual current draft so rejecting the conflict always restores the current text.
+                    var hasConflict = false;
+                    if (!hasPendingChanges)
+                    {
+                        var trackedCurrent = Open(currentRevisions, false, true);
+                        try
+                        {
+                            hasConflict = ReturnReviewDecisions.PrepareConflictProposal(this, trackedCurrent, incomingItems, continuedReturn != null);
+                            if (hasConflict) ((dynamic)trackedCurrent).Save();
+                        }
+                        finally { CloseReviewInput(trackedCurrent); }
+                    }
+                    result = ReviewStaged(folder, currentRevisions, incomingRevisions, true, null);
+                    if (hasConflict)
+                    {
+                        ((dynamic)result).AcceptAllRevisions();
+                        ((dynamic)result).SaveAs2(FileName: proposedFile, FileFormat: 16, AddToRecentFiles: false);
+                        CloseReviewInput(result);
+                        result = null;
+                        var authors = incomingItems.Where(item => !item.IsComment).Select(item => item.Author).Distinct().ToArray();
+                        result = ReviewStaged(folder, currentFile, proposedFile, false, authors.Length == 1 ? authors[0] : "返稿");
+                    }
+                    else if (!hasPendingChanges) ReturnReviewDecisions.KeepCurrentChanges(this, result, currentAuthor,
+                        continuedReturn == null ? null : incomingItems);
+                }
+                RestoreResolvedReviewComments(ref result, comments);
+                var draft = result;
+                result = null;
+                return draft;
+            }
+            finally
+            {
+                if (result != null) CloseReviewInput(result);
+                TryRemove(currentFile);
+                TryRemove(currentRevisions);
+                TryRemove(incomingRevisions);
+                TryRemove(proposedFile);
+                TryRemove(rawReturn);
+                TryRemove(previousReturn);
+                try { Directory.Delete(folder); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        private static string FindContinuedReturn(GitHistory repo, string[] previous, string incoming, string rawReturn, string previousReturn)
+        {
+            if (previous.Length == 0) return null;
+            ExtractToFile(repo, incoming, rawReturn);
+            var proposed = TrackedReviewSnapshot.Read(rawReturn);
+            if (proposed.Count == 0) return null;
+            foreach (var revision in previous)
+            {
+                ExtractToFile(repo, revision, previousReturn);
+                var archived = TrackedReviewSnapshot.Read(previousReturn);
+                TryRemove(previousReturn);
+                if (archived.Count > 0 && archived.All(change => proposed.ContainsKey(change.Key) && proposed[change.Key] >= change.Value))
+                    return revision;
+            }
+            return null;
+        }
+
+        private void RestoreResolvedReviewComments(ref object result, List<DocumentComment> comments)
+        {
+            var unresolved = ReturnReviewDecisions.KeepResolvedComments(result, comments);
+            if (unresolved.Count == 0) return;
+
+            // Some Word combine results refuse Comment.Done even though the DOCX supports it.
+            // Save before editing the generated copy and keep the native result as a fallback.
+            string patched = null;
+            try
+            {
+                var folder = AppPaths.NewSession();
+                var original = Path.Combine(folder, "合并稿.docx");
+                patched = Path.Combine(folder, "批注已恢复的合并稿.docx");
+                ((dynamic)result).SaveAs2(FileName: original, FileFormat: 16, AddToRecentFiles: false);
+                CopyShared(original, patched);
+                var restored = ReviewCommentStatus.Restore(patched, unresolved);
+                if (restored != unresolved.Count)
+                    AppPaths.LogError("Resolved comment status could not be matched for " + (unresolved.Count - restored) + " thread(s).");
+                if (restored == 0) return;
+                var reopened = Open(patched, false);
+                CloseReviewInput(result);
+                result = reopened;
+                patched = null;
+                TryRemove(original);
+            }
+            catch (Exception error) { AppPaths.LogError("Restore resolved comment status: " + error); }
+            finally { if (patched != null) TryRemove(patched); }
         }
 
         private void SaveBranchRevisionsToFile(GitHistory repo, string basisRevision, string versionRevision, string author, string outputPath,

@@ -151,16 +151,21 @@ namespace WordGit
                 "」冲突。请换一个名称，例如 review-老师审阅。";
         }
 
+        internal const string ReviewArchivePrefix = "refs/wordgit/reviews/";
+
         public string ImportReviewFile(string path, string basis, string newBranch, string reviewer,
             string targetBranch, string expectedTarget)
         {
             if (String.IsNullOrWhiteSpace(reviewer) || reviewer.IndexOf('\0') >= 0)
                 throw new ArgumentException("请填写返稿来源。");
             EnsureRepository();
-            var reference = BranchRef(newBranch);
-            Run(null, null, "check-ref-format", reference);
-            var conflict = ReviewBranchConflict(newBranch, Branches());
-            if (conflict != null) throw new InvalidOperationException(conflict);
+            var reference = newBranch == null ? null : BranchRef(newBranch);
+            if (reference != null)
+            {
+                Run(null, null, "check-ref-format", reference);
+                var conflict = ReviewBranchConflict(newBranch, Branches());
+                if (conflict != null) throw new InvalidOperationException(conflict);
+            }
             basis = Id(basis);
             if (expectedTarget == null || ActiveBranch() != targetBranch || BranchTip(targetBranch) != expectedTarget)
                 throw new InvalidOperationException("当前分支或提交已变化，请刷新后重新导入。");
@@ -173,7 +178,13 @@ namespace WordGit
             var message = "导入审阅稿：" + Path.GetFileName(path) + "\n\nWordGit-Review-Base: " + basis +
                 "\nWordGit-Review-SHA256: " + prepared.Checksum + "\n";
             var commit = Id(Text(Run(Utf8.GetBytes(message), identity, "commit-tree", prepared.Tree, "-p", basis, "-F", "-")));
-            RefTransaction(identity, "create " + reference + " " + commit,
+            var publish = "create ";
+            if (reference == null)
+            {
+                reference = ReviewArchivePrefix + commit;
+                if (BranchTip(reference) == commit) publish = "verify ";
+            }
+            RefTransaction(identity, publish + reference + " " + commit,
                 "verify " + BranchRef(targetBranch) + " " + Id(expectedTarget));
             if (commitCreated != null) commitCreated(root);
             return commit;
@@ -187,6 +198,15 @@ namespace WordGit
             if (marker.Length != 1) return null;
             var parent = marker[0].Substring("WordGit-Review-Base: ".Length).Trim();
             return Regex.IsMatch(parent, @"\A(?:[a-f0-9]{40}|[a-f0-9]{64})\z") && lines[0].Trim() == parent ? parent : null;
+        }
+
+        internal string[] PreviouslyMergedReturns(string tip, string basis)
+        {
+            var previous = Text(Run(null, null, "log", "--first-parent", "--merges", "--format=%P",
+                Id(basis) + ".." + Id(tip), "--"));
+            return previous.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .SelectMany(line => line.Split(' ').Skip(1)).Distinct(StringComparer.Ordinal)
+                .Where(parent => ImportedReviewBase(parent) == basis).ToArray();
         }
 
         public void Switch(string from, string oldTip, string to, string newTip)

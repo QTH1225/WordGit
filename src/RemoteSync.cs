@@ -38,12 +38,15 @@ namespace WordGit
 
         internal static string ReferenceLabel(string reference)
         {
+            if (reference != null && reference.StartsWith(ReviewArchivePrefix, StringComparison.Ordinal)) return "返稿";
             return reference != null && reference.StartsWith(RemotePrefix, StringComparison.Ordinal)
                 ? "origin/" + reference.Substring(RemotePrefix.Length) : reference;
         }
 
         private static string HistoryReference(string branch)
         {
+            if (branch != null && branch.StartsWith(ReviewArchivePrefix, StringComparison.Ordinal))
+                return ReviewArchivePrefix + Id(branch.Substring(ReviewArchivePrefix.Length));
             if (branch != null && branch.StartsWith(RemotePrefix, StringComparison.Ordinal))
                 return RemotePrefix + BranchRef(branch.Substring(RemotePrefix.Length)).Substring(Heads.Length);
             return BranchRef(branch);

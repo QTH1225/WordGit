@@ -297,7 +297,8 @@ namespace WordGit
                 };
             });
             result.IsSaved = () => (bool)((dynamic)document).Saved;
-            result.LoadReviewItems = () => WordDocuments.ReviewItems(document);
+            var pendingMerge = review != null && review.IsPendingMerge;
+            result.LoadReviewItems = () => WordDocuments.ReviewItems(document, !pendingMerge);
             result.ReviewSignature = () => WordDocuments.ReviewSignature(document);
             result.CanResolveRevisions = !readOnly;
             if (review != null && review.IsPendingMerge)
@@ -635,41 +636,31 @@ namespace WordGit
             }
 
             var basis = options.Basis;
-            if (options.Branch == null)
-            {
-                using (Busy())
-                {
-                    CheckMergeTarget(document, path, repo, tip);
-                    var mergeBase = repo.MergeBase(tip, basis.Id);
-                    var result = word.ReviewReturnedDraft(repo, mergeBase, tip, options.FilePath, branch);
-                    var resultPath = Path.Combine(AppPaths.NewSession(), Path.GetFileNameWithoutExtension(path) + "-返稿合并稿.docx");
-                    SaveMergeDraft(result, resultPath, new PendingReview { Original = path, Branch = branch, ApplyToOriginal = true }, tip);
-                }
-                Notice("已打开返稿合并稿。接受或拒绝修订后，点击右侧的「完成合并」将结果合入当前稿。");
-                return;
-            }
-
+            if (options.Branch == null) CheckMergeTarget(document, path, repo, tip);
             UiThread.EnsureContext();
-            RunInBackground(path, "保存返稿 · " + options.Branch, async token =>
+            RunInBackground(path, "保存返稿", async token =>
             {
                 var imported = await Task.Run(() => {
                     using (repo.Lock()) return repo.ImportReviewFile(options.FilePath, basis.Id, options.Branch,
-                        options.Reviewer, branch, tip);
+                        options.Reviewer ?? "返稿", branch, tip);
                 });
-                var saved = "返稿已保存到「" + options.Branch + "」，提交 " + imported.Substring(0, 8) + "。";
+                var source = options.Branch ?? GitHistory.ReviewArchivePrefix + imported;
+                var location = options.Branch == null ? "" : "到「" + options.Branch + "」";
+                var saved = "返稿已保存" + location + "，提交 " + imported.Substring(0, 8) + "。";
                 RefreshPane(path);
                 if (!options.CreateMergeDraft)
                     return saved + (word.SupportsTrackedMerge ? " 可随时从「合并分支」继续审阅。" : " 可在提交图中预览或对比返稿。");
                 try
                 {
-                    StartBranchMerge(document, path, repo, branch, tip, options.Branch);
+                    StartBranchMerge(document, path, repo, branch, tip, source);
                     return saved + " 已生成独立合并稿。处理修订后点击右侧的「完成合并」。";
                 }
                 catch (Exception error)
                 {
                     AppPaths.LogError("import review merge: " + error);
                     return saved + Environment.NewLine + "生成合并稿未完成：" + error.Message +
-                        Environment.NewLine + "返稿分支已保留。请处理当前稿状态后，从「合并分支」选择该返稿分支继续。";
+                        Environment.NewLine + (options.Branch == null ? "原始返稿仍可在提交图中预览。"
+                            : "返稿分支已保留，可从「合并分支」继续。");
                 }
             }, false);
         }
@@ -782,7 +773,8 @@ namespace WordGit
         {
             if (review.SourceBranch != null && repo.BranchTip(review.SourceBranch) != review.SourceTip)
                 throw new InvalidOperationException("来源分支已更新，请重新生成合并修订稿。");
-            var summary = review.SourceBranch == null ? "合并返稿" : "合并分支 " + GitHistory.ReferenceLabel(review.SourceBranch);
+            var fromBranch = review.SourceBranch != null && !review.SourceBranch.StartsWith(GitHistory.ReviewArchivePrefix, StringComparison.Ordinal);
+            var summary = fromBranch ? "合并分支 " + GitHistory.ReferenceLabel(review.SourceBranch) : "合并返稿";
             var message = Dialogs.Ask(word.Owner, "确认合并到「" + review.Branch + "」", summary);
             if (message == null) return;
             WordDocuments.SaveDocument(document);

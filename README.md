@@ -4,6 +4,11 @@
 
 作者：[QTH1225](https://github.com/QTH1225) · [项目主页](https://github.com/QTH1225/WordGit) · [发布记录](https://github.com/QTH1225/WordGit/releases) · [问题反馈](https://github.com/QTH1225/WordGit/issues) · [GPL-3.0-only 许可证](LICENSE)
 
+> [!WARNING]
+> 您对自己文档的备份以及合并承担**完全责任**，推荐您重要文件在关键节点使用3-2-1备份法。
+>
+> **本项目不对您在使用过程中的文档丢失等问题负任何责任！**
+
 ## 安装与升级
 
 | 环境 | 要求 |
