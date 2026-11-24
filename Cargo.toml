@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["poc/probe-server"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0-only"
+authors = ["QTH1225"]
+repository = "https://github.com/QTH1225/WordGit"

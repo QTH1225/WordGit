@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>WordGit 探测窗格</title>
+    <style>
+        body { font: 13px/1.5 sans-serif; margin: 12px; }
+        pre { white-space: pre-wrap; word-break: break-all; background: #f4f4f4; padding: 8px; }
+    </style>
+</head>
+<body>
+    <h3>WordGit 探测窗格</h3>
+    <div>页面地址：<code id="href"></code></div>
+    <pre id="out">正在访问本地服务…</pre>
+    <script>
+        var SERVICE = "http://127.0.0.1:47820";
+        document.getElementById("href").textContent = location.href;
+        function send(step, data) {
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open("POST", SERVICE + "/api/v1/report", true);
+                xhr.setRequestHeader("Content-Type", "application/json");
+                xhr.send(JSON.stringify({ step: step, data: data }));
+            } catch (e) { /* reported through the page text */ }
+        }
+        send("taskpane.loaded", { href: location.href, origin: location.origin, ua: navigator.userAgent, hasApplication: typeof window.Application });
+        fetch(SERVICE + "/api/v1/ping", { cache: "no-store" })
+            .then(function (r) { return r.text(); })
+            .then(function (text) { document.getElementById("out").textContent = text; send("taskpane.ping", { ok: true, body: text }); })
+            .catch(function (e) { document.getElementById("out").textContent = "失败：" + e; send("taskpane.ping", { ok: false, error: String(e) }); });
+        try {
+            var doc = window.Application && window.Application.ActiveDocument;
+            send("taskpane.activeDocument", { name: doc ? doc.Name : null });
+        } catch (e) { send("taskpane.activeDocument", { error: String(e.message || e) }); }
+    </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+    <ribbon startFromScratch="false">
+        <tabs>
+            <tab id="wordgitProbeTab" label="WordGit 探测">
+                <group id="wordgitProbeGroup" label="P0">
+                    <button id="btnRunProbe" label="重新探测" onAction="OnAction" size="large" visible="true" enabled="true"/>
+                    <button id="btnShowPane" label="任务窗格" onAction="OnAction" size="large" visible="true" enabled="true"/>
+                </group>
+            </tab>
+        </tabs>
+    </ribbon>
+</customUI>

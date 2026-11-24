@@ -1,0 +1,11 @@
+[package]
+name = "wordgit-probe"
+version = "0.1.0"
+description = "P0 probe server: hosts the WPS probe add-in and records what the add-in can do"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
