@@ -10,7 +10,7 @@ namespace WordGit
     // before the pane starts reading the core, otherwise Word shows an unpainted pane.
     internal static class PaneProbe
     {
-        private static bool started, startedEarly;
+        private static bool started, startedEarly, singleLine, singleLineChecked;
 
         [STAThread]
         private static void Main(string[] args)
@@ -45,6 +45,11 @@ namespace WordGit
             var timer = new Timer { Interval = 200 };
             timer.Tick += (sender, e) =>
             {
+                if (!singleLineChecked && watch.ElapsedMilliseconds >= 1200)
+                {
+                    singleLineChecked = true;
+                    singleLine = pane.StatusIsSingleLine;
+                }
                 if (watch.ElapsedMilliseconds < 2500) return;
                 timer.Stop();
                 form.Close();
@@ -57,7 +62,9 @@ namespace WordGit
                 if (!started) failed.Add("the pane never started loading");
                 if (startedEarly) failed.Add("loading started before the loading surface painted");
                 if (!pane.SurfacePainted) failed.Add("the loading surface never painted");
-                if (failed.Count == 0) Console.WriteLine("PASS: the loading surface paints before the pane reads anything.");
+                if (!singleLineChecked) failed.Add("the status line was never measured");
+                else if (!singleLine) failed.Add("the empty-history status line wrapped onto a second line");
+                if (failed.Count == 0) Console.WriteLine("PASS: the loading surface paints before the pane reads anything, and the empty-history status stays on one line.");
                 foreach (var reason in failed) Console.WriteLine("FAILED: " + reason);
                 Environment.ExitCode = failed.Count == 0 ? 0 : 1;
             }

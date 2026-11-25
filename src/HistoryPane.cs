@@ -287,7 +287,8 @@ namespace WordGit
             graph.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0 && preview.Enabled) OpenSelected(false); };
             layout.Controls.Add(graph, 0, 6);
 
-            status.MaximumSize = new Size(255, 0);
+            status.MaximumSize = new Size(StatusWidth(), 0);
+            layout.Resize += (sender, args) => status.MaximumSize = new Size(StatusWidth(), 0);
             layout.Controls.Add(status, 0, 7);
             var actions = ButtonGrid(2, commit, importReview, preview, compare);
             actions.Margin = new Padding(0, 8, 0, 0);
@@ -343,6 +344,23 @@ namespace WordGit
         // The pane starts loading only once its loading surface has reached the screen, so Word
         // never sits on an unpainted pane while the core and the document are read.
         internal bool SurfacePainted { get { return loadingFrame.Painted; } }
+
+        // Short status lines (the empty-history hint) must fit on one line, and the wrap limit must
+        // follow the column width: a fixed cap wraps CJK text mid-phrase on scaled displays and
+        // leaves an orphaned tail line.
+        internal bool StatusIsSingleLine
+        {
+            get
+            {
+                var host = status.Parent;
+                if (host == null) return true;
+                var available = Math.Max(160, host.ClientSize.Width - status.Margin.Horizontal - 2);
+                if (status.MaximumSize.Width != available) return false;
+                var width = TextRenderer.MeasureText(status.Text, status.Font, new Size(int.MaxValue, int.MaxValue),
+                    TextFormatFlags.NoPadding).Width;
+                return width <= available;
+            }
+        }
 
         internal void QueueReload()
         {
@@ -970,6 +988,14 @@ namespace WordGit
             status.Text = graphError ?? ((loading || graphLoading) ? "正在读取提交记录…" :
                 (revisions.Count == 0 ? "提交版本后，历史会显示在这里。"
                 : (count > 2 ? "对比时请选择一条或两条提交。" : revisions.Count + " 条提交  ·  双击预览")));
+        }
+
+        // 状态行最多占满所在栏宽：短句（如空历史提示）一行放下，长错误消息才换行。
+        private int StatusWidth()
+        {
+            var host = status.Parent;
+            var width = host != null && host.ClientSize.Width > 0 ? host.ClientSize.Width : ClientSize.Width;
+            return Math.Max(160, width - status.Margin.Horizontal - 2);
         }
 
         private void OpenSelected(bool diff)
