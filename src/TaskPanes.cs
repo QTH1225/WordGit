@@ -46,6 +46,9 @@ namespace WordGit
                 dynamic native = factory.CreateCTP(HistoryPane.ProgId, "WordGit · 批注、修订与提交", window);
                 try
                 {
+                    // Keep the host from exposing an unpainted pane while the control is built.
+                    try { native.Visible = false; }
+                    catch (COMException) { }
                     var control = (HistoryPane)native.ContentControl;
                     native.DockPosition = DockRight;
                     native.Width = 420;
@@ -69,6 +72,7 @@ namespace WordGit
             if (!(bool)pane.Native.Visible) pane.Native.Visible = true;
             // Paint the single loading surface before posting the background-load callback.
             pane.Control.Refresh();
+            pane.Control.Update();
             // Return to Word's message loop so the docked pane can paint before loading.
             pane.Control.QueueReload();
         }

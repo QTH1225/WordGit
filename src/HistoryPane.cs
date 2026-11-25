@@ -41,6 +41,9 @@ namespace WordGit
         private readonly Label working = new Label { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
         private readonly Button compareLatest = DialogLayout.Button("对比最新提交");
         private readonly Timer workingTimer = new Timer { Interval = 1200 };
+        private readonly Timer reloadFallback = new Timer { Interval = 700 };
+        private bool reloadPending;
+        private int reloadPendingGeneration;
         private readonly Button commit = DialogLayout.Button("提交版本");
         private readonly Button importReview = DialogLayout.Button("返稿合并");
         private readonly Label remoteStatus = new Label { AutoSize = false, Dock = DockStyle.Fill, AutoEllipsis = true, AccessibleName = "远程同步状态" };
@@ -304,6 +307,7 @@ namespace WordGit
             Controls.Add(loadingFrame);
             loadingFrame.BringToFront();
             ShowSelection();
+            reloadFallback.Tick += (sender, args) => StartQueuedReload(reloadPendingGeneration);
         }
 
         protected override CreateParams CreateParams
@@ -336,15 +340,37 @@ namespace WordGit
                 (showQueued || loading || (data != null && String.Equals(data.DocumentPath, path, StringComparison.OrdinalIgnoreCase)));
         }
 
+        // The pane starts loading only once its loading surface has reached the screen, so Word
+        // never sits on an unpainted pane while the core and the document are read.
+        internal bool SurfacePainted { get { return loadingFrame.Painted; } }
+
         internal void QueueReload()
         {
             var generation = reloadGeneration;
-            BeginInvoke(new Action(() =>
-            {
-                if (!CurrentLoad(generation)) return;
-                showQueued = false;
-                Reload();
-            }));
+            reloadPending = true;
+            reloadPendingGeneration = generation;
+            loadingFrame.FirstPaint = () => PostQueuedReload(generation);
+            reloadFallback.Stop();
+            if (loadingFrame.Painted) { PostQueuedReload(generation); return; }
+            // Safety net: a pane that never paints must still load.
+            reloadFallback.Interval = 700;
+            reloadFallback.Start();
+        }
+
+        private void PostQueuedReload(int generation)
+        {
+            if (!IsHandleCreated || IsDisposed || Disposing) return;
+            BeginInvoke(new Action(() => StartQueuedReload(generation)));
+        }
+
+        private void StartQueuedReload(int generation)
+        {
+            reloadFallback.Stop();
+            loadingFrame.FirstPaint = null;
+            if (!reloadPending || generation != reloadPendingGeneration || !CurrentLoad(generation)) return;
+            reloadPending = false;
+            showQueued = false;
+            Reload();
         }
 
         private static void PrepareChildHandles(Control root)
@@ -442,6 +468,9 @@ namespace WordGit
         internal void Detach()
         {
             workingTimer.Stop();
+            reloadFallback.Stop();
+            reloadPending = false;
+            loadingFrame.FirstPaint = null;
             ++reloadGeneration;
             ++graphGeneration;
             data = null;
@@ -561,15 +590,24 @@ namespace WordGit
             fetchRemote.Enabled = canFetchRemote;
             pullRemote.Enabled = pushRemote.Enabled = canPushOrPull;
             ShowSelection();
+            // Reveal the graph as soon as it is ready: the review list needs a slow Word pass,
+            // so it must not hold the whole pane on the loading surface.
+            if (CurrentLoad(generation)) FinishPresentation();
             if (loadAsync != null) working.Text = "正在检查修改…";
+            commentsTitle.Text = "正在读取批注与修订…";
             try
             {
                 UpdateWorkingState();
                 ReloadComments();
             }
-            finally
+            catch (Exception error)
             {
-                if (CurrentLoad(generation)) FinishPresentation();
+                if (!CurrentLoad(generation)) return;
+                AppPaths.LogError("history pane lists: " + error);
+                comments.Enabled = reviewFilter.Enabled = false;
+                commentsTitle.Text = "批注与修订 · 稍后重试";
+                status.Text = error.Message;
+                hints.SetToolTip(status, error.Message);
             }
         }
 

@@ -291,12 +291,13 @@ namespace WordGit
 
         private static async Task<HistoryPaneData> LoadPaneAsync(object document, string storage = null)
         {
-            // Capture Word COM values on its UI thread; only the service round trip runs in the worker.
+            // Capture Word COM values on its UI thread; discovery, the service round trip and
+            // the history read all run in the worker so nothing blocks Word before the pane paints.
             var path = WordDocuments.LocalPath(document);
             var readOnly = (bool)((dynamic)document).ReadOnly;
-            var client = ServiceClient.Connect();
             var result = await Task.Run(() =>
             {
+                var client = ServiceClient.Connect();
                 var status = client.Status(path);
                 var review = status.Review;
                 var workingCopy = new WorkingCopy(path, () => true, () => status.WorkingState);

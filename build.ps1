@@ -1,4 +1,4 @@
-param([switch]$Test, [switch]$WordTest, [switch]$UiTest, [switch]$KernelTest, [switch]$NoRust)
+param([switch]$Test, [switch]$WordTest, [switch]$UiTest, [switch]$KernelTest, [switch]$PaneTest, [switch]$NoRust)
 $ErrorActionPreference = 'Stop'
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (-not (Test-Path -LiteralPath $framework)) { $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319' }
@@ -50,6 +50,6 @@ if ($KernelTest) {
     $env:WORDGIT_SERVICE_EXE = $kernel
     try { Invoke-TestProgram 'KernelSmoke' '内核与 Word 联调测试' } finally { Remove-Item Env:\WORDGIT_SERVICE_EXE -ErrorAction SilentlyContinue }
 }
-if ($WordTest) { Invoke-TestProgram 'WordSmoke' 'Word 实机测试' -Extra @('/debug:pdbonly') }
+if ($PaneTest) { Invoke-TestProgram 'PaneProbe' '侧栏首帧测试' }
 if ($UiTest) { Invoke-TestProgram 'UiSmoke' '界面布局测试' -Arguments @($bin) }
 if ($failures.Count -gt 0) { throw ('测试失败：' + ($failures -join '、')) }
