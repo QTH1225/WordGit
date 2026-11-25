@@ -43,6 +43,21 @@
         return String(files.ReadFile(path));
     };
 
+    WG.writeComparisonSnapshot = function (doc, path) {
+        var xml;
+        try { xml = String(doc.WordOpenXML || ""); } catch (e) { xml = ""; }
+        if (!xml || !xml.includes("http://schemas.microsoft.com/office/2006/xmlPackage")) {
+            throw new Error("当前 WPS 无法生成未保存稿的对比副本。请改为对比两个已提交版本。");
+        }
+        var files = fs();
+        files.WriteFile(path, xml);
+        if (!files.Exists(path)) throw new Error("无法写入当前稿的临时对比副本。");
+    };
+
+    WG.removeComparisonSnapshot = function (path) {
+        try { if (fs().Exists(path)) fs().Remove(path); } catch (e) { /* the service cleans old sessions */ }
+    };
+
     function addinFolder() {
         var href = decodeURI(location.href.split("?")[0].split("#")[0]).replace(/^file:\/\//, "");
         if (/^\/[A-Za-z]:\//.test(href)) href = href.substring(1); // file:///C:/... on Windows
@@ -199,7 +214,7 @@
 
     // A new document marking the differences from `original` to `revised` as tracked changes by
     // `author`. Existing revisions in the inputs are accepted first unless `keepRevisions`.
-    WG.compare = async function (originalPath, revisedPath, author, keepRevisions) {
+    WG.compare = async function (originalPath, revisedPath, author, keepRevisions, options) {
         var app = WG.app();
         var left = null, right = null;
         try {
@@ -211,7 +226,8 @@
             }
             await WG.settle(50);
             var before = openNames();
-            var returned = app.CompareDocuments(left, right, 2, 1, true, true, true, true, true, true, true, true, true, true,
+            var returned = app.CompareDocuments(left, right, 2, options ? options.granularity : 1,
+                true, true, true, true, true, true, true, true, !options || options.comments, true,
                 author || "WordGit", true);
             await WG.settle(80);
             return produced(returned, before);
@@ -221,9 +237,176 @@
         }
     };
 
-    // Applies every tracked change of `source` into `target` (same base text): WPS's
-    // MergeDocuments does not combine two sides' revisions, so the incoming side's changes are
-    // replayed as tracked changes by comparing the target with the incoming version.
+
+    // Both native comparisons end at the same returned document. Project ranges onto that
+    // shared text so a rejected edit from the older return cannot mask a new change elsewhere.
+    function reviewSpans(doc, revisedSide) {
+        var spans = [], omitted = revisedSide ? [2, 14] : [1, 15];
+        for (var i = 1; i <= doc.Revisions.Count; i++) {
+            var revision = doc.Revisions.Item(i), range = revision.Range;
+            spans.push({ index: i, type: revision.Type, story: range.StoryType, start: range.Start, end: range.End,
+                text: String(range.Text || ""), format: String(revision.FormatDescription || "") });
+        }
+        var removed = spans.filter(function (span) { return omitted.indexOf(span.type) !== -1; });
+        function position(offset, story) {
+            var end = 0, hidden = 0;
+            var ranges = removed.filter(function (span) { return span.story === story && span.start < offset; })
+                .sort(function (left, right) { return left.start - right.start; });
+            for (var range of ranges) {
+                var first = Math.max(end, range.start), last = Math.min(offset, range.end);
+                if (first >= last) continue;
+                hidden += last - first;
+                end = last;
+            }
+            return offset - hidden;
+        }
+        return spans.map(function (span) {
+            return Object.assign({}, span, { start: position(span.start, span.story), end: position(span.end, span.story) });
+        });
+    }
+
+    function intersectsReturn(left, right) {
+        if (left.story !== right.story) return false;
+        if (left.start === left.end) {
+            return left.start === right.start || right.start < left.start && left.start < right.end;
+        }
+        return right.start === right.end
+            ? left.start === right.start
+            : left.start < right.end && right.start < left.end;
+    }
+
+    function revisionKeys(doc) {
+        var counts = new Map();
+        for (var i = 1; i <= doc.Revisions.Count; i++) {
+            var revision = doc.Revisions.Item(i), range = revision.Range;
+            var key = JSON.stringify([revision.Type, range.StoryType, revision.Author, String(revision.Date),
+                String(range.Text || ""), String(revision.FormatDescription || "")]);
+            counts.set(key, (counts.get(key) || 0) + 1);
+        }
+        return counts;
+    }
+
+    function readComments(doc) {
+        var items = [];
+        for (var i = 1; i <= doc.Comments.Count; i++) {
+            var comment = doc.Comments.Item(i);
+            items.push({ text: String(comment.Range.Text || ""), anchor: String(comment.Scope.Text || "").replace(/[\u0005\u0007]/g, "").trim(),
+                author: String(comment.Author || ""), initials: String(comment.Initial || ""),
+                date: String(comment.Date || ""), done: !!comment.Done });
+        }
+        return items;
+    }
+
+    function preserveComments(doc, current, incoming) {
+        var existing = readComments(doc), used = new Set(), required = current.slice();
+        function matching(notes, note, used) {
+            var candidates = [];
+            notes.forEach(function (item, index) {
+                if ((!used || !used.has(index)) && item.author === note.author && item.text.trim() === note.text.trim()) {
+                    candidates.push(index);
+                }
+            });
+            var dated = candidates.filter(function (index) { return note.date && notes[index].date === note.date; });
+            if (dated.length === 1) return dated[0];
+            var anchored = candidates.filter(function (index) { return notes[index].anchor === note.anchor; });
+            if (anchored.length === 1) return anchored[0];
+            return candidates.length === 1 && (!note.anchor || !notes[candidates[0]].anchor) ? candidates[0] : -1;
+        }
+        incoming.forEach(function (note) {
+            if (matching(current, note) < 0) required.push(note);
+        });
+        var tracking = doc.TrackRevisions;
+        doc.TrackRevisions = false;
+        try {
+            required.forEach(function (note) {
+                var index = matching(existing, note, used);
+                if (index >= 0) {
+                    used.add(index);
+                    if (note.done && !existing[index].done) doc.Comments.Item(index + 1).Done = true;
+                    return;
+                }
+                var range = doc.Content.Duplicate, find = range.Find;
+                find.ClearFormatting();
+                if (!note.anchor || !find.Execute(note.anchor, true, false, false, false, false, true, 0, false)) {
+                    throw new Error("不能定位批注「" + note.text.trim() + "」的原文。原始返稿已保留。");
+                }
+                var match = range.Duplicate;
+                var rest = doc.Range(match.End, doc.Content.End);
+                if (rest.Find.Execute(note.anchor, true, false, false, false, false, true, 0, false)) {
+                    throw new Error("批注「" + note.text.trim() + "」的原文出现多次。原始返稿已保留。");
+                }
+                var added = doc.Comments.Add(match, note.text.trimEnd());
+                added.Author = note.author;
+                if (note.initials) added.Initial = note.initials;
+                if (note.done) added.Done = true;
+            });
+        } finally {
+            doc.TrackRevisions = tracking;
+        }
+        var finalNotes = readComments(doc), retained = new Set();
+        required.forEach(function (note) {
+            var index = matching(finalNotes, note, retained);
+            if (index < 0 || note.done && !finalNotes[index].done) {
+                throw new Error("WPS 未能保留原有批注的状态。原始返稿已保留。");
+            }
+            retained.add(index);
+        });
+    }
+
+    // Use only changes introduced by this return. The base of the output is always the
+    // current manuscript, including its local changes and the decisions from earlier rounds.
+    WG.buildReturnedReview = async function (plan) {
+        var old = null, raw = null, current = null, proposal = null, diff = null, output = null;
+        var snapshots = plan.previousReturns || [], base = plan.basis, known = [];
+        var options = { comments: false, granularity: 0 };
+        try {
+            raw = await WG.open(plan.incoming, true);
+            current = await WG.open(plan.target, true);
+            var notes = readComments(raw), currentNotes = readComments(current), incoming = revisionKeys(raw);
+            await WG.close(current); current = null;
+            await WG.close(raw); raw = null;
+            for (var entry of snapshots) {
+                old = await WG.open(entry.file, true);
+                var marks = revisionKeys(old);
+                await WG.close(old); old = null;
+                if (marks.size && Array.from(marks).every(function (pair) { return (incoming.get(pair[0]) || 0) >= pair[1]; })) {
+                    base = entry.file;
+                    break;
+                }
+            }
+            if (base === plan.basis) {
+                for (var previous of snapshots) {
+                    diff = await WG.compare(plan.basis, previous.file, plan.incomingAuthor, false, options);
+                    known = known.concat(reviewSpans(diff, false));
+                    await WG.close(diff); diff = null;
+                }
+            }
+            diff = await WG.compare(base, plan.incoming, plan.incomingAuthor, false, options);
+            var fromBase = reviewSpans(diff, false), fromReturn = reviewSpans(diff, true);
+            var allowed = fromReturn.filter(function (item, i) {
+                var change = fromBase[i];
+                return !known.some(function (before) {
+                    return change.story === before.story && change.type === before.type &&
+                        change.start === before.start && change.end === before.end &&
+                        change.text === before.text && change.format === before.format;
+                });
+            });
+            await WG.close(diff); diff = null;
+            proposal = await WG.compare(plan.target, plan.incoming, plan.incomingAuthor, false, options);
+            var proposed = reviewSpans(proposal, true);
+            for (var i = proposed.length - 1; i >= 0; i--) {
+                var item = proposed[i];
+                if (!allowed.some(function (change) { return intersectsReturn(item, change); })) proposal.Revisions.Item(item.index).Reject();
+            }
+            preserveComments(proposal, currentNotes, notes);
+            output = proposal; proposal = null;
+            return output;
+        } finally {
+            for (var doc of [proposal, diff, current, raw, old]) if (doc) await WG.close(doc);
+        }
+    };
+
+
     WG.saveAs = function (doc, path) {
         doc.SaveAs2(path, 16);
     };
@@ -238,11 +421,14 @@
         try { return range.Information(3); } catch (e) { return 0; }
     }
 
-    WG.reviewItems = function (doc) {
+    WG.reviewItems = function (doc, includeResolvedComments) {
         var items = [];
         var comments = doc.Comments;
         for (var c = 1; c <= comments.Count; c++) {
             var comment = comments.Item(c);
+            if (includeResolvedComments === false) {
+                try { if (comment.Done) continue; } catch (e) { /* older WPS hosts */ }
+            }
             var text = "";
             try { text = String(comment.Range.Text).trim(); } catch (e) { text = ""; }
             items.push({ comment: true, index: c, kind: "批注", author: String(comment.Author || ""),
@@ -272,19 +458,21 @@
         var revisions = doc.Revisions;
         if (item.index >= 1 && item.index <= revisions.Count) {
             var candidate = revisions.Item(item.index);
-            if (candidate.Type === item.type && candidate.Range.Start === item.start && candidate.Range.End === item.end)
+            if (candidate.Type === item.type && String(candidate.Author || "") === item.author &&
+                candidate.Range.Start === item.start && candidate.Range.End === item.end && String(candidate.Range.Text || "") === item.rangeText)
                 return candidate;
         }
         for (var i = 1; i <= revisions.Count; i++) {
             var revision = revisions.Item(i);
-            if (revision.Type === item.type && revision.Range.Start === item.start && String(revision.Range.Text || "") === item.rangeText)
+            if (revision.Type === item.type && String(revision.Author || "") === item.author &&
+                revision.Range.Start === item.start && String(revision.Range.Text || "") === item.rangeText)
                 return revision;
         }
         throw new Error("修订已更新，请刷新批注与修订列表。");
     }
 
     WG.goToItem = function (doc, item) {
-        doc.Activate();
+        if (String(WG.activeDocument().FullName) !== String(doc.FullName)) doc.Activate();
         var range = item.comment ? doc.Comments.Item(item.index).Scope : findRevision(doc, item).Range;
         range.Select();
         try { WG.app().ActiveWindow.ScrollIntoView(range, true); } catch (e) { /* not supported everywhere */ }

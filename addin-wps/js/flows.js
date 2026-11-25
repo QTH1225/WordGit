@@ -85,8 +85,9 @@
             if (review && (review.source_branch || review.apply_to_original)) return WG.finishMerge();
             var target = ctx.status.historyPath.replace(/^.*[\\/]/, "");
             var finishing = review && review.record_only_merge;
+            if (finishing && ctx.doc.Revisions.Count > 0) throw new Error("合并稿仍有待处理的修订，请先逐条接受或拒绝。");
             var answer = await WG.ask((finishing ? "完成合并到「" : "提交到「") + target + "」 · " + ctx.status.branch, {
-                label: "提交标题", detailLabel: "详细内容（可选）", value: finishing ? "合并审阅稿" : "", multiline: true, ok: "提交"
+                label: "提交标题", detailLabel: "详细内容（可选）", value: finishing ? "合并审阅稿" : "", multiline: true, ok: finishing ? "完成合并" : "提交"
             });
             if (!answer) return null;
             WG.saveDocument(ctx.doc);
@@ -125,6 +126,20 @@
         });
     };
 
+    async function compareVersion(ctx, revision, other) {
+        var useSnapshot = !other && !ctx.doc.Saved;
+        var files = await WG.call("version/compare", { document: ctx.path, revision: revision,
+            other: other || null, currentInMemory: useSnapshot });
+        try {
+            if (useSnapshot) WG.writeComparisonSnapshot(ctx.doc, files.revised);
+            var result = await WG.compare(files.original, files.revised, other ? "所选版本" : "当前稿", false);
+            result.Activate();
+            return null;
+        } finally {
+            if (useSnapshot) WG.removeComparisonSnapshot(files.revised);
+        }
+    }
+
     WG.compareVersions = function (revision, other) {
         return WG.run("对比版本", async function () {
             var ctx = await currentStatus(false);
@@ -135,11 +150,7 @@
                 revision = picked.revision;
                 other = picked.other;
             }
-            if (!other && !ctx.doc.Saved) WG.saveDocument(ctx.doc);
-            var files = await WG.call("version/compare", { document: ctx.path, revision: revision, other: other || null });
-            var result = await WG.compare(files.original, files.revised, other ? "所选版本" : "当前稿", false);
-            result.Activate();
-            return null;
+            return compareVersion(ctx, revision, other);
         });
     };
 
@@ -147,11 +158,7 @@
         return WG.run("对比最新提交", async function () {
             var ctx = await currentStatus(false);
             if (!ctx.status.head) return "尚无提交版本可对比。";
-            if (!ctx.doc.Saved) WG.saveDocument(ctx.doc);
-            var files = await WG.call("version/compare", { document: ctx.path, revision: ctx.status.head });
-            var result = await WG.compare(files.original, files.revised, "当前稿", false);
-            result.Activate();
-            return null;
+            return compareVersion(ctx, ctx.status.head, null);
         });
     };
 
@@ -260,6 +267,8 @@
         var draft;
         if (plan.original) {
             draft = await WG.compare(plan.original, plan.revised, "修订版本", false);
+        } else if (plan.submittedBase) {
+            draft = await WG.buildReturnedReview(plan);
         } else {
             // Exact when the current branch did not change since the common version. Otherwise the
             // draft also shows the current branch's own changes as revisions that would undo them;
@@ -275,7 +284,7 @@
             applyToOriginal: !!plan.review.applyToOriginal, recordOnlyMerge: !!plan.review.recordOnlyMerge
         } });
         var notice = plan.notice;
-        if (!plan.original && !plan.basisIsTarget) {
+        if (!plan.original && !plan.basisIsTarget && !plan.submittedBase) {
             await WG.compare(plan.basis, plan.target, targetLabel || "当前分支", false);
             notice += "\n\n双方都有修改：WPS 只能对比两份文稿，合并稿中也会出现「撤销当前分支修改」的修订。" +
                 "已另外打开一份「当前分支的修改」对照稿；合并稿中与对照稿相反的修订请选择「拒绝」。";
@@ -317,21 +326,37 @@
             });
             if (!options) return null;
             if (options.historical) return WG.mergeTwoVersions(ctx);
-            if (options.createMergeDraft && (!ctx.doc.Saved || ctx.status.workingState !== "clean"))
-                throw new Error("请先提交当前稿的修改，再生成合并稿。");
-            if (!options.branch) {
-                var plan = await WG.call("review/import", { document: ctx.path, file: options.file, basis: options.basis, reviewer: options.reviewer || "返稿" });
-                return buildMergeDraft(plan, ctx.status.branch);
+            var expectedHead = ctx.status.head;
+            if (options.createMergeDraft) {
+                var current = await WG.call("status", { document: ctx.path });
+                if (current.head !== expectedHead || current.branch !== ctx.status.branch) {
+                    throw new Error("当前分支或提交已变化，请刷新后重新选择。");
+                }
+                if (!ctx.doc.Saved || current.workingState !== "clean") {
+                    var answer = await WG.ask("提交当前稿并继续返稿合并", {
+                        label: "提交标题", detailLabel: "详细内容（可选）", multiline: true, ok: "提交并继续"
+                    });
+                    if (!answer) return null;
+                    if (!WG.samePath(WG.localPath(ctx.doc, false), ctx.path)) throw new Error("当前稿路径已变化，请重新选择返稿。");
+                    WG.saveDocument(ctx.doc);
+                    var message = answer.detail ? answer.value + "\n\n" + answer.detail : answer.value;
+                    var committed = await WG.call("commit", { document: ctx.path, message: message,
+                        author: WG.userName(), expectedHead: expectedHead, expectedBranch: ctx.status.branch });
+                    expectedHead = committed.commit || expectedHead;
+                }
             }
             var imported = await WG.call("review/import", { document: ctx.path, file: options.file, basis: options.basis,
-                branch: options.branch, reviewer: options.reviewer });
+                branch: options.branch, reviewer: options.reviewer, archiveOnly: true,
+                expectedHead: expectedHead, expectedBranch: ctx.status.branch });
             if (!options.createMergeDraft) return imported.message + " 可随时从「合并分支」继续审阅。";
             try {
-                var branchPlan = await WG.call("merge/branch", { document: ctx.path, source: imported.branch });
+                if (!ctx.doc.Saved) throw new Error("当前稿有新的未保存修改，请提交后重试。");
+                var branchPlan = await WG.call("merge/context", { document: ctx.path, source: imported.source, basis: options.basis });
+                if (branchPlan.upToDate) return imported.message + " 这份返稿已经合入当前分支。";
                 var notice = await buildMergeDraft(branchPlan, ctx.status.branch);
                 return imported.message + "\n" + notice;
             } catch (error) {
-                return imported.message + "\n生成合并稿未完成：" + WG.errorText(error) + "\n返稿分支已保留，可从「合并分支」继续。";
+                return imported.message + "\n生成合并稿未完成：" + WG.errorText(error) + "\n再次选择同一返稿和送审版本会复用这条记录。";
             }
         });
     };
@@ -351,7 +376,8 @@
         var status = await WG.call("status", { document: path });
         var review = status.review;
         if (!review) throw new Error("这不是待完成的合并稿。");
-        var summary = review.source_branch ? "合并分支 " + review.source_branch.replace("refs/remotes/", "") : "合并返稿";
+        var source = review.source_branch;
+        var summary = source && !source.startsWith("refs/wordgit/reviews/") ? "合并分支 " + source.replace("refs/remotes/", "") : "合并返稿";
         var answer = await WG.ask("确认合并到「" + review.branch + "」", { label: "提交标题", value: summary, ok: "完成合并" });
         if (!answer) return null;
         WG.saveDocument(doc);
@@ -430,19 +456,10 @@
             pane = app.CreateTaskPane(WG.baseUrl() + "ui/pane.html", "WordGit · 批注、修订与提交");
             app.PluginStorage.setItem("wordgit.pane", pane.ID);
             try { pane.DockPosition = 2; } catch (e) { /* right */ }
+            try { pane.Width = 420; } catch (e) { /* keep the host default */ }
         }
-        pane.Visible = true;
-        WG.touch();
+        if (!pane.Visible) pane.Visible = true;
         return pane;
-    };
-
-    WG.togglePane = function () {
-        var app = WG.app();
-        var id = app.PluginStorage.getItem("wordgit.pane");
-        var pane = null;
-        try { pane = id ? app.GetTaskPane(id) : null; } catch (e) { pane = null; }
-        if (pane && pane.Visible) { pane.Visible = false; return; }
-        WG.showPane();
     };
 
     WG.about = function () {

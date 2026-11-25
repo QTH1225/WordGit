@@ -341,7 +341,7 @@ namespace WordGit
         private void CompareVersions(object document, string path, string basis, string other)
         {
             Dictionary<string, object> request;
-            if (other == null) request = ServiceClient.Args("document", path, "revision", basis, "author", Author);
+            if (other == null) request = ServiceClient.Args("document", path, "revision", basis, "currentInMemory", true, "author", Author);
             else request = ServiceClient.Args("document", path, "revision", basis, "other", other, "author", Author);
             var plan = ComparePlan.From(Kernel.Call("version/compare", request));
 
@@ -666,6 +666,8 @@ namespace WordGit
 
         private async Task<string> GenerateBranchMerge(object document, string path, string source, string submitted)
         {
+            if (!(bool)((dynamic)document).Saved)
+                throw new InvalidOperationException("请先提交当前分支的修改，再生成合并稿。");
             CheckMergeTarget(path);
             word.EnsureTrackedMergeSupported();
             var client = Kernel;
@@ -753,10 +755,12 @@ namespace WordGit
             if (options.CreateMergeDraft)
             {
                 WordDocuments.EnsureReplaceable(path);
-                if (Kernel.Status(path).WorkingState == "changed")
+                if (!(bool)((dynamic)document).Saved || Kernel.Status(path).WorkingState == "changed")
                 {
                     message = Dialogs.Ask(word.Owner, "提交当前稿并继续返稿合并", "");
                     if (message == null) return;
+                    if (!String.Equals(WordDocuments.LocalPath(document), path, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("当前稿路径已变化，请重新选择返稿。");
                     WordDocuments.SaveDocument(document);
                     author = Author;
                 }
@@ -765,25 +769,22 @@ namespace WordGit
             var client = Kernel;
             RunInBackground(path, options.CreateMergeDraft ? "生成返稿合并稿" : "保存返稿", async token =>
             {
+                var expected = tip;
                 if (message != null)
-                    await Task.Run(() => client.Call("commit", ServiceClient.Args(
-                        "document", path, "message", message, "author", author, "expectedHead", tip)));
-                Dictionary<string, object> request;
-                if (options.Branch == null) request = ServiceClient.Args("document", path, "file", options.FilePath,
-                    "basis", basis.Id, "reviewer", options.Reviewer ?? "返稿");
-                else request = ServiceClient.Args("document", path, "file", options.FilePath, "basis", basis.Id,
-                    "branch", options.Branch, "reviewer", options.Reviewer ?? "返稿");
+                {
+                    var committed = await Task.Run(() => client.Call("commit", ServiceClient.Args(
+                        "document", path, "message", message, "author", author, "expectedHead", tip, "expectedBranch", branch)));
+                    expected = Json.String(committed, "commit") ?? tip;
+                }
+                var request = ServiceClient.Args("document", path, "file", options.FilePath, "basis", basis.Id,
+                    "branch", options.Branch, "reviewer", options.Reviewer, "archiveOnly", true,
+                    "expectedHead", expected, "expectedBranch", branch);
                 var imported = await Task.Run(() => client.Call("review/import", request));
-                var saved = Json.String(imported, "message") ?? "已保存返稿。";
+                var saved = Json.String(imported, "message") ?? "已归档原始返稿。";
                 if (!options.CreateMergeDraft) return saved + " 可在提交图中预览或对比返稿。";
                 try
                 {
-                    if (options.Branch != null)
-                        return saved + " " + await GenerateBranchMerge(document, path, options.Branch, null);
-                    var plan = MergePlan.From(imported);
-                    if (plan.Draft == null) throw new InvalidOperationException("没能准备返稿合并稿，请稍后重试。");
-                    await OpenBackgroundReview(plan.Draft, worker => worker.BuildBranchMergeFile(plan, plan.Draft), plan.Review);
-                    return saved + " " + (plan.Notice ?? "");
+                    return saved + " " + await GenerateBranchMerge(document, path, Json.String(imported, "source"), basis.Id);
                 }
                 catch (Exception error)
                 {

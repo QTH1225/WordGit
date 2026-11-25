@@ -52,6 +52,9 @@ impl RemoteState {
 
 /// `refs/remotes/origin/x` → `origin/x`.
 pub fn reference_label(reference: &str) -> String {
+    if reference.starts_with(crate::history::REVIEW_ARCHIVE_PREFIX) {
+        return "返稿".into();
+    }
     match reference.strip_prefix(REMOTE_PREFIX) {
         Some(rest) => format!("origin/{rest}"),
         None => reference.to_string(),

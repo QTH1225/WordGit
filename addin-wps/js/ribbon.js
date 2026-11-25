@@ -5,7 +5,7 @@
 
     var ACTIONS = {
         WordGitCommit: function () { return WG.commit(); },
-        WordGitHistory: function () { WG.togglePane(); },
+        WordGitHistory: function () { WG.showPane(); },
         WordGitPreview: function () { return WG.preview(); },
         WordGitCreateBranch: function () { return WG.createBranch(); },
         WordGitSwitchBranch: function () { return WG.switchBranch(); },

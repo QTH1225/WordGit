@@ -27,6 +27,7 @@ namespace WordGit
                 Console.WriteLine("Testing Word " + application.Version);
                 client = TestKernel.Start();
                 VerifyDocumentFlows(application, new WordDocuments(application), client, folder);
+                VerifyReturnedDrafts(application, new WordDocuments(application), client, folder);
                 Console.WriteLine("PASS: 提交、预览、恢复与分支合并都通过 Rust 内核完成。");
             }
             catch (Exception error)
@@ -169,6 +170,94 @@ namespace WordGit
                 "document", pair.Draft, "message", "合并两个历史版本", "author", "小测试")), "commit");
             Require(mergedCommit != null, "合并稿应能提交");
             Console.WriteLine("PASS: 合并两个历史版本并提交合并稿。");
+        }
+
+        private static void VerifyReturnedDrafts(dynamic application, WordDocuments word, ServiceClient client, string folder)
+        {
+            var path = Path.Combine(folder, "主稿返稿验收.docx");
+            dynamic main = application.Documents.Add();
+            main.Content.Text = "论文初稿\r材料配比与研究背景。\r统计结果与结论。";
+            main.Sections[1].Headers[1].Range.Text = "保留的页眉";
+            main.SaveAs2(FileName: path, FileFormat: 16, AddToRecentFiles: false);
+            var basis = Commit(client, path, "送审版");
+            var sent = TestFiles.ReadDocx(path);
+            main.TrackRevisions = true;
+            main.Range(0, 0).InsertBefore("未保存对比标记\r");
+            int originalRevisions = main.Revisions.Count;
+            var comparison = ComparePlan.From(client.Call("version/compare", ServiceClient.Args(
+                "document", path, "revision", basis, "currentInMemory", true)));
+            var snapshot = WordDocuments.CaptureComparisonSource((object)main, AppPaths.NewSession());
+            dynamic compared = word.CompareSnapshot(comparison.Original, snapshot);
+            Require(((string)compared.Content.Text).Contains("未保存对比标记") && (int)compared.Revisions.Count > 0,
+                "Word 对比漏掉未保存的文字。");
+            Require(!(bool)main.Saved && (int)main.Revisions.Count == originalRevisions && TestFiles.ReadDocx(path).SequenceEqual(sent),
+                "Word 对比修改了原稿或其状态。");
+            compared.Close(0);
+            main.Close(0);
+            main = word.Open(path, false);
+            Console.WriteLine("PASS: Word 原生对比包含未保存修订，且未保存或修改原稿。");
+
+            var previous = Path.Combine(folder, "原始送审稿.docx");
+            File.WriteAllBytes(previous, sent);
+            for (var round = 1; round <= 2; round++)
+            {
+                var file = Path.Combine(folder, "导师返稿-" + round + ".docx");
+                File.Copy(previous, file);
+                dynamic returned = word.Open(file, false);
+                returned.TrackRevisions = true;
+                int end = (int)returned.Content.End - 1;
+                var incoming = "导师补充第" + round + "轮";
+                returned.Range(end, end).InsertAfter("\r" + incoming);
+                returned.Comments.Add(returned.Range(0, 4), "审阅意见 " + round);
+                returned.Save();
+                returned.Close(0);
+                previous = file;
+                main.Activate();
+                var author = "主稿补充第" + round + "轮";
+                main.Range(0, 0).InsertBefore(author + "\r");
+                Require(!(bool)main.Saved && client.Status(path).WorkingState == "clean", "要覆盖仅在编辑器内存中的未提交修改。");
+                WordDocuments.SaveDocument((object)main);
+                var submitted = Commit(client, path, "合并前提交本地修改");
+                var request = ServiceClient.Args("document", path, "file", file, "basis", basis,
+                    "branch", round == 1 ? null : "review-2", "reviewer", "导师", "archiveOnly", true,
+                    "expectedBranch", client.Status(path).Branch, "expectedHead", submitted);
+                var imported = client.Call("review/import", request);
+                var source = Json.String(imported, "source");
+                var archived = Json.String(imported, "commit");
+                Require(!Json.Bool(imported, "reused"), "新一轮返稿应产生独立归档。");
+                Require(client.Status(path).History.Any(r => r.Id == archived), "原始返稿没有进入提交图。");
+                var preview = client.Call("version/preview", ServiceClient.Args("document", path, "revision", archived));
+                Require(TestFiles.ReadDocx(Json.String(preview, "file")).SequenceEqual(TestFiles.ReadDocx(file)),
+                    "原始返稿的批注、修订或排版没有按字节保留。");
+                var plan = MergePlan.From(client.Call("merge/context", ServiceClient.Args("document", path, "source", source, "basis", basis)));
+                Require(plan.SubmittedBase == basis && plan.Review.SourceTip == archived &&
+                    plan.PreviousReturns.Count == round - 1, "合并没有保留所选送审版本或前一轮返稿。");
+                word.BuildBranchMergeFile(plan, plan.Draft);
+                client.Call("merge/register", ServiceClient.Args("draft", plan.Draft, "review", ReviewPayload(plan.Review)));
+                dynamic draft = word.Open(plan.Draft, false);
+                Require((int)draft.Revisions.Count > 0 && (int)draft.Comments.Count > 0, "应生成带原生修订和批注的合并稿。");
+                draft.AcceptAllRevisions();
+                Require(((string)draft.Content.Text).Contains(incoming) && ((string)draft.Content.Text).Contains(author) &&
+                    ((string)draft.Sections[1].Headers[1].Range.Text).Contains("保留的页眉"), "合并丢失内容或页眉。");
+                draft.Save();
+                var resolved = TestFiles.ReadDocx(plan.Draft);
+                var replace = client.Call("merge/finish", ServiceClient.Args("draft", plan.Draft, "message", "确认导师返稿", "author", "验收"));
+                draft.Close(0);
+                main.Close(0);
+                client.ApplyPlan(Json.String(replace, "plan"));
+                main = word.Open(path, false);
+                var status = client.Status(path);
+                Require(status.History[0].Parents.SequenceEqual(new[] { submitted, archived }) && TestFiles.ReadDocx(path).SequenceEqual(resolved),
+                    "合并结果必须以原始返稿为第二父提交，并原样写回。");
+                if (round == 2) request["branch"] = "review-duplicate";
+                request["expectedHead"] = status.Head;
+                var repeated = client.Call("review/import", request);
+                var noChanges = client.Call("merge/context", ServiceClient.Args("document", path, "source", Json.String(repeated, "source")));
+                Require(Json.Bool(repeated, "reused") && Json.String(repeated, "commit") == archived && Json.Bool(noChanges, "upToDate") &&
+                    !client.Status(path).Branches.Contains("review-duplicate"), "重复提交同一返稿应直接复用。");
+                Console.WriteLine("PASS: Word 返稿第 " + round + " 轮，原始返稿、双父合并和重复导入均可追溯。");
+            }
+            main.Close(0);
         }
 
         private static string Commit(ServiceClient client, string path, string message)

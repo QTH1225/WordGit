@@ -560,7 +560,7 @@ namespace WordGit
         public object ReviewBranchFiles(MergePlan plan)
         {
             EnsureTrackedMergeSupported();
-            if (plan.SubmittedBase != null && plan.SubmittedBase == plan.Basis)
+            if (plan.SubmittedBase != null)
                 return ReviewRepeatedReturn(plan);
             if (plan.BasisIsTarget)
                 return ReviewFiles(plan.Target, plan.Incoming, true);
@@ -601,11 +601,11 @@ namespace WordGit
                 try
                 {
                     comments = Comments(current, true);
-                    hasPendingChanges = basis != target && ReviewItems(current).Any(item => !item.IsComment);
+                    hasPendingChanges = !plan.BasisIsTarget && ReviewItems(current).Any(item => !item.IsComment);
                 }
                 finally { CloseReviewInput(current); }
 
-                if (basis == target)
+                if (plan.BasisIsTarget)
                 {
                     CopyShared(incoming, incomingRevisions);
                     result = ReviewStaged(folder, currentFile, incomingRevisions, true, null);

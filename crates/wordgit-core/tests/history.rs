@@ -277,13 +277,25 @@ fn imports_returned_drafts_and_merges_branches() {
     let returned = sandbox.root.join("老师返稿.docx");
     let returned_bytes = fixture("老师改过的送审版", &image);
     std::fs::write(&returned, &returned_bytes).unwrap();
-    assert!(repo.import_review_file(&returned, &sent, "review-1", "老师", "main", Some(&sent)).is_err(), "stale target");
-    let imported = repo.import_review_file(&returned, &sent, "review-1", "老师<a>", "main", Some(&later)).unwrap();
+    assert!(repo.import_review_file(&returned, &sent, Some("review-1"), "老师", "main", &sent).is_err(), "stale target");
+    let original = repo.import_review_file(&returned, &sent, None, "老师<a>", "main", &later).unwrap();
+    assert!(!original.reused && original.branch.is_none());
+    assert!(repo.history(None).unwrap().iter().any(|revision| revision.id == original.commit));
+    let named = repo.import_review_file(&returned, &sent, Some("review-1"), "老师", "main", &later).unwrap();
+    assert!(named.reused && named.branch.as_deref() == Some("review-1"));
+    assert_eq!(named.commit, original.commit);
+    let repeated = repo.import_review_file(&returned, &sent, Some("review-2"), "老师", "main", &later).unwrap();
+    assert!(repeated.reused);
+    assert_eq!(repeated.branch.as_deref(), Some("review-1"));
+    assert_eq!(repo.branches(None).unwrap(), vec!["main", "review-1"]);
+    let imported = original.commit;
     assert_eq!(repo.imported_review_base(&imported).unwrap().as_deref(), Some(sent.as_str()));
     assert_eq!(repo.imported_review_base(&later).unwrap(), None);
     assert_eq!(extract(&repo, &imported), returned_bytes);
     assert_eq!(repo.history(Some("review-1")).unwrap()[0].author, "老师a");
-    assert!(repo.import_review_file(&returned, &sent, "Review-1", "老师", "main", Some(&later)).is_err(), "case conflict");
+    assert!(repo.import_review_file(&returned, &later, Some("Review-1"), "老师", "main", &later).is_err(), "case conflict");
+    let another_basis = repo.import_review_file(&returned, &later, None, "老师", "main", &later).unwrap();
+    assert!(!another_basis.reused && another_basis.commit != imported);
     assert_eq!(repo.merge_base(&later, &imported).unwrap(), sent);
     assert!(!repo.is_ancestor(&imported, &later).unwrap());
 
@@ -293,7 +305,7 @@ fn imports_returned_drafts_and_merges_branches() {
     std::fs::write(&merged_path, &merged_bytes).unwrap();
     let prepared = repo.prepare_snapshot_file(&merged_path).unwrap();
     let commit = repo
-        .commit_prepared(&prepared, "合并分支 review-1", "张三", Some(&later), Some("main"), Some("review-1"), Some(&imported))
+        .commit_prepared(&prepared, "合并老师返稿", "张三", Some(&later), Some("main"), Some(&original.source), Some(&imported))
         .unwrap()
         .unwrap();
     let log = repo.history(Some("main")).unwrap();
@@ -301,6 +313,10 @@ fn imports_returned_drafts_and_merges_branches() {
     assert_eq!(log[0].parents, vec![later.clone(), imported.clone()]);
     // Now review-1 is merged and can be deleted.
     repo.delete_merged_branch("main", &commit, "review-1", &imported).unwrap();
+    let after_merge = repo.import_review_file(&returned, &sent, None, "老师", "main", &commit).unwrap();
+    assert!(after_merge.reused);
+    assert_eq!(after_merge.commit, imported);
+    assert_eq!(extract(&repo, &imported), returned_bytes);
 }
 
 #[test]

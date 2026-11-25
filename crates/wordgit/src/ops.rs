@@ -128,6 +128,8 @@ pub struct CommitRequest {
     /// The head the user saw; the commit is refused if history moved meanwhile.
     #[serde(default)]
     pub expected_head: Option<String>,
+    #[serde(default)]
+    pub expected_branch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +139,8 @@ pub struct RevisionRequest {
     pub revision: String,
     #[serde(default)]
     pub other: Option<String>,
+    #[serde(default)]
+    pub current_in_memory: bool,
     #[serde(default)]
     pub author: String,
 }
@@ -165,6 +169,12 @@ pub struct ImportRequest {
     pub branch: Option<String>,
     #[serde(default)]
     pub reviewer: Option<String>,
+    #[serde(default)]
+    pub archive_only: bool,
+    #[serde(default)]
+    pub expected_head: Option<String>,
+    #[serde(default)]
+    pub expected_branch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -389,6 +399,9 @@ impl Context {
         let repo = &opened.repo;
         let branch = repo.active_branch()?;
         let head = repo.head()?;
+        if request.expected_branch.as_ref().is_some_and(|expected| expected != &branch) {
+            return Err(Error::invalid("分支已变化，请刷新后再操作。"));
+        }
         if let Some(expected) = &request.expected_head {
             if head.as_deref() != Some(expected.as_str()) {
                 return Err(Error::invalid("分支或版本历史已变化。请刷新后再操作。"));
@@ -486,6 +499,7 @@ impl Context {
                 history::extract_to_file(&opened.repo, other, &file)?;
                 file
             }
+            None if request.current_in_memory => folder.join("当前稿.xml"),
             None => {
                 let file = folder.join("当前稿.docx");
                 fsutil::copy_shared(&opened.path, &file)?;
@@ -708,9 +722,14 @@ impl Context {
         if repo.is_ancestor(&source_tip, &tip)? {
             return Ok(json!({ "upToDate": true, "message": "来源分支的提交已包含在当前分支。" }));
         }
-        let basis = repo.merge_base(&tip, &source_tip)?;
+        let imported = repo.imported_review_base(&source_tip)?;
+        let basis = match &imported {
+            Some(basis) => basis.clone(),
+            None => repo.merge_base(&tip, &source_tip)?,
+        };
         let label = remote::reference_label(&request.source);
-        let preserve = repo.imported_review_base(&source_tip)?.is_some() || request.source.starts_with(REMOTE_PREFIX);
+        let incoming_author = if imported.is_some() { repo.revision_author(&source_tip)? } else { label.clone() };
+        let preserve = imported.is_some() || request.source.starts_with(REMOTE_PREFIX);
         let folder = self.paths.new_session()?;
         let files = self.three_way_files(repo, &folder, &basis, &tip, &source_tip)?;
         let draft = folder.join(format!("{}-分支合并稿.docx", file_stem(&opened.path)));
@@ -718,7 +737,7 @@ impl Context {
             "draft": draft,
             "basis": files.0, "target": files.1, "incoming": files.2,
             "basisIsTarget": files.3,
-            "incomingAuthor": label,
+            "incomingAuthor": incoming_author,
             "preserveIncoming": preserve,
             "review": {
                 "original": opened.path, "head": tip, "branch": branch,
@@ -791,8 +810,8 @@ impl Context {
         Ok((basis_file, target_file, incoming_file, same))
     }
 
-    /// Imports a returned draft as its own branch (optionally followed by a branch merge), or
-    /// prepares merging it straight into the current branch.
+    /// Preserves the original return as a commit, optionally exposes it as a local branch, and
+    /// prepares a merge for clients that request the combined operation.
     pub fn import_review(&self, request: &ImportRequest) -> Result<Value> {
         let opened = self.open_original(&request.document, "处理返稿")?;
         let repo = &opened.repo;
@@ -805,42 +824,42 @@ impl Context {
             return Err(Error::invalid("请选择收到的返稿文件。"));
         }
         docx::validate_file(&file)?;
-        let branch = repo.active_branch()?;
-        let tip = repo.head()?.ok_or_else(|| Error::invalid("还没有版本，请先提交。"))?;
-        match &request.branch {
-            Some(name) => {
-                let reviewer = request.reviewer.clone().unwrap_or_else(|| "返稿".into());
-                let _lock = repo.lock()?;
-                let commit = repo.import_review_file(&file, &request.basis, name.trim(), &reviewer, &branch, Some(&tip))?;
-                Ok(json!({
-                    "commit": commit,
-                    "branch": name.trim(),
-                    "message": format!("返稿已保存到「{}」，提交 {}。", name.trim(), short(&commit)),
-                }))
+        let prepare_merge = request.branch.is_none() && !request.archive_only;
+        let imported = {
+            let _lock = repo.lock()?;
+            let branch = repo.active_branch()?;
+            let tip = repo.head()?.ok_or_else(|| Error::invalid("还没有版本，请先提交。"))?;
+            if request.expected_head.as_ref().is_some_and(|expected| expected != &tip)
+                || request.expected_branch.as_ref().is_some_and(|expected| expected != &branch)
+            {
+                return Err(Error::invalid("当前分支或提交已变化，请刷新后重新导入。"));
             }
-            None => {
+            if prepare_merge {
                 check_merge_target(repo, &opened.path, &tip)?;
-                let basis = repo.merge_base(&tip, &request.basis)?;
-                let folder = self.paths.new_session()?;
-                let basis_file = folder.join("送审版本.docx");
-                let target_file = folder.join("当前分支.docx");
-                let incoming_file = folder.join("返稿.docx");
-                history::extract_to_file(repo, &basis, &basis_file)?;
-                history::extract_to_file(repo, &tip, &target_file)?;
-                fsutil::copy_shared(&file, &incoming_file)?;
-                let same = repo.snapshot_checksum(&basis)? == repo.snapshot_checksum(&tip)?;
-                let draft = folder.join(format!("{}-返稿合并稿.docx", file_stem(&opened.path)));
-                Ok(json!({
-                    "draft": draft,
-                    "basis": basis_file, "target": target_file, "incoming": incoming_file,
-                    "basisIsTarget": same,
-                    "incomingAuthor": request.reviewer.clone().unwrap_or_else(|| "返稿".into()),
-                    "preserveIncoming": true,
-                    "review": { "original": opened.path, "head": tip, "branch": branch, "applyToOriginal": true },
-                    "notice": "已打开返稿合并稿。接受或拒绝修订后，点击「完成合并」将结果合入当前稿。",
-                }))
             }
-        }
+            repo.import_review_file(&file, &request.basis, request.branch.as_deref().map(str::trim),
+                request.reviewer.as_deref().unwrap_or("返稿"), &branch, &tip)?
+        };
+        let mut result = if prepare_merge {
+            self.merge_branch_plan(&MergeBranchRequest { document: request.document.clone(), source: imported.source.clone() })?
+        } else {
+            json!({})
+        };
+        let message = if result["upToDate"] == true {
+            "这份返稿已经合入当前分支。".to_string()
+        } else {
+            let label = if imported.reused { "已复用原始返稿" } else { "已归档原始返稿" };
+            match &imported.branch {
+                Some(name) => format!("{label} {}，分支「{name}」。", short(&imported.commit)),
+                None => format!("{label} {}。", short(&imported.commit)),
+            }
+        };
+        result["message"] = json!(message);
+        result["commit"] = json!(imported.commit);
+        result["source"] = json!(imported.source);
+        result["branch"] = json!(imported.branch);
+        result["reused"] = json!(imported.reused);
+        Ok(result)
     }
 
     /// Files for merging two historical versions into a draft that is then committed normally.

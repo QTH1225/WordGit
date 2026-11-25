@@ -834,7 +834,7 @@ namespace WordGit
                         throw new InvalidOperationException("Historical merge link is clipped by the scrolling form");
                     var merge = (Button)dialog.AcceptButton;
                     var saveOnly = Descendants(dialog).OfType<Button>().Single(button => button.Text == "仅保存为分支");
-                    if (dialog.BranchName.Visible != keep || dialog.Reviewer.Visible != keep || saveOnly.Visible != keep || !merge.Enabled)
+                    if (dialog.BranchName.Visible != keep || !dialog.Reviewer.Visible || saveOnly.Visible != keep || !merge.Enabled)
                         throw new InvalidOperationException("Optional review branch settings did not follow the checkbox");
                     foreach (var button in Descendants(dialog).OfType<Button>().Where(button => button.Visible))
                         if (!dialog.ClientRectangle.Contains(dialog.RectangleToClient(button.Parent.RectangleToScreen(button.Bounds))))
@@ -843,7 +843,7 @@ namespace WordGit
                     (createMerge ? merge : saveOnly).PerformClick();
                     if (dialog.DialogResult != DialogResult.OK || dialog.Options.FilePath != file || dialog.Options.Basis.Id != items[3].Id ||
                         dialog.Options.Branch != (keep ? "review-老师一审" : null) ||
-                        dialog.Options.Reviewer != (keep ? "导师甲" : null) || dialog.Options.CreateMergeDraft != createMerge)
+                        dialog.Options.Reviewer != "导师甲" || dialog.Options.CreateMergeDraft != createMerge)
                         throw new InvalidOperationException("Review merge lost selected options");
                 }
             }

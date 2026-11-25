@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime};
 
 const FILE_NAME: &str = "document.docx";
 pub const HEADS: &str = "refs/heads/";
+pub const REVIEW_ARCHIVE_PREFIX: &str = "refs/wordgit/reviews/";
 const MANIFEST_LIMIT: u64 = 64 * 1024 * 1024;
 const META_LIMIT: u64 = 16 * 1024 * 1024;
 /// Unreachable objects (failed imports, expired remote backups) are dropped after this age.
@@ -48,6 +49,14 @@ pub struct RepackResult {
 pub struct PreparedSnapshot {
     pub tree: String,
     pub checksum: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportedReview {
+    pub commit: String,
+    pub source: String,
+    pub branch: Option<String>,
+    pub reused: bool,
 }
 
 /// A planned chunked snapshot plus the file stamp proving the file did not change between the
@@ -233,8 +242,8 @@ impl Repo {
         Ok(lines(&self.text(&args)?))
     }
 
-    /// HEAD's target plus every local branch tip: changes exactly when a commit, switch or
-    /// fast-forward is published. Fetching only moves remote-tracking and backup refs.
+    /// HEAD's target, local branches and archived returns. Fetching only moves remote-tracking
+    /// and backup refs.
     pub fn reference_state(&self) -> Result<String> {
         if !self.exists() {
             return Ok(String::new());
@@ -242,7 +251,7 @@ impl Repo {
         Ok(format!(
             "{}\n{}",
             self.text(&["symbolic-ref", "HEAD"])?,
-            self.text(&["for-each-ref", "--format=%(objectname) %(refname)", HEADS])?
+            self.text(&["for-each-ref", "--format=%(objectname) %(refname)", HEADS, REVIEW_ARCHIVE_PREFIX])?
         ))
     }
 
@@ -268,60 +277,88 @@ impl Repo {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Archives the return once per exact snapshot and submitted version. The caller holds the
+    /// repository lock. Older imports are found through their commit trailers without rewriting
+    /// their history.
     pub fn import_review_file(
         &self,
         path: &Path,
         basis: &str,
-        new_branch: &str,
+        new_branch: Option<&str>,
         reviewer: &str,
         target_branch: &str,
-        expected_target: Option<&str>,
-    ) -> Result<String> {
-        if reviewer.trim().is_empty() || reviewer.contains('\0') {
+        expected_target: &str,
+    ) -> Result<ImportedReview> {
+        let identity = sanitize_identity(reviewer);
+        if identity.is_empty() || reviewer.contains('\0') {
             return Err(Error::invalid("请填写返稿来源。"));
         }
-        self.ensure_repository()?;
-        let reference = branch_ref(new_branch)?;
-        self.run(None, None, &["check-ref-format", &reference])?;
-        if let Some(conflict) = review_branch_conflict(new_branch, &self.branches(None)?) {
-            return Err(Error::invalid(conflict));
-        }
         let basis = object_id(basis)?;
-        let Some(expected) = expected_target else {
-            return Err(Error::invalid("当前分支或提交已变化，请刷新后重新导入。"));
+        let expected = object_id(expected_target)?;
+        let unchanged = || -> Result<bool> {
+            Ok(self.active_branch()? == target_branch && self.head()?.as_deref() == Some(expected.as_str()))
         };
-        let unchanged = |repo: &Repo| -> Result<bool> {
-            Ok(repo.active_branch()? == target_branch && repo.branch_tip(target_branch)?.as_deref() == Some(expected))
-        };
-        if !unchanged(self)? {
+        if !unchanged()? {
             return Err(Error::invalid("当前分支或提交已变化，请刷新后重新导入。"));
         }
-        self.extract_to(&basis, &mut std::io::sink())?;
-        let prepared = self.prepare_snapshot_file(path)?;
-        if !unchanged(self)? {
-            return Err(Error::invalid("导入期间当前分支已变化，返稿分支尚未创建，请重新导入。"));
+        let file = self.plan_file(path)?;
+        let checksum = &file.plan.checksum;
+        let marker = format!("--grep=WordGit-Review-SHA256: {checksum}");
+        let matches = self.text(&["log", "--all", "--format=%H", "--fixed-strings", &marker, "--"])?;
+        let mut reusable = None;
+        for candidate in matches.lines() {
+            if self.imported_review_base(candidate)?.as_deref() != Some(&basis) || self.snapshot_checksum(candidate)? != *checksum {
+                continue;
+            }
+            if self.is_ancestor(candidate, &expected)? {
+                reusable = Some(candidate);
+                break;
+            }
+            reusable.get_or_insert(candidate);
         }
-        let identity = sanitize_identity(reviewer);
-        if identity.is_empty() {
-            return Err(Error::invalid("请填写有效的返稿来源。"));
+        let reused = reusable.is_some();
+        let commit = if let Some(candidate) = reusable {
+            candidate.to_string()
+        } else {
+            self.extract_to(&basis, &mut std::io::sink())?;
+            let prepared = self.import_plan(path, &file)?;
+            let file_name = path.file_name().map(|n| n.to_string_lossy().replace(['\r', '\n'], " ")).unwrap_or_default();
+            let message = format!("导入审阅稿：{file_name}\n\nWordGit-Review-Base: {basis}\nWordGit-Review-SHA256: {checksum}\n");
+            object_id(&self.text_with(
+                message.as_bytes(), Some(&identity), &["commit-tree", &prepared.tree, "-p", &basis, "-F", "-"],
+            )?)?
+        };
+        let source = format!("{REVIEW_ARCHIVE_PREFIX}{commit}");
+        let mut updates = Vec::new();
+        if self.branch_tip(&source)?.is_none() {
+            updates.push(format!("create {source} {commit}"));
         }
-        let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let message = format!(
-            "导入审阅稿：{file_name}\n\nWordGit-Review-Base: {basis}\nWordGit-Review-SHA256: {}\n",
-            prepared.checksum
-        );
-        let commit = object_id(&self.text_with(
-            message.as_bytes(),
-            Some(&identity),
-            &["commit-tree", &prepared.tree, "-p", &basis, "-F", "-"],
-        )?)?;
-        self.ref_transaction(
-            Some(&identity),
-            &[format!("create {reference} {commit}"), format!("verify {} {}", branch_ref(target_branch)?, object_id(expected)?)],
-        )?;
-        self.notify_commit();
-        Ok(commit)
+        let branch = if let Some(name) = new_branch {
+            let points_at = format!("--points-at={commit}");
+            let aliases = self.text(&["for-each-ref", &points_at, "--format=%(refname:strip=2)", HEADS])?;
+            if let Some(existing) = aliases.lines().find(|alias| *alias != target_branch) {
+                Some(existing.to_string())
+            } else {
+                let reference = branch_ref(name)?;
+                self.run(None, None, &["check-ref-format", &reference])?;
+                if let Some(conflict) = review_branch_conflict(name, &self.branches(None)?) {
+                    return Err(Error::invalid(conflict));
+                }
+                updates.push(format!("create {reference} {commit}"));
+                Some(name.to_string())
+            }
+        } else {
+            None
+        };
+        if !unchanged()? || fsutil::stamp(path)? != file.stamp {
+            return Err(Error::invalid("导入期间当前分支或返稿文件发生变化，请重试。"));
+        }
+        if !updates.is_empty() {
+            updates.push(format!("verify {} {expected}", branch_ref(target_branch)?));
+            self.ref_transaction(Some(&identity), &updates)?;
+            self.notify_commit();
+        }
+        Ok(ImportedReview { commit, source, branch, reused })
     }
 
     /// The basis recorded by `import_review_file`, when `revision` is such an import.
@@ -334,6 +371,10 @@ impl Repo {
         }
         let parent = markers[0].trim();
         Ok((crate::is_object_id(parent) && lines[0].trim() == parent).then(|| parent.to_string()))
+    }
+
+    pub fn revision_author(&self, revision: &str) -> Result<String> {
+        self.text(&["show", "-s", "--format=%an", &object_id(revision)?])
     }
 
     /// Commits that merged a return draft of `basis` into `tip`, in `git log` order.
@@ -1041,8 +1082,11 @@ pub fn branch_ref(branch: &str) -> Result<String> {
     Ok(format!("{HEADS}{branch}"))
 }
 
-/// A local branch name, or a full `refs/remotes/origin/<branch>` reference.
+/// A local branch name, remote-tracking branch, or a full archived return reference.
 pub fn history_reference(branch: &str) -> Result<String> {
+    if let Some(commit) = branch.strip_prefix(REVIEW_ARCHIVE_PREFIX) {
+        return Ok(format!("{REVIEW_ARCHIVE_PREFIX}{}", object_id(commit)?));
+    }
     match branch.strip_prefix(crate::remote::REMOTE_PREFIX) {
         Some(rest) => Ok(format!("{}{}", crate::remote::REMOTE_PREFIX, &branch_ref(rest)?[HEADS.len()..])),
         None => branch_ref(branch),

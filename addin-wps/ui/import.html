@@ -11,12 +11,12 @@
             <div class="row"><input id="file" type="text" placeholder="收到的 .docx 返稿路径"><button id="browse">选择文件…</button></div></div>
         <div class="field"><label>送审版本</label><select id="basis"></select></div>
         <div class="field"><label>合入分支</label><input id="target" type="text" readonly></div>
-        <label class="row" style="margin:10px 0 4px"><input id="keep" type="checkbox" checked> 将原始返稿保存为独立分支</label>
+        <label class="row" style="margin:10px 0 4px"><input id="keep" type="checkbox" checked> 在分支列表显示原始返稿</label>
         <div id="branchFields">
             <div class="field"><label>返稿分支</label><input id="branch" type="text"></div>
-            <div class="field"><label>返稿来源</label><input id="reviewer" type="text" value="老师返稿"></div>
         </div>
-        <p class="hint">生成合并稿前，请先提交当前稿的修改。</p>
+        <div class="field"><label>返稿来源</label><input id="reviewer" type="text" value="老师返稿"></div>
+        <p class="hint">原始返稿保留在提交图中。当前稿需要提交时，会使用已选返稿和送审版本继续。</p>
         <a id="historical">合并两个历史版本…</a>
         <div id="error" class="error"></div>
     </div>
@@ -51,8 +51,8 @@
             var keep = $("keep").checked;
             $("branchFields").style.display = keep ? "block" : "none";
             $("saveOnly").style.display = keep ? "" : "none";
-            var ready = $("file").value.trim() && $("basis").value;
-            var branchReady = $("branch").value.trim() && $("reviewer").value.trim();
+            var ready = $("file").value.trim() && $("basis").value && $("reviewer").value.trim();
+            var branchReady = $("branch").value.trim();
             $("saveOnly").disabled = !(ready && branchReady);
             $("merge").disabled = !(ready && (!keep || branchReady));
         }
@@ -70,9 +70,8 @@
             if (WordGit.samePath(file, data.document)) { $("error").textContent = "请选择收到的返稿文件。"; return; }
             var keep = $("keep").checked;
             var branch = keep ? $("branch").value.trim() : null;
-            if (branch && conflicts(branch)) { $("error").textContent = "返稿分支「" + branch + "」与已有分支冲突，请换一个名称。"; return; }
             WordGit.finishDialog({ file: file, basis: $("basis").value, branch: branch,
-                reviewer: keep ? $("reviewer").value.trim() : ($("reviewer").value.trim() || "返稿"), createMergeDraft: createMergeDraft });
+                reviewer: $("reviewer").value.trim(), createMergeDraft: createMergeDraft });
         }
         $("merge").onclick = function () { complete(true); };
         $("saveOnly").onclick = function () { complete(false); };
