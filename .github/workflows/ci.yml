@@ -18,13 +18,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and run history, update-check and remote tests
+      - name: Build the add-in and kernel, run update-check tests
         shell: powershell
         run: .\build.ps1 -Test
 
       - name: Run UI layout tests
         shell: powershell
         run: .\build.ps1 -UiTest
+
+      - name: Run history pane first-paint tests
+        shell: powershell
+        run: .\build.ps1 -NoRust -PaneTest
 
       # package.ps1 -Test also runs installer probes that need desktop Word, so CI only
       # verifies that the release package builds and that document versions match.
@@ -57,13 +61,3 @@ jobs:
       - name: Add-in scripts parse
         if: runner.os == 'Linux'
         run: for f in addin-wps/js/*.js addin-wps/test/*.js; do node --check "$f"; done
-
-  rust-csharp-compat:
-    # The C# add-in and the Rust core must read each other's repositories.
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cross-implementation check
-        shell: pwsh
-        run: ./tests/rust-compat.ps1

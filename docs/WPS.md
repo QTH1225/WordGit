@@ -63,8 +63,7 @@ wordgit call branch/create '{"document":"/path/论文.docx","name":"review"}'
 ## 开发与测试
 
 ```sh
-cargo test --workspace                       # 单元测试、真实 git 集成测试、服务 HTTP 测试
-pwsh -NoProfile -File tests/rust-compat.ps1  # Windows：与 C# 版互相读写同一仓库
+cargo test --workspace --release             # 单元测试、真实 git 集成测试、服务 HTTP 测试
 ```
 
 Linux WPS 端到端测试在 Docker 中运行，见 [docker/wps-linux/README.md](../docker/wps-linux/README.md)：

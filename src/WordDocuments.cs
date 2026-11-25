@@ -830,28 +830,6 @@ namespace WordGit
             return message;
         }
 
-        internal static void CleanRestoreLeftovers(string folder)
-        {
-            var now = DateTime.UtcNow;
-            foreach (var rule in new[] { new { Pattern = ".wordgit-restore-*.tmp", Age = TimeSpan.FromDays(1) },
-                // Backups are the only copy of a draft when a rollback failed; keep them for a month.
-                new { Pattern = ".wordgit-restore-*.tmp.bak", Age = TimeSpan.FromDays(30) } })
-            {
-                try
-                {
-                    foreach (var file in Directory.GetFiles(folder, rule.Pattern))
-                    {
-                        if (!file.EndsWith(rule.Pattern.Substring(rule.Pattern.LastIndexOf('*') + 1), StringComparison.OrdinalIgnoreCase)) continue;
-                        try { if (File.GetLastWriteTimeUtc(file) < now - rule.Age) File.Delete(file); }
-                        catch (IOException) { }
-                        catch (UnauthorizedAccessException) { }
-                    }
-                }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
-            }
-        }
-
         private static void TryRemove(string file)
         {
             try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }

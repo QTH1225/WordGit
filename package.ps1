@@ -1,7 +1,7 @@
 [CmdletBinding()]
-param([switch]$Test, [switch]$WordTest, [switch]$NoBuild)
+param([switch]$Test, [switch]$KernelTest, [switch]$NoBuild)
 $ErrorActionPreference = 'Stop'
-if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -Test:$Test -UiTest:$Test -WordTest:$WordTest }
+if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -Test:$Test -UiTest:$Test -PaneTest:$Test -KernelTest:$KernelTest }
 $sourceDll = Join-Path $PSScriptRoot 'bin\WordGit.dll'
 $identity = [Reflection.AssemblyName]::GetAssemblyName($sourceDll)
 $version = $identity.Version.ToString(3)

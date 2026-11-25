@@ -8,9 +8,9 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 [assembly: ComVisible(false)]
-[assembly: System.Reflection.AssemblyVersion("0.11.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.11.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.11.0")]
+[assembly: System.Reflection.AssemblyVersion("0.12.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.12.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.12.0")]
 [assembly: System.Reflection.AssemblyProduct("WordGit")]
 [assembly: System.Reflection.AssemblyTitle("WordGit Word 版本管理插件")]
 

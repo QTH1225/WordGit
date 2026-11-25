@@ -288,7 +288,7 @@ namespace WordGit
             layout.Controls.Add(graph, 0, 6);
 
             status.MaximumSize = new Size(StatusWidth(), 0);
-            layout.Resize += (sender, args) => status.MaximumSize = new Size(StatusWidth(), 0);
+            layout.Resize += (sender, args) => FitStatusWidth();
             layout.Controls.Add(status, 0, 7);
             var actions = ButtonGrid(2, commit, importReview, preview, compare);
             actions.Margin = new Padding(0, 8, 0, 0);
@@ -996,6 +996,13 @@ namespace WordGit
             var host = status.Parent;
             var width = host != null && host.ClientSize.Width > 0 ? host.ClientSize.Width : ClientSize.Width;
             return Math.Max(160, width - status.Margin.Horizontal - 2);
+        }
+
+        // 只有栏宽真正变化时才改上限，避免设置 MaximumSize 触发多余的布局。
+        private void FitStatusWidth()
+        {
+            var width = StatusWidth();
+            if (status.MaximumSize.Width != width) status.MaximumSize = new Size(width, 0);
         }
 
         private void OpenSelected(bool diff)
