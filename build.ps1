@@ -1,4 +1,4 @@
-﻿param([switch]$Test, [switch]$WordTest, [switch]$UiTest)
+param([switch]$Test, [switch]$WordTest, [switch]$UiTest, [switch]$KernelTest, [switch]$NoRust)
 $ErrorActionPreference = 'Stop'
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (-not (Test-Path -LiteralPath $framework)) { $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319' }
@@ -14,6 +14,26 @@ $options = @('/nologo','/codepage:65001','/langversion:5','/optimize+') + @($ref
 if ($LASTEXITCODE -ne 0) { throw '插件构建失败。' }
 Write-Output "$bin\WordGit.dll"
 
+# The history, branches and remote work live in the Rust core; the add-in only talks to it.
+$kernel = Join-Path $bin 'wordgit.exe'
+if (-not $NoRust) {
+    $cargoPath = $null
+    $cargo = Get-Command cargo -ErrorAction SilentlyContinue
+    if ($cargo) { $cargoPath = $cargo.Source }
+    if (-not $cargoPath) {
+        $candidate = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
+        if (Test-Path -LiteralPath $candidate) { $cargoPath = $candidate }
+    }
+    if (-not $cargoPath) { throw '需要 Rust 工具链（cargo）来构建 wordgit 内核。' }
+    Push-Location $PSScriptRoot
+    try {
+        & $cargoPath build --release --package wordgit
+        if ($LASTEXITCODE -ne 0) { throw '内核构建失败。' }
+    } finally { Pop-Location }
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target\release\wordgit.exe') -Destination $kernel -Force
+    Write-Output $kernel
+}
+
 # Each test program is built from all sources plus the shared test helpers. Every requested
 # program runs even if an earlier one fails, and the failures are reported together.
 $failures = New-Object System.Collections.Generic.List[string]
@@ -24,10 +44,11 @@ function Invoke-TestProgram([string]$Name, [string]$Label, [string[]]$Arguments 
     & $exe @Arguments
     if ($LASTEXITCODE -ne 0) { $failures.Add($Label) }
 }
-if ($Test) {
-    Invoke-TestProgram 'Smoke' '核心历史测试'
-    Invoke-TestProgram 'UpdatesSmoke' '更新检查测试'
-    Invoke-TestProgram 'RemoteSmoke' '远程同步测试'
+if ($Test) { Invoke-TestProgram 'UpdatesSmoke' '更新检查测试' }
+if ($KernelTest) {
+    if (-not (Test-Path -LiteralPath $kernel)) { throw '缺少 bin\wordgit.exe，请先不带 -NoRust 构建。' }
+    $env:WORDGIT_SERVICE_EXE = $kernel
+    try { Invoke-TestProgram 'KernelSmoke' '内核与 Word 联调测试' } finally { Remove-Item Env:\WORDGIT_SERVICE_EXE -ErrorAction SilentlyContinue }
 }
 if ($WordTest) { Invoke-TestProgram 'WordSmoke' 'Word 实机测试' -Extra @('/debug:pdbonly') }
 if ($UiTest) { Invoke-TestProgram 'UiSmoke' '界面布局测试' -Arguments @($bin) }

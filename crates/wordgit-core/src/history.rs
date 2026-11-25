@@ -336,6 +336,33 @@ impl Repo {
         Ok((crate::is_object_id(parent) && lines[0].trim() == parent).then(|| parent.to_string()))
     }
 
+    /// Commits that merged a return draft of `basis` into `tip`, in `git log` order.
+    ///
+    /// A return draft records its basis in `WordGit-Review-Base`, so the merges that brought an
+    /// earlier round of the same review into this branch can be found again. The add-in uses them
+    /// to keep a repeated return from being merged on top of itself.
+    pub fn previously_merged_returns(&self, tip: &str, basis: &str) -> Result<Vec<String>> {
+        let range = format!("{}..{}", object_id(basis)?, object_id(tip)?);
+        let text = self.invoke(None, None, &["log", "--first-parent", "--merges", "--format=%P", &range, "--"])?.lenient_text()?;
+        let mut parents: Vec<String> = Vec::new();
+        for line in text.split('\n') {
+            // `%P` lists every parent; the first one is on the first-parent chain, the rest came
+            // in with the merge and are the candidates.
+            for parent in line.split(' ').skip(1).filter(|p| crate::is_object_id(p)) {
+                if !parents.iter().any(|known| known == parent) {
+                    parents.push(parent.to_string());
+                }
+            }
+        }
+        let mut returns = Vec::new();
+        for parent in parents {
+            if self.imported_review_base(&parent)?.as_deref() == Some(basis) {
+                returns.push(parent);
+            }
+        }
+        Ok(returns)
+    }
+
     /// Moves HEAD from `from` (at `old_tip`) to `to` (at `new_tip`) in one checked transaction.
     pub fn switch(&self, from: &str, old_tip: &str, to: &str, new_tip: &str) -> Result<()> {
         let current_ref = branch_ref(from)?;

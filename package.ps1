@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param([switch]$Test, [switch]$WordTest, [switch]$NoBuild)
 $ErrorActionPreference = 'Stop'
 if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -Test:$Test -UiTest:$Test -WordTest:$WordTest }
@@ -21,7 +21,7 @@ $package = Join-Path $work ("WordGit-" + $version)
 $dist = Join-Path $PSScriptRoot 'dist'
 New-Item -ItemType Directory -Path $package,$dist -Force | Out-Null
 try {
-    $allowlist = @('bin/WordGit.dll','install.ps1','Install.cmd','Uninstall.cmd','Check.cmd','README.md',
+    $allowlist = @('bin/WordGit.dll','bin/wordgit.exe','install.ps1','Install.cmd','Uninstall.cmd','Check.cmd','README.md',
         'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','LICENSE')
     $files = @()
     $number = 0

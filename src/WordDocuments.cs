@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Windows.Forms;
 
 namespace WordGit
@@ -93,7 +95,9 @@ namespace WordGit
     internal sealed class DocumentComment
     {
         public int Index, Page, ScopeStart;
-        public string Author, Text;
+        public string Author, Text, ScopeText;
+        public DateTime Date;
+        public bool Resolved;
         public string Caption { get { return Author + " · 第 " + Page + " 页"; } }
     }
 
@@ -101,7 +105,8 @@ namespace WordGit
     {
         public DocumentComment Comment;
         public int Index, Page, ScopeStart, ScopeEnd, StoryType, StoryIndex, RevisionType;
-        public string Author, Text, RangeText;
+        public string Author, Text, RangeText, RevisionFormat;
+        public DateTime Date;
         public bool IsComment { get { return Comment != null; } }
         public string Kind
         {
@@ -139,56 +144,49 @@ namespace WordGit
     {
         private readonly string path;
         private readonly Func<bool> isSaved;
-        private readonly Func<string> readHead;
-        private string headHash;
-        private DateTime lastWrite;
-        private long lastLength;
-        private bool measured;
-        private WorkingCopyState lastState;
+        private readonly Func<string> readState;
 
-        public WorkingCopy(string path, Func<bool> isSaved, Func<string> readHead)
+        // The kernel computes the same answer from the stored snapshot; the add-in only adds the
+        // one thing the kernel cannot know: whether the window has unsaved edits.
+        public WorkingCopy(string path, Func<bool> isSaved, Func<string> readState)
         {
             this.path = path;
             this.isSaved = isSaved;
-            this.readHead = readHead;
+            this.readState = readState;
         }
 
         public WorkingCopyState State()
         {
-            if (!isSaved())
+            if (!isSaved()) return WorkingCopyState.Unsaved;
+            switch (readState())
             {
-                measured = false;
-                return WorkingCopyState.Unsaved;
+                case "noCommit": return WorkingCopyState.NoCommit;
+                case "clean": return WorkingCopyState.Clean;
+                default: return WorkingCopyState.Changed;
             }
-            if (readHead == null) return WorkingCopyState.NoCommit;
-
-            var file = new FileInfo(path);
-            var writeTime = file.LastWriteTimeUtc;
-            var length = file.Length;
-            if (measured && writeTime == lastWrite && length == lastLength) return lastState;
-
-            if (headHash == null) headHash = readHead();
-            lastState = WordDocuments.FileChecksum(path) == headHash ? WorkingCopyState.Clean : WorkingCopyState.Changed;
-            lastWrite = writeTime;
-            lastLength = length;
-            measured = true;
-            return lastState;
         }
-    }
-
-    // Result of the background half of "restore an old version": the current draft is committed
-    // and the old version staged, so only the file swap remains for Word's thread.
-    internal sealed class RestorePlan
-    {
-        public string Path, Revision, Author, Branch, Head, CurrentHash, OldHash, Staged;
-        public PreparedSnapshot Prepared;
-        public bool Unchanged;
     }
 
     internal sealed class WordDocuments
     {
         private readonly dynamic word;
-        public WordDocuments(object application) { word = application; }
+        public bool IsWpsHost { get; private set; }
+
+        public bool SupportsTrackedMerge { get; private set; }
+
+        public void EnsureTrackedMergeSupported()
+        {
+            if (!SupportsTrackedMerge)
+                throw new InvalidOperationException("当前 WPS 文字暂不支持生成可保留双方修改的修订合并稿。可将返稿保存为独立分支，并对比历史版本。");
+        }
+
+        public WordDocuments(object application)
+        {
+            word = application;
+            var path = (string)word.Path;
+            IsWpsHost = !String.IsNullOrEmpty(path) && File.Exists(Path.Combine(path, "wps.exe"));
+            SupportsTrackedMerge = !IsWpsHost;
+        }
         public IWin32Window Owner
         {
             get { return word.Windows.Count == 0 ? null : DialogPlacement.RootOwner(new WordWindow(new IntPtr((int)word.ActiveWindow.Hwnd))); }
@@ -207,11 +205,17 @@ namespace WordGit
                 catch (ArgumentException) { }
         }
 
-        public static List<DocumentComment> Comments(object value)
+        private static object RequireReviewObject(object value, string part)
         {
-            dynamic document = value;
+            if (value == null) throw new InvalidOperationException("Word 暂未返回" + part + "，请等文档加载完成后重试。");
+            return value;
+        }
+
+        public static List<DocumentComment> Comments(object value, bool includeReviewStatus = false)
+        {
+            dynamic document = RequireReviewObject(value, "文档");
             var result = new List<DocumentComment>();
-            dynamic all = document.Comments;
+            dynamic all = RequireReviewObject((object)document.Comments, "批注列表");
             try
             {
                 for (var index = 1; index <= (int)all.Count; index++)
@@ -219,13 +223,16 @@ namespace WordGit
                     dynamic comment = null, scope = null, range = null;
                     try
                     {
-                        comment = all[index];
-                        scope = comment.Scope;
-                        range = comment.Range;
+                        comment = RequireReviewObject((object)all[index], "批注");
+                        scope = RequireReviewObject((object)comment.Scope, "批注锚点");
+                        range = RequireReviewObject((object)comment.Range, "批注内容");
                         result.Add(new DocumentComment
                         {
-                            Index = index, Author = (string)comment.Author, Text = ((string)range.Text).Trim(),
-                            ScopeStart = (int)scope.Start, Page = (int)scope.Information[3]
+                            Index = index, Author = (string)comment.Author, Text = ((string)range.Text ?? "").Trim(),
+                            ScopeStart = (int)scope.Start, Page = (int)scope.Information[3],
+                            ScopeText = includeReviewStatus ? ((string)scope.Text ?? "").Trim() : null,
+                            Date = includeReviewStatus ? (DateTime)comment.Date : default(DateTime),
+                            Resolved = includeReviewStatus && CommentResolved(comment)
                         });
                     }
                     finally { Release(range); Release(scope); Release(comment); }
@@ -235,9 +242,17 @@ namespace WordGit
             return result;
         }
 
+        private static bool CommentResolved(dynamic comment)
+        {
+            try { return (bool)comment.Done; }
+            catch (COMException) { return false; }
+            catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException) { return false; }
+        }
+
         internal static int DocumentRevisionCount(object value)
         {
-            dynamic revisions = ((dynamic)value).Revisions;
+            dynamic document = RequireReviewObject(value, "文档");
+            dynamic revisions = RequireReviewObject((object)document.Revisions, "修订列表");
             try { return (int)revisions.Count; }
             finally { Release(revisions); }
         }
@@ -246,13 +261,13 @@ namespace WordGit
         // length changes; cheap enough to poll, unlike ReviewItems, which repaginates.
         public static string ReviewSignature(object value)
         {
-            dynamic document = value;
+            dynamic document = RequireReviewObject(value, "文档");
             dynamic comments = null, revisions = null, content = null;
             try
             {
-                comments = document.Comments;
-                revisions = document.Revisions;
-                content = document.Content;
+                comments = RequireReviewObject((object)document.Comments, "批注列表");
+                revisions = RequireReviewObject((object)document.Revisions, "修订列表");
+                content = RequireReviewObject((object)document.Content, "文档内容");
                 return (int)comments.Count + ":" + (int)revisions.Count + ":" + (int)content.End;
             }
             finally { Release(content); Release(revisions); Release(comments); }
@@ -266,44 +281,50 @@ namespace WordGit
             dynamic comment = document.Comments[selected.Index];
             if (((string)comment.Range.Text).Trim() != selected.Text || (string)comment.Author != selected.Author)
                 throw new InvalidOperationException("批注已更新，请刷新批注列表。");
-            document.Activate();
+            ActivateIfNeeded(value);
             dynamic scope = comment.Scope;
             scope.Select();
             word.ActiveWindow.ScrollIntoView(scope, true);
         }
 
-        public static List<DocumentReviewItem> ReviewItems(object value)
+        public static List<DocumentReviewItem> ReviewItems(object value, bool includeResolvedComments = true, bool includeRevisionDates = false)
         {
-            dynamic document = value;
+            dynamic document = RequireReviewObject(value, "文档");
             var result = new List<DocumentReviewItem>();
-            foreach (var comment in Comments(value)) result.Add(DocumentReviewItem.ForComment(comment));
+            foreach (var comment in Comments(value, !includeResolvedComments))
+                if (includeResolvedComments || !comment.Resolved) result.Add(DocumentReviewItem.ForComment(comment));
             var seen = new HashSet<string>(StringComparer.Ordinal);
-            dynamic stories = document.StoryRanges;
+            dynamic stories = RequireReviewObject((object)document.StoryRanges, "文档范围");
             try
             {
-                foreach (dynamic first in stories)
+                foreach (object first in stories)
                 {
-                    dynamic story = first;
-                    var storyType = (int)story.StoryType;
-                    var storyIndex = 0;
-                    while (story != null)
+                    dynamic story = RequireReviewObject(first, "文档范围项目");
+                    try
                     {
-                        if (storyType != 4) // Comment text is already represented by the comment entry.
-                            CollectRevisions(story, storyType, storyIndex, seen, result);
-                        dynamic next = story.NextStoryRange;
-                        Release(story);
-                        story = next;
-                        storyIndex++;
+                        var storyType = (int)story.StoryType;
+                        var storyIndex = 0;
+                        while (story != null)
+                        {
+                            if (storyType != 4) // Comment text is already represented by the comment entry.
+                                CollectRevisions(story, storyType, storyIndex, seen, result, includeRevisionDates);
+                            dynamic next = story.NextStoryRange;
+                            Release(story);
+                            story = next;
+                            storyIndex++;
+                        }
                     }
+                    finally { Release(story); }
                 }
             }
             finally { Release(stories); }
             return result;
         }
 
-        private static void CollectRevisions(dynamic story, int storyType, int storyIndex, HashSet<string> seen, List<DocumentReviewItem> result)
+        private static void CollectRevisions(dynamic story, int storyType, int storyIndex, HashSet<string> seen,
+            List<DocumentReviewItem> result, bool includeRevisionDates)
         {
-            dynamic changes = story.Revisions;
+            dynamic changes = RequireReviewObject((object)story.Revisions, "修订范围");
             try
             {
                 var count = (int)changes.Count;
@@ -312,9 +333,9 @@ namespace WordGit
                     dynamic change = null, scope = null, anchor = null;
                     try
                     {
-                        change = changes[index];
-                        scope = change.Range;
-                        anchor = scope.Duplicate;
+                        change = RequireReviewObject((object)changes[index], "修订");
+                        scope = RequireReviewObject((object)change.Range, "修订位置");
+                        anchor = RequireReviewObject((object)scope.Duplicate, "修订锚点");
                         anchor.Collapse(1);
                         var text = (string)scope.Text ?? "";
                         var format = (string)change.FormatDescription ?? "";
@@ -322,6 +343,7 @@ namespace WordGit
                         var entry = new DocumentReviewItem { Index = index, Page = (int)anchor.Information[3],
                             ScopeStart = (int)scope.Start, ScopeEnd = (int)scope.End, StoryType = storyType, StoryIndex = storyIndex,
                             RevisionType = (int)change.Type, Author = (string)change.Author, RangeText = text,
+                            Date = includeRevisionDates ? (DateTime)change.Date : default(DateTime), RevisionFormat = format,
                             Text = String.IsNullOrWhiteSpace(description) ? "段落、空白或结构变更" : description.Trim() };
                         if (seen.Add(entry.Key)) result.Add(entry);
                     }
@@ -335,8 +357,7 @@ namespace WordGit
         {
             if (selected.IsComment) { GoToComment(value, selected.Comment); return; }
             dynamic change = FindRevision(value, selected);
-            dynamic document = value;
-            document.Activate();
+            ActivateIfNeeded(value);
             word.ActiveWindow.View.ShowRevisionsAndComments = true;
             dynamic scope = change.Range;
             scope.Select();
@@ -366,9 +387,15 @@ namespace WordGit
             if ((bool)document.ReadOnly)
                 throw new InvalidOperationException("当前文档为只读，无法处理修订。");
             dynamic change = FindRevision(value, selected);
-            document.Activate();
+            ActivateIfNeeded(value);
             if (accept) change.Accept();
             else change.Reject();
+        }
+
+        internal void ActivateIfNeeded(object document)
+        {
+            if (word.Windows.Count == 0 || !ReferenceEquals((object)word.ActiveDocument, document))
+                ((dynamic)document).Activate();
         }
 
         public static string LocalPath(object value, bool allowSave = false)
@@ -401,25 +428,14 @@ namespace WordGit
         {
             using (var sha = SHA256.Create())
             using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                return GitHistory.Hex(sha.ComputeHash(stream));
+                return Hex(sha.ComputeHash(stream));
         }
 
-        // The target only appears once the restored version has been fully verified, so a failed
-        // or interrupted restore never leaves a truncated document under the chosen name.
-        public static void ExtractToFile(GitHistory repo, string revision, string path)
+        private static string Hex(byte[] bytes)
         {
-            if (File.Exists(path)) throw new IOException("目标文件已存在：" + path);
-            var temporary = path + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".wordgit-tmp";
-            try
-            {
-                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                {
-                    repo.ExtractTo(revision, stream);
-                    stream.Flush(true);
-                }
-                File.Move(temporary, path);
-            }
-            finally { TryRemove(temporary); }
+            var text = new StringBuilder(bytes.Length * 2);
+            foreach (var value in bytes) text.Append(value.ToString("x2", CultureInfo.InvariantCulture));
+            return text.ToString();
         }
 
         public object Open(string path, bool readOnly, bool visible = true)
@@ -428,35 +444,37 @@ namespace WordGit
                 AddToRecentFiles: false, Visible: visible);
         }
 
-        public object ReviewFiles(GitHistory repo, string originalRevision, string revisedRevision, bool merge, string author = null)
+        public object ReviewFiles(string original, string revised, bool merge, string author = null)
         {
+            if (merge) EnsureTrackedMergeSupported();
             var folder = AppPaths.NewSession();
             var leftFile = Path.Combine(folder, "基准版本.docx");
             var rightFile = Path.Combine(folder, "修订版本.docx");
-            ExtractToFile(repo, originalRevision, leftFile);
-            ExtractToFile(repo, revisedRevision, rightFile);
-            return ReviewStaged(folder, leftFile, rightFile, merge, author);
-        }
-
-        // Compares or merges two documents given as files; both are copied first, so Word never
-        // holds the caller's originals open.
-        public object ReviewPaths(string original, string revised, bool merge, string author = null)
-        {
-            var folder = AppPaths.NewSession();
-            var leftFile = Path.Combine(folder, "基准版本.docx");
-            var rightFile = Path.Combine(folder, "修订版本.docx");
-            DocxFormat.ValidateFile(original);
-            DocxFormat.ValidateFile(revised);
             CopyShared(original, leftFile);
             CopyShared(revised, rightFile);
             return ReviewStaged(folder, leftFile, rightFile, merge, author);
         }
 
-        public object CompareCurrentExtracted(GitHistory repo, string originalRevision, object current)
+        public object ReviewPaths(string original, string revised, bool merge, string author = null)
         {
-            var folder = AppPaths.NewSession();
+            return ReviewFiles(original, revised, merge, author);
+        }
+
+        /// Compares a revision the kernel already extracted with the unsaved or saved current draft.
+        internal object CompareSnapshot(string original, string currentSnapshot)
+        {
+            var folder = Path.GetDirectoryName(currentSnapshot);
             var leftFile = Path.Combine(folder, "基准版本.docx");
-            ExtractToFile(repo, originalRevision, leftFile);
+            try
+            {
+                CopyShared(original, leftFile);
+                return ReviewStaged(folder, leftFile, currentSnapshot, false, null);
+            }
+            finally { TryRemove(currentSnapshot); }
+        }
+
+        internal static string CaptureComparisonSource(object current, string folder)
+        {
             dynamic document = current;
             string rightFile;
             if ((bool)document.Saved && !String.IsNullOrEmpty((string)document.Path))
@@ -471,17 +489,13 @@ namespace WordGit
                 rightFile = Path.Combine(folder, "当前稿.xml");
                 File.WriteAllText(rightFile, (string)document.WordOpenXML, new System.Text.UTF8Encoding(false));
             }
-            return ReviewStaged(folder, leftFile, rightFile, false, null);
+            return rightFile;
         }
 
-        private object ReviewReturnAgainstBase(GitHistory repo, string basisRevision, string externalPath)
+        internal void BuildVersionReviewFile(string original, string revised, string snapshot, bool merge, string output)
         {
-            var folder = AppPaths.NewSession();
-            var leftFile = Path.Combine(folder, "基准版本.docx");
-            var rightFile = Path.Combine(folder, "修订版本.docx");
-            ExtractToFile(repo, basisRevision, leftFile);
-            CopyShared(externalPath, rightFile);
-            return ReviewStaged(folder, leftFile, rightFile, true, null);
+            var review = snapshot == null ? ReviewFiles(original, revised, merge) : CompareSnapshot(original, snapshot);
+            SaveReviewToFile(review, output);
         }
 
         private static void CopyShared(string source, string destination)
@@ -500,13 +514,8 @@ namespace WordGit
             {
                 left = Open(leftFile, false, false);
                 right = Open(rightFile, false, false);
-                // Word can reject AcceptAllRevisions on an invisible, inactive document.
-                left.Windows[1].Visible = true;
-                left.Activate();
-                if (!merge) { left.TrackRevisions = false; left.AcceptAllRevisions(); }
-                right.Windows[1].Visible = true;
-                right.Activate();
-                if (!merge) { right.TrackRevisions = false; right.AcceptAllRevisions(); }
+                PrepareReviewInput((object)left, merge);
+                PrepareReviewInput((object)right, merge);
                 dynamic result;
                 if (merge)
                     result = word.MergeDocuments(OriginalDocument: left, RevisedDocument: right, Destination: 2,
@@ -517,7 +526,8 @@ namespace WordGit
                         CompareFormatting: true, CompareTables: true, CompareHeaders: true, CompareFootnotes: true,
                         CompareTextboxes: true, CompareFields: true, CompareComments: true, RevisedAuthor: author ?? "WordGit",
                         IgnoreAllComparisonWarnings: true);
-                result.Activate();
+                if (result == null) throw new InvalidOperationException("编辑器未生成独立的修订稿。");
+                ActivateIfNeeded((object)result);
                 return result;
             }
             finally
@@ -531,37 +541,204 @@ namespace WordGit
             }
         }
 
-        public object ReviewBranchesExtracted(GitHistory repo, string basisRevision, string targetRevision, string incomingRevision, string targetBranch = "当前分支", string sourceBranch = "来源分支", bool preserveIncomingRevisions = false)
+        private void PrepareReviewInput(object value, bool merge)
         {
-            if (repo.SnapshotChecksum(basisRevision) == repo.SnapshotChecksum(targetRevision))
-                return ReviewFiles(repo, targetRevision, incomingRevision, true);
+            dynamic document = value;
+            // Word needs active input windows on its isolated desktop. WPS works with hidden inputs.
+            if (!IsWpsHost)
+            {
+                document.Windows[1].Visible = true;
+                ActivateIfNeeded(value);
+            }
+            if (!merge)
+            {
+                document.TrackRevisions = false;
+                document.AcceptAllRevisions();
+            }
+        }
+
+        public object ReviewBranchFiles(MergePlan plan)
+        {
+            EnsureTrackedMergeSupported();
+            if (plan.SubmittedBase != null && plan.SubmittedBase == plan.Basis)
+                return ReviewRepeatedReturn(plan);
+            if (plan.BasisIsTarget)
+                return ReviewFiles(plan.Target, plan.Incoming, true);
             var folder = AppPaths.NewSession();
             var targetFile = Path.Combine(folder, "分支修订-当前.docx");
             var sourceFile = Path.Combine(folder, "分支修订-来源.docx");
-            SaveBranchRevisionsToFile(repo, basisRevision, targetRevision, targetBranch, targetFile);
-            SaveBranchRevisionsToFile(repo, basisRevision, incomingRevision, sourceBranch, sourceFile,
-                repo.ImportedReviewBase(incomingRevision) != null || preserveIncomingRevisions);
+            SaveBranchRevisionsToFile(plan.Basis, plan.Target, plan.TargetBranch ?? "当前分支", targetFile);
+            SaveBranchRevisionsToFile(plan.Basis, plan.Incoming, plan.SourceBranch ?? "来源分支", sourceFile,
+                plan.SubmittedBase != null || plan.PreserveIncoming);
             return ReviewStaged(folder, targetFile, sourceFile, true, null);
         }
 
-        internal object ReviewReturnedDraft(GitHistory repo, string basisRevision, string targetRevision, string externalPath, string branch)
+        internal void BuildBranchMergeFile(MergePlan plan, string output)
         {
-            DocxFormat.ValidateFile(externalPath);
-            if (repo.SnapshotChecksum(basisRevision) == repo.SnapshotChecksum(targetRevision))
-                return ReviewReturnAgainstBase(repo, basisRevision, externalPath);
-
-            var folder = AppPaths.NewSession();
-            var targetFile = Path.Combine(folder, "当前稿修订.docx");
-            var returnedFile = Path.Combine(folder, "返稿修订.docx");
-            SaveBranchRevisionsToFile(repo, basisRevision, targetRevision, branch, targetFile);
-            SaveReviewToFile(ReviewReturnAgainstBase(repo, basisRevision, externalPath), returnedFile);
-            return ReviewStaged(folder, targetFile, returnedFile, true, null);
+            SaveReviewToFile(ReviewBranchFiles(plan), output);
         }
 
-        private void SaveBranchRevisionsToFile(GitHistory repo, string basisRevision, string versionRevision, string author, string outputPath,
+        private object ReviewRepeatedReturn(MergePlan plan)
+        {
+            var basis = plan.Basis;
+            var target = plan.Target;
+            var incoming = plan.Incoming;
+            var folder = AppPaths.NewSession();
+            var currentFile = Path.Combine(folder, "当前稿.docx");
+            var currentRevisions = Path.Combine(folder, "当前稿修订.docx");
+            var incomingRevisions = Path.Combine(folder, "返稿修订.docx");
+            var proposedFile = Path.Combine(folder, "返稿建议稿.docx");
+            var rawReturn = Path.Combine(folder, "返稿副本.docx");
+            var previousReturn = Path.Combine(folder, "上轮返稿副本.docx");
+            var currentAuthor = "当前主稿 " + Guid.NewGuid().ToString("N").Substring(0, 8);
+            object result = null;
+            try
+            {
+                CopyShared(target, currentFile);
+                List<DocumentComment> comments;
+                bool hasPendingChanges;
+                var current = Open(currentFile, true, false);
+                try
+                {
+                    comments = Comments(current, true);
+                    hasPendingChanges = basis != target && ReviewItems(current).Any(item => !item.IsComment);
+                }
+                finally { CloseReviewInput(current); }
+
+                if (basis == target)
+                {
+                    CopyShared(incoming, incomingRevisions);
+                    result = ReviewStaged(folder, currentFile, incomingRevisions, true, null);
+                }
+                else
+                {
+                    var previousReturns = plan.PreviousReturns;
+                    var continued = hasPendingChanges ? null : FindContinuedReturn(previousReturns, incoming, rawReturn, previousReturn);
+                    var continuedFile = continued == null ? basis : continued.File;
+                    string currentBody = null;
+                    if (continued != null)
+                    {
+                        current = Open(currentFile, true, false);
+                        try { currentBody = (string)((dynamic)current).Content.Text; }
+                        finally { CloseReviewInput(current); }
+                    }
+                    SaveBranchRevisionsToFile(continuedFile, target, currentAuthor, currentRevisions);
+                    var earlier = new List<List<DocumentReviewItem>>();
+                    if (continued == null)
+                    {
+                        foreach (var previous in previousReturns)
+                        {
+                            var review = ReviewFiles(basis, previous.File, true);
+                            try { earlier.Add(ReviewItems(review, includeRevisionDates: true)); }
+                            finally { CloseReviewInput(review); }
+                        }
+                    }
+                    var proposal = continued == null ? ReviewFiles(basis, incoming, true) :
+                        ReviewFiles(continuedFile, incoming, false, "返稿");
+                    List<DocumentReviewItem> incomingItems;
+                    try
+                    {
+                        ReturnReviewDecisions.RemoveRepeated(this, proposal, earlier);
+                        incomingItems = ReviewItems(proposal);
+                        ((dynamic)proposal).SaveAs2(FileName: incomingRevisions, FileFormat: 16, AddToRecentFiles: false);
+                    }
+                    finally { CloseReviewInput(proposal); }
+
+                    // Word's native combine may duplicate the original text when both sides replace the
+                    // same range. Build the suggested result from the returned edit and compare it with
+                    // the actual current draft so rejecting the conflict always restores the current text.
+                    var hasConflict = false;
+                    if (!hasPendingChanges)
+                    {
+                        var trackedCurrent = Open(currentRevisions, false, true);
+                        try
+                        {
+                            hasConflict = ReturnReviewDecisions.PrepareConflictProposal(this, trackedCurrent, incomingItems, continued != null);
+                            if (hasConflict) ((dynamic)trackedCurrent).Save();
+                        }
+                        finally { CloseReviewInput(trackedCurrent); }
+                    }
+                    result = ReviewStaged(folder, currentRevisions, incomingRevisions, true, null);
+                    if (hasConflict)
+                    {
+                        ((dynamic)result).AcceptAllRevisions();
+                        ((dynamic)result).SaveAs2(FileName: proposedFile, FileFormat: 16, AddToRecentFiles: false);
+                        CloseReviewInput(result);
+                        result = null;
+                        var authors = incomingItems.Where(item => !item.IsComment).Select(item => item.Author).Distinct().ToArray();
+                        result = ReviewStaged(folder, currentFile, proposedFile, false, authors.Length == 1 ? authors[0] : "返稿");
+                    }
+                    else if (!hasPendingChanges) ReturnReviewDecisions.KeepCurrentChanges(this, result, currentAuthor,
+                        continued == null ? null : incomingItems, currentBody);
+                }
+                RestoreResolvedReviewComments(ref result, comments);
+                var draft = result;
+                result = null;
+                return draft;
+            }
+            finally
+            {
+                if (result != null) CloseReviewInput(result);
+                TryRemove(currentFile);
+                TryRemove(currentRevisions);
+                TryRemove(incomingRevisions);
+                TryRemove(proposedFile);
+                TryRemove(rawReturn);
+                TryRemove(previousReturn);
+                try { Directory.Delete(folder); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        private static ReturnFile FindContinuedReturn(List<ReturnFile> previous, string incoming, string rawReturn, string previousReturn)
+        {
+            if (previous.Count == 0) return null;
+            CopyShared(incoming, rawReturn);
+            var proposed = TrackedReviewSnapshot.Read(rawReturn);
+            if (proposed.Count == 0) return null;
+            foreach (var revision in previous)
+            {
+                CopyShared(revision.File, previousReturn);
+                var archived = TrackedReviewSnapshot.Read(previousReturn);
+                TryRemove(previousReturn);
+                if (archived.Count > 0 && archived.All(change => proposed.ContainsKey(change.Key) && proposed[change.Key] >= change.Value))
+                    return revision;
+            }
+            return null;
+        }
+
+        private void RestoreResolvedReviewComments(ref object result, List<DocumentComment> comments)
+        {
+            var unresolved = ReturnReviewDecisions.KeepResolvedComments(result, comments);
+            if (unresolved.Count == 0) return;
+
+            // Some Word combine results refuse Comment.Done even though the DOCX supports it.
+            // Save before editing the generated copy and keep the native result as a fallback.
+            string patched = null;
+            try
+            {
+                var folder = AppPaths.NewSession();
+                var original = Path.Combine(folder, "合并稿.docx");
+                patched = Path.Combine(folder, "批注已恢复的合并稿.docx");
+                ((dynamic)result).SaveAs2(FileName: original, FileFormat: 16, AddToRecentFiles: false);
+                CopyShared(original, patched);
+                var restored = ReviewCommentStatus.Restore(patched, unresolved);
+                if (restored != unresolved.Count)
+                    AppPaths.LogError("Resolved comment status could not be matched for " + (unresolved.Count - restored) + " thread(s).");
+                if (restored == 0) return;
+                var reopened = Open(patched, false);
+                CloseReviewInput(result);
+                result = reopened;
+                patched = null;
+                TryRemove(original);
+            }
+            catch (Exception error) { AppPaths.LogError("Restore resolved comment status: " + error); }
+            finally { if (patched != null) TryRemove(patched); }
+        }
+
+        private void SaveBranchRevisionsToFile(string basisFile, string versionFile, string author, string outputPath,
             bool preserveRevisions = false)
         {
-            SaveReviewToFile(ReviewFiles(repo, basisRevision, versionRevision, preserveRevisions, author), outputPath);
+            SaveReviewToFile(ReviewFiles(basisFile, versionFile, preserveRevisions, author), outputPath);
         }
 
         private void SaveReviewToFile(object document, string outputPath)
@@ -576,29 +753,10 @@ namespace WordGit
             }
         }
 
-        // Background half of a restore (no Word COM). The caller holds the repository lock.
-        public static RestorePlan PrepareRestore(GitHistory repo, string path, string revision, string author)
+        public string Restore(object source, string plan)
         {
-            var plan = new RestorePlan { Path = path, Revision = revision, Author = author,
-                CurrentHash = FileChecksum(path), OldHash = repo.SnapshotChecksum(revision) };
-            if (plan.CurrentHash == plan.OldHash) { plan.Unchanged = true; return plan; }
-            plan.Branch = repo.ActiveBranch();
-            var head = repo.Head();
-            plan.Head = repo.CommitFile(path, "恢复前保存当前稿", author, head, plan.Branch) ?? head;
-            plan.Prepared = repo.PreparedFromRevision(revision);
-            plan.Staged = Path.Combine(AppPaths.NewSession(), "恢复版本.docx");
-            ExtractToFile(repo, revision, plan.Staged);
-            return plan;
-        }
-
-        // Word half of a restore. The caller holds the repository lock.
-        public string FinishRestore(GitHistory repo, RestorePlan plan)
-        {
-            if (plan.Unchanged) return "当前稿已经与所选旧版一致。";
-            string saved = null;
-            ReplaceWorkingCopy(repo, plan.Path, plan.CurrentHash, plan.Staged, plan.OldHash,
-                () => saved = repo.CommitPrepared(plan.Prepared, "恢复版本 " + plan.Revision.Substring(0, 8), plan.Author, plan.Head, plan.Branch));
-            return saved == null ? "已恢复旧版。" : "已恢复并创建新提交 " + saved.Substring(0, 8) + "。";
+            EnsureRestorable(source);
+            return ApplyReplacement(SaveDocument(source), plan, true);
         }
 
         public static void EnsureRestorable(object source)
@@ -608,12 +766,6 @@ namespace WordGit
             if ((bool)((dynamic)source).ReadOnly) throw new InvalidOperationException("当前文档只读，请使用「另存旧版」。");
         }
 
-        public string Restore(object source, GitHistory repo, string revision, string author)
-        {
-            EnsureRestorable(source);
-            var path = SaveDocument(source);
-            return FinishRestore(repo, PrepareRestore(repo, path, revision, author));
-        }
 
         public static void EnsureReplaceable(string path)
         {
@@ -625,61 +777,57 @@ namespace WordGit
                     throw new InvalidOperationException("为避免覆盖共编修改，请在 OneDrive 同步目录之外的本地副本上切换、恢复或合并分支。");
         }
 
-        // Swaps the working copy for a verified replacement and then publishes the matching ref
-        // change. A journal in the repository makes the pair recoverable if Word dies in between.
-        public void ReplaceWorkingCopy(GitHistory repo, string path, string currentHash, string replacementFile, string replacementHash, Action publish)
+        // Closes the working copy, lets the kernel swap in the file it prepared and publish the
+        // matching ref change, then reopens the document. The kernel journal makes the pair
+        // recoverable if Word dies in between.
+        public string ApplyReplacement(string path, string plan, bool keepActiveWindow = false)
         {
             EnsureReplaceable(path);
-            var leftover = WorkingCopyJournal.Recover(repo);
-            if (leftover != null) throw new InvalidOperationException(leftover + Environment.NewLine + "请确认当前稿后重试。");
             dynamic doc = null;
             foreach (var candidate in word.Documents)
                 if (String.Equals((string)((dynamic)candidate).FullName, path, StringComparison.OrdinalIgnoreCase)) { doc = candidate; break; }
             if (doc != null && ((bool)doc.ReadOnly || !(bool)doc.Saved))
                 throw new InvalidOperationException("当前稿有未保存的修改，或处于只读状态。请先处理后重试。");
-            if (FileChecksum(path) != currentHash)
-                throw new InvalidOperationException("磁盘上的当前稿已变化，未替换文件。");
-            if (currentHash == replacementHash) { publish(); return; }
-            var folderPath = Path.GetDirectoryName(path);
-            CleanRestoreLeftovers(folderPath);
-            var staged = Path.Combine(folderPath, ".wordgit-restore-" + Guid.NewGuid().ToString("N") + ".tmp");
-            var backup = staged + ".bak";
-            File.Copy(replacementFile, staged);
-            if (FileChecksum(staged) != replacementHash)
-            {
-                TryRemove(staged);
-                throw new InvalidDataException("替换内容在操作期间发生变化，未覆盖当前稿。");
-            }
-            WorkingCopyJournal.Write(repo, new WorkingCopyJournal.Entry { Document = path, Backup = backup,
-                OriginalHash = currentHash, ReplacementHash = replacementHash, References = repo.ReferenceState() });
             var closed = false;
-            var replaced = false;
+            var restorePainting = false;
+            var screenUpdating = true;
+            var reopenInBackground = false;
+            string message;
             try
             {
-                if (doc != null) { doc.Close(SaveChanges: 0); closed = true; }
-                if (FileChecksum(path) != currentHash)
-                    throw new InvalidOperationException("磁盘文件在操作期间发生变化，未覆盖。请重新打开后重试。");
-                File.Replace(staged, path, backup);
-                replaced = true;
-                try { publish(); }
-                catch
+                if (doc != null && !IsWpsHost)
                 {
-                    if (FileChecksum(path) != replacementHash)
-                        throw new IOException("当前稿在操作期间被其他程序修改，原稿备份保留在：" + backup);
-                    File.Replace(backup, path, null);
-                    replaced = false;
-                    throw;
+                    reopenInBackground = keepActiveWindow && word.Windows.Count > 0 &&
+                        !ReferenceEquals((object)word.ActiveDocument, (object)doc);
+                    if (!reopenInBackground)
+                    {
+                        screenUpdating = (bool)word.ScreenUpdating;
+                        word.ScreenUpdating = false;
+                        restorePainting = true;
+                    }
                 }
-                TryRemove(backup);
-                replaced = false;
+                if (doc != null) { doc.Close(SaveChanges: 0); closed = true; }
+                message = ServiceClient.Connect().ApplyPlan(plan);
+            }
+            catch
+            {
+                // A pending plan keeps the document lock; release it so the next attempt can start.
+                ServiceClient.Connect().CancelPlan(plan);
+                throw;
             }
             finally
             {
-                // A replaced file whose rollback failed keeps its journal for recovery on restart.
-                if (!replaced) WorkingCopyJournal.Clear(repo);
-                TryRemove(staged);
-                if (closed) Open(path, false);
+                try
+                {
+                    if (closed)
+                    {
+                        var reopened = Open(path, false, !reopenInBackground);
+                        if (reopenInBackground) ((dynamic)reopened).Windows[1].Visible = true;
+                    }
+                }
+                finally { if (restorePainting) word.ScreenUpdating = screenUpdating; }
             }
+            return message;
         }
 
         internal static void CleanRestoreLeftovers(string folder)

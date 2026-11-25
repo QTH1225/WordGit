@@ -8,50 +8,77 @@ using System.Text;
 
 namespace WordGit
 {
-    // Shared by every test program. These helpers keep test code byte[]-friendly while routing
-    // everything through the same file- and stream-based APIs that the add-in uses.
-    internal static class TestRepository
+    // Shared by every test program. The git layer now lives in the Rust core, so the helpers
+    // below only cover files and the service handle.
+    internal static class TestKernel
     {
-        public static byte[] Extract(this GitHistory repo, string revision)
+        public static string Home { get; private set; }
+
+        private static System.Diagnostics.Process owned;
+
+        // Starts an isolated core in its own root and on its own port so tests never touch real
+        // history and never collide with a service the user is already running.
+        public static ServiceClient Start()
         {
-            using (var output = new MemoryStream())
+            var executable = Environment.GetEnvironmentVariable("WORDGIT_SERVICE_EXE");
+            if (String.IsNullOrEmpty(executable) || !File.Exists(executable))
+                throw new InvalidOperationException("请先构建 Rust 内核，并用 WORDGIT_SERVICE_EXE 指向 wordgit.exe。");
+            var home = Path.Combine(Path.GetTempPath(), "wordgit-kernel-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(home);
+            Home = home;
+            Environment.SetEnvironmentVariable("WORDGIT_HOME", home);
+            var port = FreePort();
+            var start = new System.Diagnostics.ProcessStartInfo(executable, "serve --port " + port)
             {
-                repo.ExtractTo(revision, output);
-                return output.ToArray();
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(executable)
+            };
+            owned = System.Diagnostics.Process.Start(start);
+            var file = Path.Combine(home, "service.json");
+            var limit = DateTime.UtcNow.AddSeconds(25);
+            while (!File.Exists(file))
+            {
+                if (owned.HasExited)
+                    throw new InvalidOperationException("WordGit 内核启动后立即退出（代码 " + owned.ExitCode + "）。");
+                if (DateTime.UtcNow > limit)
+                    throw new InvalidOperationException("WordGit 内核未在 25 秒内就绪。");
+                System.Threading.Thread.Sleep(100);
             }
+            ServiceClient.Forget();
+            var client = ServiceClient.Connect();
+            client.Call("notices", ServiceClient.Args());
+            return client;
         }
 
-        public static string Commit(this GitHistory repo, byte[] bytes, string message, string author, string expectedHead,
-            string branch = null, string sourceBranch = null, string sourceTip = null)
+        private static int FreePort()
         {
-            var path = TestFiles.Temporary(bytes);
-            try { return repo.CommitFile(path, message, author, expectedHead, branch, sourceBranch, sourceTip); }
-            finally { File.Delete(path); }
-        }
-    }
-
-    internal static class TestWord
-    {
-        public static object Review(this WordDocuments word, byte[] original, byte[] revised, bool merge, string author = null)
-        {
-            var left = TestFiles.Temporary(original);
-            var right = TestFiles.Temporary(revised);
-            try { return word.ReviewPaths(left, right, merge, author); }
-            finally { File.Delete(left); File.Delete(right); }
+            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            return port;
         }
 
-        public static void ReplaceWorkingCopy(this WordDocuments word, GitHistory repo, string path, byte[] current, byte[] replacement, Action publish)
+        public static void Stop(ServiceClient client)
         {
-            var staged = TestFiles.Temporary(replacement);
-            try { word.ReplaceWorkingCopy(repo, path, TestFiles.Sha(current), staged, TestFiles.Sha(replacement), publish); }
-            finally { File.Delete(staged); }
+            try { ServiceClient.Forget(); } catch (Exception) { }
+            if (owned != null)
+            {
+                try { owned.Kill(); owned.WaitForExit(10000); } catch (Exception) { }
+                owned = null;
+            }
+            if (Home == null) return;
+            try { Directory.Delete(Home, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            Home = null;
+            Environment.SetEnvironmentVariable("WORDGIT_HOME", null);
         }
     }
 
     internal static class TestConsole
     {
         // Behave like a UTF-8 console code page (65001, as on CI runners), whose encoding has a BOM
-        // preamble, so the stdin handling for git is exercised on every machine. Restored on dispose.
+        // preamble, so stream handling is exercised on every machine. Restored on dispose.
         public static IDisposable Utf8InputWithPreamble()
         {
             var previous = Console.InputEncoding;
@@ -91,7 +118,7 @@ namespace WordGit
 
         public static byte[] ReadDocx(string path)
         {
-            DocxFormat.ValidateFile(path);
+            Validate(path);
             using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             using (var buffer = new MemoryStream())
             {
@@ -102,48 +129,33 @@ namespace WordGit
 
         public static byte[] Snapshot(object document) { return ReadDocx(WordDocuments.SaveDocument(document)); }
 
-        public static string Sha(byte[] bytes) { return GitHistory.Sha(bytes); }
-    }
-
-    internal sealed class DocxPart
-    {
-        public string Name;
-        public byte[] Bytes;
-    }
-
-    // Writer side of the retired "wordgit.meta" format, used to build compatibility fixtures.
-    internal static class LegacyDocx
-    {
-        public static List<DocxPart> Read(byte[] bytes)
+        public static string Sha(byte[] bytes)
         {
-            using (var archive = new ZipArchive(new MemoryStream(bytes, false), ZipArchiveMode.Read, false))
-                return archive.Entries.Where(entry => !entry.FullName.EndsWith("/", StringComparison.Ordinal)).Select(entry =>
+            using (var sha = SHA256.Create())
+            {
+                var builder = new StringBuilder(64);
+                foreach (var value in sha.ComputeHash(bytes)) builder.Append(value.ToString("x2"));
+                return builder.ToString();
+            }
+        }
+
+        // A local check that the file is a readable .docx, independent of the removed C# layer.
+        public static void Validate(string path)
+        {
+            try
+            {
+                using (var archive = new ZipArchive(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite), ZipArchiveMode.Read))
                 {
-                    using (var stream = entry.Open())
-                    using (var buffer = new MemoryStream())
-                    {
-                        stream.CopyTo(buffer);
-                        return new DocxPart { Name = entry.FullName, Bytes = buffer.ToArray() };
-                    }
-                }).ToList();
+                    if (archive.GetEntry("[Content_Types].xml") == null || archive.GetEntry("word/document.xml") == null)
+                        throw new InvalidOperationException("不是有效的 .docx 文件：" + path);
+                }
+            }
+            catch (InvalidDataException) { throw new InvalidOperationException("不是有效的 .docx 文件：" + path); }
         }
 
-        public static IEnumerable<DocxMetaEntry> Entries(IEnumerable<DocxPart> parts)
+        public static bool SameDocx(string left, string right)
         {
-            return parts.Select(part => new DocxMetaEntry { Name = part.Name, Size = part.Bytes.LongLength, Sha = TestFiles.Sha(part.Bytes) });
-        }
-
-        public static byte[] Fingerprint(IEnumerable<DocxPart> parts) { return DocxFormat.Fingerprint(Entries(parts)); }
-
-        public static byte[] Fingerprint(byte[] docx) { return Fingerprint(Read(docx)); }
-
-        public static string MetaText(IList<DocxPart> parts)
-        {
-            var builder = new StringBuilder("wordgit 2\nfingerprint " + DocxFormat.Hex(Fingerprint(parts)) + "\n");
-            foreach (var part in parts)
-                builder.Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(part.Name))).Append(' ')
-                    .Append(part.Bytes.LongLength).Append(' ').Append(TestFiles.Sha(part.Bytes)).Append('\n');
-            return builder.ToString();
+            return ReadDocx(left).SequenceEqual(ReadDocx(right));
         }
     }
 }

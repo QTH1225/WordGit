@@ -15,6 +15,9 @@ namespace WordGit
             try
             {
                 Application.EnableVisualStyles();
+                // The pane talks to the core; keep it away from real history.
+                if (String.IsNullOrEmpty(Environment.GetEnvironmentVariable("WORDGIT_HOME")))
+                    Environment.SetEnvironmentVariable("WORDGIT_HOME", Path.Combine(Path.GetTempPath(), "wordgit-ui-" + Guid.NewGuid().ToString("N")));
                 var day = DateTimeOffset.Now;
                 var one = new string('a', 40);
                 var two = new string('b', 40);
@@ -506,13 +509,10 @@ namespace WordGit
                 Array custom = null;
                 try
                 {
-                    var reviewType = typeof(Connect).GetNestedType("PendingReview", System.Reflection.BindingFlags.NonPublic);
-                    var review = Activator.CreateInstance(reviewType, true);
-                    reviewType.GetField("Original").SetValue(review, original);
-                    reviewType.GetField("Branch").SetValue(review, "main");
-                    reviewType.GetField("SourceBranch").SetValue(review, "review");
-                    reviewType.GetField("SourceTip").SetValue(review, sourceTip);
-                    typeof(Connect).GetMethod("SaveMergeDraft", fields).Invoke(connect, new object[] { draft, resultPath, review, head });
+                    // The core owns the sidecar now; the add-in only reads it through status.
+                    File.WriteAllLines(resultPath + ".wordgit", new[] { original, head, "main", "review", sourceTip });
+                    draft.FullName = resultPath;
+                    typeof(Connect).GetMethod("ShowMergePane", fields).Invoke(connect, new object[] { draft });
                     if (factory.Creates != 1 || !factory.Pane.Visible || !factory.Pane.Control.CanReuse(resultPath) ||
                         !File.ReadAllLines(resultPath + ".wordgit").SequenceEqual(new[] { original, head, "main", "review", sourceTip }))
                         throw new InvalidOperationException("The saved merge draft did not get its own visible review pane");
@@ -539,6 +539,9 @@ namespace WordGit
             var fail = false;
             var editable = true;
             var merging = true;
+            var failReviewRead = false;
+            var failReviewSignature = false;
+            var signature = "initial";
             var nativeCount = 0;
             var commits = 0;
             using (var host = new Form { ClientSize = new Size(420, 640), Opacity = 0 })
@@ -548,7 +551,15 @@ namespace WordGit
                 pane.Bind(() => new HistoryPaneData {
                     DocumentPath = @"C:\test\审阅.docx", HistoryPath = @"C:\test\审阅.docx", Branch = "main",
                     Branches = new string[0], Load = branch => new List<Revision>(), WorkingState = () => WorkingCopyState.Unsaved,
-                    LoadReviewItems = () => pending.ToList(), NavigateReviewItem = item => navigated.Add(item.Text),
+                    LoadReviewItems = () => {
+                        if (failReviewRead) throw new NullReferenceException("模拟 Word 读取修订时返回空对象");
+                        return pending.ToList();
+                    },
+                    ReviewSignature = () => {
+                        if (failReviewSignature) throw new NullReferenceException("模拟 Word 切换窗口时批注不可用");
+                        return signature;
+                    },
+                    NavigateReviewItem = item => navigated.Add(item.Text),
                     CanResolveRevisions = editable, MergeTargetBranch = merging ? "main" : null,
                     DocumentRevisionCount = () => nativeCount,
                     ResolveReviewItem = (item, accept) => {
@@ -603,6 +614,30 @@ namespace WordGit
                     throw new InvalidOperationException("Finished revisions left an enabled action or lost a comment");
                 if (!finish.Enabled || labels.All(label => label.Text != "剩余修订 0 条 · 批注 1"))
                     throw new InvalidOperationException("Remaining comments should not block a finished merge");
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var poll = typeof(HistoryPane).GetMethod("PollReviewItems", flags);
+                Action refreshReview = () => {
+                    typeof(HistoryPane).GetField("commentPoll", flags).SetValue(pane, 3);
+                    poll.Invoke(pane, null);
+                };
+                var commitGraph = Descendants(pane).OfType<DataGridView>().Single();
+                signature = "changed";
+                failReviewRead = true;
+                refreshReview();
+                if (finish.Enabled || list.Enabled || list.Items.Count != 1 || !commitGraph.Enabled ||
+                    labels.All(label => label.Text != "批注与修订 · 稍后重试"))
+                    throw new InvalidOperationException("A failed timed revision read escaped, cleared the pane or enabled an unsafe merge");
+                failReviewRead = false;
+                failReviewSignature = true;
+                refreshReview();
+                if (finish.Enabled || !commitGraph.Enabled)
+                    throw new InvalidOperationException("A missing review signature blocked the commit graph or enabled an unsafe merge");
+                failReviewSignature = false;
+                refreshReview();
+                if (!finish.Enabled || !list.Enabled || list.Items.Count != 1 ||
+                    labels.All(label => label.Text != "剩余修订 0 条 · 批注 1"))
+                    throw new InvalidOperationException("The next successful poll did not restore the review list or its actions");
+                Console.WriteLine("PASS: the commit pane survives null objects during timed review reads and recovers on the next poll.");
                 nativeCount = 1;
                 pane.ReloadComments();
                 if (finish.Enabled) throw new InvalidOperationException("A remaining Word revision was ignored");
@@ -643,8 +678,16 @@ namespace WordGit
 
         private static void VerifyRibbon()
         {
+            VerifyRibbonMarkup(Connect.RibbonMarkup(true), true);
+            VerifyRibbonMarkup(Connect.RibbonMarkup(false), false);
+            if (new Connect().GetCustomUI("Microsoft.Word.Document") != Connect.RibbonMarkup(true))
+                throw new InvalidOperationException("Ribbon without a host must default to native icons");
+        }
+
+        private static void VerifyRibbonMarkup(string markup, bool nativeIcons)
+        {
             var ribbon = new System.Xml.XmlDocument();
-            ribbon.LoadXml(new Connect().GetCustomUI("Microsoft.Word.Document"));
+            ribbon.LoadXml(markup);
             var tab = ribbon.GetElementsByTagName("tab").Cast<System.Xml.XmlElement>().Single();
             if (tab.GetAttribute("label") != "WordGit")
                 throw new InvalidOperationException("Unexpected WordGit tab label");
@@ -663,9 +706,25 @@ namespace WordGit
                 !callbacks.Contains("OnCheckUpdates") || !callbacks.Contains("OnImportReview") ||
                 new[] { "OnLinkRemote", "OnCloneRemote", "OnFetchRemote", "OnPullRemote", "OnPushRemote" }.Any(action => !callbacks.Contains(action)) ||
                 callbacks.Contains("OnCompressHistory") || ribbon.GetElementsByTagName("menu").Cast<System.Xml.XmlElement>().Any(menu => menu.GetAttribute("id") == "WordGitMaintenance") ||
-                buttons.Any(button => String.IsNullOrEmpty(button.GetAttribute("imageMso"))) ||
+                buttons.Any(button => String.IsNullOrEmpty(button.GetAttribute("imageMso")) == String.IsNullOrEmpty(button.GetAttribute("getImage"))) ||
                 callbacks.Any(callback => typeof(IWordGitActions).GetMethod(callback) == null || typeof(Connect).GetMethod(callback) == null))
                 throw new InvalidOperationException("Missing Ribbon button, icon, or COM callback");
+            foreach (var pair in new[]
+                {
+                    new { Id = "WordGitHistory", Word = "ViewOutlineView", Wps = "FileProperties" },
+                    new { Id = "WordGitPreview", Word = "FilePrintPreview", Wps = "FileOpen" },
+                    new { Id = "WordGitCreateBranch", Word = "FileNew", Wps = "FileSaveAs" },
+                    new { Id = "WordGitSwitchBranch", Word = "WindowSwitchWindowsMenuWord", Wps = "Refresh" },
+                    new { Id = "WordGitMergeBranch", Word = "ReviewAcceptChange", Wps = "HyperlinkInsert" },
+                    new { Id = "WordGitDeleteBranch", Word = "ReviewRejectChange", Wps = "Delete" },
+                    new { Id = "WordGitCompare", Word = "ReviewCompareMenu", Wps = "Copy" }
+                })
+            {
+                var button = buttons.Single(item => item.GetAttribute("id") == pair.Id);
+                var expected = nativeIcons ? pair.Word : pair.Wps;
+                if (button.GetAttribute("imageMso") != expected)
+                    throw new InvalidOperationException("Wrong native icon for " + pair.Id);
+            }
         }
 
         private static void VerifyRemoteUi(string output, List<Revision> items)
@@ -683,14 +742,14 @@ namespace WordGit
                     throw new InvalidOperationException("Remote instructions overlap buttons");
                 dialog.Show();
                 ((Button)dialog.AcceptButton).PerformClick();
-                if (dialog.Options == null || dialog.Options.Url != "https://github.com/owner/paper.git" || dialog.Options.Branch != "main")
+                if (dialog.Options == null || dialog.Options.Url != "https://github.com/owner/paper" || dialog.Options.Branch != "main")
                     throw new InvalidOperationException("Remote dialog lost connection options");
             }
             var actions = new List<HistoryAction>();
             string lastFilter = null;
             var data = new HistoryPaneData {
                 DocumentPath = @"C:\test\当前稿.docx", HistoryPath = @"C:\test\当前稿.docx", Branch = "main", Head = items[0].Id,
-                Branches = new[] { "main", GitHistory.RemotePrefix + "main" },
+                Branches = new[] { "main", ReferenceText.RemotePrefix + "main" },
                 Load = filter => { lastFilter = filter; return filter == null ? items : items.Take(2).ToList(); },
                 WorkingState = () => WorkingCopyState.Clean,
                 LoadReviewItems = () => new List<DocumentReviewItem>(),
@@ -711,8 +770,8 @@ namespace WordGit
                 if (!actions.SequenceEqual(new[] { HistoryAction.FetchRemote, HistoryAction.PullRemote, HistoryAction.PushRemote }))
                     throw new InvalidOperationException("Remote buttons sent the wrong actions");
                 var filter = Descendants(pane).OfType<ComboBox>().Single(box => box.AccessibleName == "筛选分支");
-                filter.SelectedItem = GitHistory.RemotePrefix + "main";
-                if (lastFilter != GitHistory.RemotePrefix + "main" || Descendants(pane).OfType<DataGridView>().Single().RowCount != 2)
+                filter.SelectedItem = ReferenceText.RemotePrefix + "main";
+                if (lastFilter != ReferenceText.RemotePrefix + "main" || Descendants(pane).OfType<DataGridView>().Single().RowCount != 2)
                     throw new InvalidOperationException("Remote branch view did not load its own history");
                 host.ClientSize = new Size(300, 520);
                 Render(host, Path.Combine(output, "remote-history-narrow.png"));
@@ -944,9 +1003,8 @@ namespace WordGit
     internal sealed class PaneTestDraft
     {
         public PaneTestWindow ActiveWindow { get; set; }
-        public string FullName { get; private set; }
+        public string FullName { get; set; }
         public string Path { get { return System.IO.Path.GetDirectoryName(FullName); } }
-        public void SaveAs2(string FileName, int FileFormat, bool AddToRecentFiles) { FullName = FileName; }
     }
 
     internal sealed class PaneTestFactory : ICTPFactory

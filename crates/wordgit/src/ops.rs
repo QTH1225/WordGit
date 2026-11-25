@@ -174,6 +174,16 @@ pub struct MergeBranchRequest {
     pub source: String,
 }
 
+/// Like `MergeBranchRequest`, but the caller can name the submitted version a return draft was
+/// based on; the add-in knows it from the import, the kernel cannot always recover it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeContextRequest {
+    pub document: String,
+    pub source: String,
+    pub basis: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterRequest {
@@ -710,6 +720,58 @@ impl Context {
             "basisIsTarget": files.3,
             "incomingAuthor": label,
             "preserveIncoming": preserve,
+            "review": {
+                "original": opened.path, "head": tip, "branch": branch,
+                "sourceBranch": request.source, "sourceTip": source_tip,
+            },
+            "notice": format!("已打开「{label} → {branch}」的修订稿。请接受或拒绝修订，再点击「完成合并」。"),
+        }))
+    }
+
+    /// Everything the Word add-in needs to build a branch-merge draft.
+    ///
+    /// Same three-way files as `merge_branch_plan`, plus the return-draft history of the incoming
+    /// branch: which version the return was based on and which earlier rounds of that same review
+    /// already went into this branch. The add-in merges a repeated return on top of the last round
+    /// instead of re-merging the whole return, which would duplicate text.
+    pub fn merge_context(&self, request: &MergeContextRequest) -> Result<Value> {
+        let opened = self.open_original(&request.document, "合并分支")?;
+        let repo = &opened.repo;
+        let branch = repo.active_branch()?;
+        let tip = repo.head()?.ok_or_else(|| Error::invalid("还没有版本，请先提交。"))?;
+        check_merge_target(repo, &opened.path, &tip)?;
+        let source_tip = repo.branch_tip(&request.source)?.ok_or_else(|| Error::invalid("找不到来源分支。"))?;
+        if repo.is_ancestor(&source_tip, &tip)? {
+            return Ok(json!({ "upToDate": true, "message": "来源分支的提交已包含在当前分支。" }));
+        }
+        let imported = repo.imported_review_base(&source_tip)?;
+        let submitted = request.basis.clone().or_else(|| imported.clone());
+        let basis = match &submitted {
+            Some(base) => base.clone(),
+            None => repo.merge_base(&tip, &source_tip)?,
+        };
+        let label = remote::reference_label(&request.source);
+        let preserve = imported.is_some() || request.source.starts_with(REMOTE_PREFIX);
+        let folder = self.paths.new_session()?;
+        let files = self.three_way_files(repo, &folder, &basis, &tip, &source_tip)?;
+        let mut previous = Vec::new();
+        if submitted.is_some() {
+            for (index, revision) in repo.previously_merged_returns(&tip, &basis)?.into_iter().enumerate() {
+                let file = folder.join(format!("历史返稿-{}.docx", index + 1));
+                history::extract_to_file(repo, &revision, &file)?;
+                previous.push(json!({ "id": revision, "file": file }));
+            }
+        }
+        let draft = folder.join(format!("{}-分支合并稿.docx", file_stem(&opened.path)));
+        Ok(json!({
+            "draft": draft,
+            "basis": files.0, "target": files.1, "incoming": files.2,
+            "basisIsTarget": files.3,
+            "incomingAuthor": label,
+            "preserveIncoming": preserve,
+            "submittedBase": submitted,
+            "previousReturns": previous,
+            "targetBranch": branch, "sourceBranch": request.source,
             "review": {
                 "original": opened.path, "head": tip, "branch": branch,
                 "sourceBranch": request.source, "sourceTip": source_tip,

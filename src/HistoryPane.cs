@@ -72,6 +72,7 @@ namespace WordGit
         // Polling cadence on the 1.2 s timer: compare the signature every ~5 s, and rebuild the
         // list (which repaginates in Word) only when it changed or every ~30 s as a fallback.
         private const int SignatureTicks = 4, ForcedReviewTicks = 25;
+        private string lastReviewError;
         private readonly DataGridView graph = new DataGridView
         {
             Dock = DockStyle.Fill, BackgroundColor = SystemColors.Window, BorderStyle = BorderStyle.FixedSingle,
@@ -253,8 +254,8 @@ namespace WordGit
             filter.FormattingEnabled = true;
             filter.Format += (sender, args) => {
                 var reference = args.ListItem as string;
-                if (reference != null && reference.StartsWith(GitHistory.RemotePrefix, StringComparison.Ordinal))
-                    args.Value = "远程 " + GitHistory.ReferenceLabel(reference);
+                if (reference != null && reference.StartsWith(ReferenceText.RemotePrefix, StringComparison.Ordinal))
+                    args.Value = "远程 " + ReferenceText.Label(reference);
             };
             filter.Margin = new Padding(0);
             filter.SelectedIndexChanged += (sender, args) => { if (!updating && data != null) LoadGraph(null); };
@@ -451,16 +452,22 @@ namespace WordGit
         private void PollReviewItems()
         {
             ++commentPoll;
-            if (commentPoll % SignatureTicks != 0) return;
-            if (commentPoll % ForcedReviewTicks != 0 && data != null && data.ReviewSignature != null)
+            var request = data;
+            if (commentPoll % SignatureTicks != 0 || request == null) return;
+            var generation = reloadGeneration;
+            try
             {
-                string signature;
-                try { signature = data.ReviewSignature(); }
-                catch (COMException) { return; }
-                catch (InvalidComObjectException) { return; }
-                if (signature == reviewSignature && reviewItemsCurrent) return;
+                if (commentPoll % ForcedReviewTicks != 0 && request.ReviewSignature != null)
+                {
+                    var signature = request.ReviewSignature();
+                    if (signature == reviewSignature && reviewItemsCurrent) return;
+                }
+                if (CurrentLoad(generation) && data == request) ReloadComments();
             }
-            ReloadComments();
+            catch (Exception error)
+            {
+                if (CurrentLoad(generation) && data == request) ReviewUnavailable(error);
+            }
         }
 
         internal async Task ReloadAsync()
@@ -568,13 +575,18 @@ namespace WordGit
 
         internal bool ReloadComments()
         {
+            var request = data;
+            var generation = reloadGeneration;
             try
             {
                 // Read the signature first, so edits made while the list is built trigger a reload.
-                var signature = data == null || data.ReviewSignature == null ? null : data.ReviewSignature();
-                var entries = data == null || data.LoadReviewItems == null ? new List<DocumentReviewItem>() :
-                    data.LoadReviewItems().OrderBy(entry => entry.Page).ThenBy(entry => entry.ScopeStart)
+                var signature = request == null || request.ReviewSignature == null ? null : request.ReviewSignature();
+                var entries = request == null || request.LoadReviewItems == null ? new List<DocumentReviewItem>() :
+                    request.LoadReviewItems().OrderBy(entry => entry.Page).ThenBy(entry => entry.ScopeStart)
                         .ThenBy(entry => entry.IsComment ? 0 : 1).ToList();
+                var merging = request != null && request.MergeTargetBranch != null;
+                var wordCount = merging && request.DocumentRevisionCount != null ? request.DocumentRevisionCount() : 0;
+                if (!CurrentLoad(generation) || data != request) return false;
                 reviewSignature = signature;
                 var unchanged = entries.Count == allReviewItems.Count && entries.Zip(allReviewItems,
                     (left, right) => left.Key == right.Key && left.Text == right.Text && left.Author == right.Author &&
@@ -582,10 +594,10 @@ namespace WordGit
                         left.RevisionType == right.RevisionType).All(equal => equal);
                 var commentCount = entries.Count(entry => entry.IsComment);
                 var listedRevisions = entries.Count - commentCount;
-                var merging = data != null && data.MergeTargetBranch != null;
-                var wordCount = merging && data.DocumentRevisionCount != null ? data.DocumentRevisionCount() : 0;
                 remainingRevisions = Math.Max(listedRevisions, wordCount);
                 reviewItemsCurrent = true;
+                lastReviewError = null;
+                comments.Enabled = reviewFilter.Enabled = request != null && !loading;
                 commentsTitle.Text = merging ? "剩余修订 " + remainingRevisions + " 条 · 批注 " + commentCount :
                     "批注 " + commentCount + " · 修订 " + listedRevisions;
                 if (!unchanged)
@@ -596,11 +608,23 @@ namespace WordGit
                 UpdateReviewActions();
                 return true;
             }
-            catch (COMException) { commentsTitle.Text = "批注与修订 · 请刷新"; }
-            catch (InvalidComObjectException) { commentsTitle.Text = "批注与修订 · 请刷新"; }
+            catch (Exception error)
+            {
+                if (CurrentLoad(generation) && data == request) ReviewUnavailable(error);
+                return false;
+            }
+        }
+
+        private void ReviewUnavailable(Exception error)
+        {
+            var message = error.GetType().FullName + ": " + error.Message;
+            if (lastReviewError != message)
+                AppPaths.LogError("review items: " + error);
+            lastReviewError = message;
             reviewItemsCurrent = false;
+            comments.Enabled = reviewFilter.Enabled = false;
+            commentsTitle.Text = "批注与修订 · 稍后重试";
             UpdateReviewActions();
-            return false;
         }
 
         private void FilterReviewItems()

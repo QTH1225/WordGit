@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [switch]$Uninstall,
     [switch]$CheckOnly,
@@ -142,6 +142,48 @@ function Remove-WordGitRegistration($Base) {
         "Software\Classes\$WordGitPaneProgId",
         'Software\Microsoft\Windows\CurrentVersion\Uninstall\WordGit'
     )) { $Base.DeleteSubKeyTree($path, $false) }
+    try {
+        $run = $Base.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)
+        if ($run) { try { $run.DeleteValue('WordGit', $false) } finally { $run.Dispose() } }
+    } catch [System.Security.SecurityException] { }
+}
+
+function Stop-WordGitKernel([string]$InstallDirectory) {
+    $root = [IO.Path]::GetFullPath((Assert-WordGitAppDirectory $InstallDirectory)) + [IO.Path]::DirectorySeparatorChar
+    foreach ($running in @(Get-Process -Name 'wordgit' -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $running.Path } catch [System.ComponentModel.Win32Exception] { continue } catch [System.InvalidOperationException] { continue }
+        if ($path -and [IO.Path]::GetFullPath($path).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+            try { Stop-Process -Id $running.Id -Force -ErrorAction Stop } catch { }
+            try { [void]$running.WaitForExit(5000) } catch { }
+        }
+    }
+}
+
+function Register-WordGitKernel($Base, [string]$InstallDirectory) {
+    $destination = Assert-WordGitAppDirectory $InstallDirectory
+    $kernel = Join-Path $destination 'wordgit.exe'
+    $run = $Base.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+    try { $run.SetValue('WordGit', '"' + $kernel + '" serve', [Microsoft.Win32.RegistryValueKind]::String) }
+    finally { $run.Dispose() }
+    $kernel
+}
+
+# Starts the core now so the first ribbon click does not wait for it. A kernel left behind by an
+# older build (for example a development copy) cannot serve the new endpoints, so it is replaced.
+function Start-WordGitKernel([string]$Kernel) {
+    if (-not (Test-Path -LiteralPath $Kernel -PathType Leaf)) { return }
+    foreach ($running in @(Get-Process -Name 'wordgit' -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $running.Path } catch [System.ComponentModel.Win32Exception] { continue } catch [System.InvalidOperationException] { continue }
+        if ($path -and [IO.Path]::GetFullPath($path) -eq [IO.Path]::GetFullPath($Kernel)) { return }
+        try { Stop-Process -Id $running.Id -Force -ErrorAction Stop } catch { }
+    }
+    try {
+        Start-Process -FilePath $Kernel -ArgumentList 'serve' -WindowStyle Hidden -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Output '内核未能自动启动，首次使用功能区按钮时会再次尝试。'
+    }
 }
 
 function Test-WordGitPayload {
@@ -149,6 +191,8 @@ function Test-WordGitPayload {
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw '缺少 bin\WordGit.dll。请完整解压安装包；从源码安装时先运行 build.ps1。' }
     $identity = [Reflection.AssemblyName]::GetAssemblyName($source)
     if ($identity.Name -ne 'WordGit') { throw '插件程序集名称不正确。' }
+    $kernel = Join-Path $PSScriptRoot 'bin\wordgit.exe'
+    if (-not (Test-Path -LiteralPath $kernel -PathType Leaf)) { throw '缺少 bin\wordgit.exe（Rust 内核）。请完整解压安装包；从源码安装时先运行 build.ps1。' }
     $manifestFile = Join-Path $PSScriptRoot 'manifest.json'
     if (Test-Path -LiteralPath $manifestFile) {
         $manifest = Get-Content -Raw -LiteralPath $manifestFile -Encoding UTF8 | ConvertFrom-Json
@@ -181,6 +225,11 @@ function Install-WordGitFiles([string]$InstallDirectory, [string]$SourceDirector
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     Copy-Item -LiteralPath $source -Destination $installed -Force
     if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $hash) { throw '安装后的插件校验失败。' }
+    $kernelSource = Join-Path $SourceDirectory 'bin\wordgit.exe'
+    $kernelTarget = Join-Path $destination 'wordgit.exe'
+    $kernelHash = (Get-FileHash -LiteralPath $kernelSource -Algorithm SHA256).Hash
+    Copy-Item -LiteralPath $kernelSource -Destination $kernelTarget -Force
+    if ((Get-FileHash -LiteralPath $kernelTarget -Algorithm SHA256).Hash -ne $kernelHash) { throw '安装后的内核校验失败。' }
     foreach ($name in @('install.ps1','Uninstall.cmd')) {
         $from = Join-Path $SourceDirectory $name
         $to = Join-Path $destination $name
@@ -202,7 +251,7 @@ function Remove-WordGitFiles([string]$InstallDirectory) {
     if (-not (Test-Path -LiteralPath $destination)) { return }
     Get-ChildItem -LiteralPath $destination -File | Where-Object {
         $_.Name -match '^WordGit\.\d+\.\d+\.\d+\.\d+\.[A-Fa-f0-9]{12}\.dll$' -or
-        $_.Name -in @('WordGit.dll','install.ps1','Uninstall.cmd','WordGit.Setup.exe')
+        $_.Name -in @('WordGit.dll','wordgit.exe','install.ps1','Uninstall.cmd','WordGit.Setup.exe')
     } | ForEach-Object {
         try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop }
         catch [IO.IOException] { Write-Output '运行中的维护程序将在退出后清理。' }
@@ -239,6 +288,13 @@ if ($Uninstall) {
         $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
         try { Remove-WordGitRegistration $base } finally { $base.Dispose() }
     }
+    foreach ($running in @(Get-Process -Name 'wordgit' -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $running.Path } catch [System.ComponentModel.Win32Exception] { continue } catch [System.InvalidOperationException] { continue }
+        if ($path -and [IO.Path]::GetFullPath($path).StartsWith([IO.Path]::GetFullPath($installDir) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            try { Stop-Process -Id $running.Id -Force -ErrorAction Stop } catch { }
+        }
+    }
     Remove-WordGitFiles $installDir
     Write-Output '已卸载 WordGit。文档、repositories 历史仓库、sessions 审阅稿和 logs 日志均保留。'
     return
@@ -264,12 +320,15 @@ Write-Output "WordGit：$version"
 if ($CheckOnly) { Write-Output '环境和安装文件检查通过。'; return }
 if (Get-Process -Name WINWORD -ErrorAction SilentlyContinue) { throw '请先保存并关闭所有 Word 窗口，再安装或更新 WordGit。' }
 if (-not $SetupExecutable) { $SetupExecutable = Join-Path $PSScriptRoot 'WordGit.Setup.exe' }
+Stop-WordGitKernel $installDir
 $installed = Install-WordGitFiles $installDir $PSScriptRoot $identity $SetupExecutable
 $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
 try {
     Register-WordGitPlugin $base $identity.FullName $version ([Uri]$installed).AbsoluteUri
     Register-WordGitProgram $base $installDir $version
+    $kernel = Register-WordGitKernel $base $installDir
 } finally { $base.Dispose() }
+Start-WordGitKernel $kernel
 # Remove only obsolete versioned plugin binaries after registration succeeds.
 Get-ChildItem -LiteralPath $installDir -File | Where-Object {
     $_.Name -match '^WordGit\.\d+\.\d+\.\d+\.\d+\.[A-Fa-f0-9]{12}\.dll$' -and $_.FullName -ne $installed

@@ -122,6 +122,7 @@ pub fn router(state: AppState) -> Router {
     route!(api, "/api/v1/version/compare", Context::compare_files);
     route!(api, "/api/v1/version/restore", Context::restore_prepare);
     route!(api, "/api/v1/merge/branch", Context::merge_branch_plan);
+    route!(api, "/api/v1/merge/context", Context::merge_context);
     route!(api, "/api/v1/merge/versions", Context::merge_versions_plan);
     route!(api, "/api/v1/merge/register", Context::register_review);
     route!(api, "/api/v1/merge/finish", Context::finish_merge_prepare);
