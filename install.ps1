@@ -131,11 +131,24 @@ function Register-WordGitPlugin($Base, [string]$Assembly, [string]$Version, [str
     Set-WordGitRegistryValue $Base $addin 'FriendlyName' 'WordGit'
     Set-WordGitRegistryValue $Base $addin 'Description' 'Word 本地 Git 版本管理'
     Set-WordGitRegistryValue $Base $addin 'LoadBehavior' 3 'DWord'
+    # WPS 文字现在通过 JS 加载项工作；早期版本把同一个 COM 加载项也注册给 WPS，
+    # 升级时清掉，否则 WPS 会同时加载两个同名功能区。
+    Remove-WordGitLegacyWps $Base
+}
+
+function Remove-WordGitLegacyWps($Base) {
+    $Base.DeleteSubKeyTree("Software\Kingsoft\Office\WPS\Addins\$WordGitConnectProgId", $false)
+    $list = $Base.OpenSubKey('Software\Kingsoft\Office\WPS\AddinsWL', $true)
+    if (-not $list) { return }
+    try {
+        if ($list.GetValueNames() -contains $WordGitConnectProgId) { $list.DeleteValue($WordGitConnectProgId, $false) }
+    } finally { $list.Dispose() }
 }
 
 function Remove-WordGitRegistration($Base) {
     foreach ($path in @(
         "Software\Microsoft\Office\Word\Addins\$WordGitConnectProgId",
+        "Software\Microsoft\Office\Word\AddinsData\$WordGitConnectProgId",
         "Software\Classes\CLSID\$WordGitConnectClsid",
         "Software\Classes\$WordGitConnectProgId",
         "Software\Classes\CLSID\$WordGitPaneClsid",
@@ -146,6 +159,7 @@ function Remove-WordGitRegistration($Base) {
         $run = $Base.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)
         if ($run) { try { $run.DeleteValue('WordGit', $false) } finally { $run.Dispose() } }
     } catch [System.Security.SecurityException] { }
+    Remove-WordGitLegacyWps $Base
 }
 
 function Stop-WordGitKernel([string]$InstallDirectory) {
@@ -184,6 +198,18 @@ function Start-WordGitKernel([string]$Kernel) {
     } catch {
         Write-Output '内核未能自动启动，首次使用功能区按钮时会再次尝试。'
     }
+}
+
+function Install-WordGitWpsAddin([string]$InstallDirectory) {
+    $destination = Assert-WordGitAppDirectory $InstallDirectory
+    $addin = Join-Path $destination 'addin'
+    $kernel = Join-Path $destination 'wordgit.exe'
+    if (-not (Test-Path -LiteralPath (Join-Path $addin 'ribbon.xml') -PathType Leaf)) { return }
+    if (-not (Test-Path -LiteralPath $kernel -PathType Leaf)) { return }
+    # The kernel knows where WPS keeps its add-ins; it also records the service file there, which is
+    # what makes the add-in find the running service token.
+    & $kernel install --addin $addin --no-autostart
+    if ($LASTEXITCODE -ne 0) { Write-Output 'WPS 文字加载项未能自动更新，重新打开 WPS 后可再次运行安装程序。' }
 }
 
 function Test-WordGitPayload {
@@ -237,6 +263,13 @@ function Install-WordGitFiles([string]$InstallDirectory, [string]$SourceDirector
             Copy-Item -LiteralPath $from -Destination $to -Force
         }
     }
+    # The WPS Writer add-in ships next to the kernel so `wordgit install` can register it.
+    $addinSource = Join-Path $SourceDirectory 'addin-wps'
+    $addinTarget = Join-Path $destination 'addin'
+    if (Test-Path -LiteralPath (Join-Path $addinSource 'ribbon.xml') -PathType Leaf) {
+        if (Test-Path -LiteralPath $addinTarget) { Remove-Item -LiteralPath $addinTarget -Recurse -Force }
+        Copy-Item -LiteralPath $addinSource -Destination $addinTarget -Recurse -Force
+    }
     if ($SetupPath -and (Test-Path -LiteralPath $SetupPath -PathType Leaf)) {
         $targetSetup = Join-Path $destination 'WordGit.Setup.exe'
         if ([IO.Path]::GetFullPath($SetupPath) -ne [IO.Path]::GetFullPath($targetSetup)) {
@@ -257,6 +290,8 @@ function Remove-WordGitFiles([string]$InstallDirectory) {
         catch [IO.IOException] { Write-Output '运行中的维护程序将在退出后清理。' }
         catch [UnauthorizedAccessException] { Write-Output '运行中的维护程序将在退出后清理。' }
     }
+    $addin = Join-Path $destination 'addin'
+    if (Test-Path -LiteralPath $addin) { try { Remove-Item -LiteralPath $addin -Recurse -Force -ErrorAction Stop } catch { Write-Output '保留仍在使用的加载项文件：addin' } }
     if (-not (Get-ChildItem -LiteralPath $destination -Force | Select-Object -First 1)) {
         Remove-Item -LiteralPath $destination -Force
     }
@@ -295,8 +330,10 @@ if ($Uninstall) {
             try { Stop-Process -Id $running.Id -Force -ErrorAction Stop } catch { }
         }
     }
+    $kernel = Join-Path $installDir 'wordgit.exe'
+    if (Test-Path -LiteralPath $kernel -PathType Leaf) { try { & $kernel uninstall | Out-Null } catch { } }
     Remove-WordGitFiles $installDir
-    Write-Output '已卸载 WordGit。文档、repositories 历史仓库、sessions 审阅稿和 logs 日志均保留。'
+    Write-Output '已卸载 WordGit（含 WPS 文字加载项）。文档、repositories 历史仓库、sessions 审阅稿和 logs 日志均保留。'
     return
 }
 $environmentInfo = Get-WordGitEnvironment
@@ -329,6 +366,7 @@ try {
     $kernel = Register-WordGitKernel $base $installDir
 } finally { $base.Dispose() }
 Start-WordGitKernel $kernel
+Install-WordGitWpsAddin $installDir
 # Remove only obsolete versioned plugin binaries after registration succeeds.
 Get-ChildItem -LiteralPath $installDir -File | Where-Object {
     $_.Name -match '^WordGit\.\d+\.\d+\.\d+\.\d+\.[A-Fa-f0-9]{12}\.dll$' -and $_.FullName -ne $installed

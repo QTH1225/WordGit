@@ -54,18 +54,36 @@
 
     var service = null;
 
-    function loadServiceInfo() {
-        var config = WG.readText(addinFolder() + "/wordgit-config.json");
-        var serviceFile = null;
+    // The add-in reads the service file the installer recorded, but an older registration can point
+    // at a data folder that no longer runs the service (a stale token then fails every call). The
+    // default folder is tried as well so a moved installation still works.
+    function serviceFiles() {
+        var folder = addinFolder();
+        var files = [];
+        var config = WG.readText(folder + "/wordgit-config.json");
         if (config) {
-            try { serviceFile = JSON.parse(config).serviceFile; } catch (e) { serviceFile = null; }
+            try {
+                var parsed = JSON.parse(config);
+                if (parsed.serviceFile) files.push(parsed.serviceFile);
+                if (parsed.home) files.push(String(parsed.home).replace(/[\\/]+$/, "") + "/service.json");
+            } catch (e) { /* fall back to the default location below */ }
         }
-        var text = serviceFile ? WG.readText(serviceFile) : null;
-        if (!text) return null;
-        try {
-            var info = JSON.parse(text);
-            return { base: "http://127.0.0.1:" + (info.port || DEFAULT_PORT), token: info.token };
-        } catch (e) { return null; }
+        var profile = folder.replace(/[\\/]AppData[\\/]Roaming[\\/].*$/i, "");
+        if (profile !== folder) files.push(profile + "/AppData/Local/WordGit/service.json");
+        return files;
+    }
+
+    function loadServiceInfo() {
+        var files = serviceFiles();
+        for (var index = 0; index < files.length; index++) {
+            var text = WG.readText(files[index]);
+            if (!text) continue;
+            try {
+                var info = JSON.parse(text);
+                if (info && info.token) return { base: "http://127.0.0.1:" + (info.port || DEFAULT_PORT), token: info.token };
+            } catch (e) { /* try the next candidate */ }
+        }
+        return null;
     }
 
     WG.serviceMissing = function () {

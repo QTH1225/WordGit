@@ -427,7 +427,7 @@
         var pane = null;
         try { pane = id ? app.GetTaskPane(id) : null; } catch (e) { pane = null; }
         if (!pane) {
-            pane = app.CreateTaskPane(WG.baseUrl() + "ui/pane.html", "WordGit");
+            pane = app.CreateTaskPane(WG.baseUrl() + "ui/pane.html", "WordGit · 批注、修订与提交");
             app.PluginStorage.setItem("wordgit.pane", pane.ID);
             try { pane.DockPosition = 2; } catch (e) { /* right */ }
         }
