@@ -119,7 +119,7 @@ P0 的判定：
 2. ~~**P2 服务与 CLI**~~：已完成。登录自启：Linux 用 `~/.config/autostart/wordgit.desktop`，macOS 用 LaunchAgent，Windows 用 HKCU Run。
 3. ~~**P3 WPS 加载项界面**~~：已完成，Linux WPS 端到端通过。
 4. **P4 安装包**：Linux deb/rpm（声明 git 与 CEF 依赖库，安装后执行 `wordgit install`）、Windows、macOS。
-5. **P5 统一**：Windows Word 的 C# 加载项改为调用 Rust 服务，删除重复的 C# 历史实现。
+5. **P5 统一（已完成）**：Windows Word 的 C# 加载项改为调用 Rust 服务，删除重复的 C# 历史实现；`src/` 只剩界面、Word COM 与 `ServiceClient`/`ServiceModels` 两个服务适配层。Word 原生对比与修订合并、后台 Word 生成合并稿、多轮返稿去重（`merge/context`）都保留。
 6. **待实机验证**：Windows 版 WPS、macOS 版 WPS（沙盒内的会话目录、`FileDialog`）。
 
 ## 内核移植约束
