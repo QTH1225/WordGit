@@ -3,6 +3,7 @@ name = "wordgit"
 description = "WordGit local service and command line: version control for Word/WPS documents"
 version.workspace = true
 edition.workspace = true
+default-run = "wordgit"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -14,6 +15,10 @@ serde.workspace = true
 serde_json.workspace = true
 axum.workspace = true
 tokio.workspace = true
+
+[[bin]]
+name = "wordgit-launcher"
+path = "src/launcher.rs"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

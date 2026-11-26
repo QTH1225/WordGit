@@ -20,7 +20,9 @@
         WordGitPushRemote: function () { return WG.pushRemote(); },
         WordGitExport: function () { return WG.exportVersion(); },
         WordGitRestore: function () { return WG.restoreVersion(); },
-        WordGitAbout: function () { return WG.about(); }
+        WordGitAbout: function () { return WG.about(); },
+        WordGitUpdates: function () { return WG.showUpdates(); },
+        WordGitDataDirectory: function () { return WG.dataDirectory(); }
     };
 
     var IMAGES = {
@@ -29,13 +31,14 @@
         WordGitDeleteBranch: "branch-delete", WordGitImportReview: "review", WordGitCompare: "compare",
         WordGitLinkRemote: "link", WordGitCloneRemote: "clone", WordGitFetchRemote: "fetch",
         WordGitPullRemote: "pull", WordGitPushRemote: "push", WordGitExport: "export", WordGitRestore: "restore",
-        WordGitAbout: "about"
+        WordGitAbout: "about", WordGitUpdates: "fetch", WordGitDataDirectory: "preview"
     };
 
     global.OnAddinLoad = function (ribbonUI) {
         var app = WG.app();
         if (app && typeof app.ribbonUI !== "object") app.ribbonUI = ribbonUI;
         setTimeout(WG.showNotices, 3000);
+        WG.scheduleUpdateCheck();
         return true;
     };
 

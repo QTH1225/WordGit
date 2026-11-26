@@ -8,9 +8,9 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 [assembly: ComVisible(false)]
-[assembly: System.Reflection.AssemblyVersion("0.12.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.12.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.12.0")]
+[assembly: System.Reflection.AssemblyVersion("0.13.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.13.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.13.0")]
 [assembly: System.Reflection.AssemblyProduct("WordGit")]
 [assembly: System.Reflection.AssemblyTitle("WordGit Word 版本管理插件")]
 
@@ -57,6 +57,7 @@ namespace WordGit
         [DispId(18)] void OnFetchRemote([MarshalAs(UnmanagedType.IDispatch)] object control);
         [DispId(19)] void OnPullRemote([MarshalAs(UnmanagedType.IDispatch)] object control);
         [DispId(20)] void OnPushRemote([MarshalAs(UnmanagedType.IDispatch)] object control);
+        [DispId(21)] void OnDataDirectory([MarshalAs(UnmanagedType.IDispatch)] object control);
     }
 
     [ComVisible(true), Guid("C5707F76-F46F-4A11-800B-18E7D98377D3"), ProgId("WordGit.Connect")]
@@ -66,6 +67,8 @@ namespace WordGit
         private dynamic application;
         private WordDocuments word;
         private TaskPanes panes;
+        private System.Windows.Forms.Timer updateTimer;
+        private CancellationTokenSource updateRequest;
         private readonly OperationTracker operations = new OperationTracker();
         private readonly List<string> startupNotices = new List<string>();
 
@@ -80,6 +83,12 @@ namespace WordGit
             word = new WordDocuments(app);
             AppPaths.CleanSessions(1);
             StartKernel();
+            if (!word.IsWpsHost)
+            {
+                updateTimer = new System.Windows.Forms.Timer { Interval = 4500 };
+                updateTimer.Tick += CheckStartupUpdate;
+                updateTimer.Start();
+            }
         }
 
         // Started in the background so Word's start-up is not delayed. The kernel finishes any
@@ -98,10 +107,38 @@ namespace WordGit
             });
         }
 
+        private async void CheckStartupUpdate(object sender, EventArgs args)
+        {
+            updateTimer.Dispose();
+            updateTimer = null;
+            UiThread.EnsureContext();
+            var source = new CancellationTokenSource();
+            updateRequest = source;
+            try
+            {
+                var result = await UpdateChecker.CheckAsync(AppInfo.DisplayVersion, UpdatePreferences.IncludeBeta, source.Token);
+                if (!source.IsCancellationRequested && word != null)
+                    UpdateDialog.ShowResult(word.Owner, result, false);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception error) { AppPaths.LogError("startup update: " + error); }
+            finally
+            {
+                if (updateRequest == source) updateRequest = null;
+                source.Dispose();
+            }
+        }
+
+        private void StopStartupUpdate()
+        {
+            if (updateTimer != null) { updateTimer.Dispose(); updateTimer = null; }
+            if (updateRequest != null) updateRequest.Cancel();
+        }
         public void CTPFactoryAvailable(ICTPFactory factory) { panes = new TaskPanes(factory); }
 
         public void OnDisconnection(int mode, ref Array custom)
         {
+            StopStartupUpdate();
             if (panes != null) panes.Dispose();
             panes = null;
             if (application != null) WordDocuments.Release((object)application);
@@ -116,6 +153,7 @@ namespace WordGit
         public void OnBeginShutdown(ref Array custom)
         {
             UiThread.EnsureContext();
+            StopStartupUpdate();
             try { operations.WaitForCompletion(); }
             catch (Exception error) { AppPaths.LogError("shutdown wait: " + error); }
         }
@@ -171,8 +209,9 @@ namespace WordGit
     <button id=""WordGitRestore"" label=""恢&#x2060;复&#x2060;旧&#x2060;版"" size=""large"" imageMso=""Undo"" onAction=""OnRestore"" supertip=""将历史版本恢复为当前稿，并记录一次新提交。"" />
   </group>
   <group id=""WordGitInformation"" label=""关于与更新"">
+    <button id=""WordGitDataDirectory"" label=""数&#x2060;据&#x200B;目&#x2060;录"" size=""large"" imageMso=""FileOpen"" onAction=""OnDataDirectory"" supertip=""查看或更改提交历史的存放目录。"" />
     <button id=""WordGitAbout"" label=""WordGit {WordGitVersion}"" size=""large"" imageMso=""FileProperties"" onAction=""OnAbout"" supertip=""查看版本、作者、项目主页和反馈链接。"" />
-    <button id=""WordGitCheckUpdates"" label=""检&#x2060;查&#x2060;更&#x2060;新"" size=""large"" imageMso=""Refresh"" onAction=""OnCheckUpdates"" supertip=""查询 GitHub 正式发布版本，并打开发布页下载安装。"" />
+    <button id=""WordGitCheckUpdates"" label=""检&#x2060;查&#x2060;更&#x2060;新"" size=""large"" imageMso=""Refresh"" onAction=""OnCheckUpdates"" supertip=""检查 WordGit 版本并查看更新日志。"" />
   </group>
 </tab></tabs></ribbon></customUI>"
                 .Replace("{WordGitVersion}", AppInfo.DisplayVersion);
@@ -201,6 +240,30 @@ namespace WordGit
 
         public void OnAbout(object control) { Guard(() => AboutDialog.ShowWindow(word.Owner, false)); }
         public void OnCheckUpdates(object control) { Guard(() => AboutDialog.ShowWindow(word.Owner, true)); }
+        public void OnDataDirectory(object control) { Guard(ChangeDataDirectory); }
+
+        private void ChangeDataDirectory()
+        {
+            if (operations.Count != 0) throw new InvalidOperationException("请等当前 WordGit 操作完成后再更改数据目录。");
+            var current = Json.String(Kernel.Call("info", ServiceClient.Args()), "dataDirectory");
+            if (String.IsNullOrEmpty(current)) throw new InvalidOperationException("请更新 WordGit 内核后再更改数据目录。");
+            using (var picker = new FolderBrowserDialog
+            {
+                Description = "选择 WordGit 数据目录。已有提交历史会迁移到所选位置。",
+                SelectedPath = current
+            })
+            {
+                if (picker.ShowDialog(word.Owner) != DialogResult.OK) return;
+                var target = picker.SelectedPath;
+                if (String.Equals(current, target, StringComparison.OrdinalIgnoreCase)) return;
+                RunInBackground(current, "迁移数据目录",
+                    token => Task.Run(() =>
+                    {
+                        var result = Kernel.Call("settings/data-directory", ServiceClient.Args("directory", target));
+                        return Json.String(result, "message") + Environment.NewLine + Json.String(result, "dataDirectory");
+                    }), false, () => RefreshPane(VisiblePanePath()), "正在复制并校验提交历史……");
+            }
+        }
 
         public void OnImportReview(object control) { OpenHistory(HistoryAction.ImportReview); }
 

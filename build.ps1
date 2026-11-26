@@ -31,6 +31,7 @@ if (-not $NoRust) {
         if ($LASTEXITCODE -ne 0) { throw '内核构建失败。' }
     } finally { Pop-Location }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target\release\wordgit.exe') -Destination $kernel -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target\release\wordgit-launcher.exe') -Destination $bin -Force
     Write-Output $kernel
 }
 

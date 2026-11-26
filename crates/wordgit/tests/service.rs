@@ -227,3 +227,71 @@ fn commit_branch_switch_round_trip() {
     assert_eq!(bad.status, 400);
     assert!(bad.body["error"].as_str().unwrap().contains("请求格式错误"));
 }
+
+#[test]
+fn moves_history_without_invalidating_review_sessions() {
+    use serde_json::json;
+    use std::fs;
+
+    let service = start();
+    let document = service.home.join("原稿.docx");
+    let old_content = docx("初稿");
+    fs::write(&document, &old_content).unwrap();
+    let first = api(&service, "commit", json!({ "document": document, "message": "初稿" }));
+    assert_eq!(first.status, 200, "{:?}", first.body);
+    let first_id = &first.body["commit"];
+    fs::write(&document, docx("新稿")).unwrap();
+    let latest = api(&service, "commit", json!({ "document": document, "message": "新稿" }));
+    assert_eq!(latest.status, 200, "{:?}", latest.body);
+    let source = service.home.join("repositories");
+    let subdirectory = source.join("错误");
+    assert_eq!(api(&service, "settings/data-directory", json!({ "directory": subdirectory })).status, 400);
+    assert!(!subdirectory.exists());
+
+    let preview = api(&service, "version/preview", json!({ "document": document, "revision": first_id }));
+    let preview_path = preview.body["file"].as_str().unwrap();
+    let target = service.home.join("新的历史目录");
+    fs::create_dir_all(target.join("repositories")).unwrap();
+    let sentinel = target.join("repositories/keep.txt");
+    fs::write(&sentinel, b"existing history").unwrap();
+    assert_eq!(api(&service, "settings/data-directory", json!({ "directory": target })).status, 400);
+    assert_eq!(fs::read(&sentinel).unwrap(), b"existing history");
+    assert!(source.is_dir());
+    fs::remove_file(&sentinel).unwrap();
+
+    let pending = api(&service, "version/restore", json!({ "document": document, "revision": first_id }));
+    assert_eq!(pending.status, 200, "{:?}", pending.body);
+    assert_eq!(api(&service, "settings/data-directory", json!({ "directory": target })).status, 400);
+    assert_eq!(api(&service, "plan/cancel", json!({ "plan": pending.body["plan"] })).status, 200);
+
+    let moved = api(&service, "settings/data-directory", json!({ "directory": target }));
+    assert_eq!(moved.status, 200, "{:?}", moved.body);
+    assert_eq!(moved.body["dataDirectory"], json!(target));
+    assert!(!source.exists());
+    let status = api(&service, "status", json!({ "document": document }));
+    assert_eq!(status.body["head"], latest.body["commit"]);
+    assert_eq!(api(&service, "status", json!({ "document": preview_path })).body["session"], true);
+    assert_eq!(fs::read(preview_path).unwrap(), old_content);
+
+    let cli = Command::new(env!("CARGO_BIN_EXE_wordgit"))
+        .arg("data-directory")
+        .env("WORDGIT_HOME", &service.home)
+        .output()
+        .unwrap();
+    assert!(cli.status.success());
+    assert_eq!(String::from_utf8_lossy(&cli.stdout).trim(), target.to_string_lossy());
+    let offline = service.home.join("离线磁盘");
+    fs::rename(&target, &offline).unwrap();
+    assert_eq!(api(&service, "status", json!({ "document": document })).status, 400);
+    assert!(!target.exists());
+    fs::rename(offline, &target).unwrap();
+
+    let restore = api(&service, "version/restore", json!({ "document": document, "revision": first_id }));
+    let applied = api(&service, "plan/apply", json!({ "plan": restore.body["plan"] }));
+    assert_eq!(applied.status, 200, "{:?}", applied.body);
+    assert_eq!(fs::read(&document).unwrap(), old_content);
+    let returned = api(&service, "settings/data-directory", json!({ "directory": service.home }));
+    assert_eq!(returned.status, 200, "{:?}", returned.body);
+    assert!(source.is_dir());
+    assert_eq!(api(&service, "status", json!({ "document": document })).body["workingState"], "clean");
+}

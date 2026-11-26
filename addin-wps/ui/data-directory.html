@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/core.js"></script>
+    <style>
+        .folder-row { display: flex; align-items: center; gap: 8px; }
+        #directory { flex: 1; min-width: 0; }
+        #browse { flex: none; }
+        #status { margin-top: 10px; overflow-wrap: anywhere; }
+    </style>
+</head>
+<body class="dialog">
+    <div class="grow">
+        <label class="hint" for="directory">数据目录</label>
+        <div class="folder-row">
+            <input type="text" id="directory">
+            <button id="browse">浏览…</button>
+        </div>
+        <p class="hint">更改位置会迁移已有提交历史。</p>
+        <p id="status" role="status" aria-live="polite"></p>
+    </div>
+    <div class="buttons">
+        <button id="close">关闭</button>
+        <button id="save" class="primary">迁移历史</button>
+    </div>
+    <script>
+        var current = WordGit.dialogData().directory;
+        var input = document.getElementById("directory"), browse = document.getElementById("browse");
+        var closeButton = document.getElementById("close"), save = document.getElementById("save");
+        var status = document.getElementById("status");
+        var finished = false;
+        input.value = current || "";
+        function updateButton() {
+            save.disabled = !input.value.trim() || input.value.trim() === current;
+        }
+        updateButton();
+        input.oninput = updateButton;
+        if (typeof WordGit.app().FileDialog !== "function") browse.hidden = true;
+        browse.onclick = function () {
+            try {
+                var picker = WordGit.app().FileDialog(4);
+                picker.Title = "选择 WordGit 数据目录";
+                if (picker.Show() === -1 && picker.SelectedItems.Count > 0) {
+                    input.value = String(picker.SelectedItems.Item(1));
+                    updateButton();
+                }
+            } catch (error) {
+                status.textContent = "请在输入框中填写完整的文件夹路径。";
+                input.focus();
+            }
+        };
+        closeButton.onclick = function () {
+            finished = true;
+            WordGit.finishDialog(null);
+        };
+        window.addEventListener("pagehide", function () {
+            if (!finished) WordGit.finishDialog(null);
+        });
+        save.onclick = async function () {
+            input.disabled = browse.disabled = closeButton.disabled = save.disabled = true;
+            status.className = "hint";
+            status.textContent = "正在复制并校验提交历史……";
+            try {
+                var result = await WordGit.call("settings/data-directory", { directory: input.value.trim() });
+                current = result.dataDirectory;
+                input.value = current;
+                status.textContent = result.message;
+                WordGit.touch();
+            } catch (error) {
+                status.className = "error";
+                status.textContent = WordGit.errorText(error);
+            } finally {
+                input.disabled = browse.disabled = closeButton.disabled = false;
+                updateButton();
+            }
+        };
+    </script>
+</body>
+</html>

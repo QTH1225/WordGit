@@ -1,4 +1,4 @@
-# WordGit 0.12.0
+# WordGit 0.13.0
 
 在 Windows 桌面版 Word 和 WPS 文字中提交版本、管理分支、查看历史，并通过 GitHub 或 Gitee 同步稿件。文档预览、版本对比和合并审阅使用编辑器原生功能。
 
@@ -15,12 +15,12 @@
 
 版本历史、分支、返稿合并和远程同步由随安装包部署的 Rust 内核 `wordgit.exe` 完成。安装后会启动内核，内核退出后可由 Word 自动拉起。Windows 内核已静态链接 VC++ 运行库，安装包无需另外安装 VC++ 运行库或 Rust 工具链。
 
-1. 准备 `WordGit-0.12.0-Setup.exe` 安装包。
-2. 保存文档，关闭所有 Word 窗口。
-3. 运行安装程序，点击 **安装 / 更新**。
+1. 准备 `WordGit-0.13.0-Setup.exe` 安装包。
+2. 保存文档，关闭 Word 和 WPS 文字。
+3. 运行安装程序，在 **数据目录** 中选择历史存放位置，然后点击 **安装 / 更新**。
 4. 重新打开 Word，进入顶部 **WordGit** 选项卡。没有出现时见下文 [在 Word 中载入插件](#在-word-中载入插件)。
 
-ZIP 包的用法相同：完整解压 `WordGit-0.12.0-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装、`Check.cmd` 检查环境。
+ZIP 包的用法相同。完整解压 `WordGit-0.13.0-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装或用 `Check.cmd` 检查环境。
 
 安装作用于当前 Windows 用户。升级时直接运行新版安装程序，已有提交、分支和审阅稿继续保留。卸载可从 Windows“已安装的应用”或安装程序进入，历史数据也会保留。
 
@@ -229,9 +229,11 @@ WordGit/
 | --- | --- |
 | `%LOCALAPPDATA%\WordGit\app` | 界面插件、Rust 内核 `wordgit.exe` 和安装维护程序。 |
 | `%LOCALAPPDATA%\WordGit\service.json` | 内核当前端口与口令；加载项据此连接，两处不一致时重启编辑器即可。 |
-| `%LOCALAPPDATA%\WordGit\repositories` | 稿件的 Git 历史仓库。 |
+| `<数据目录>\repositories` | 稿件的 Git 历史仓库。默认数据目录是 `%LOCALAPPDATA%\WordGit`。 |
 | `%LOCALAPPDATA%\WordGit\sessions` | 预览、对比和合并审阅文件；一天前的残留会自动清理。 |
 | `%LOCALAPPDATA%\WordGit\logs` | 出错记录 `wordgit.log`（超过 1 MB 自动轮转），反馈问题时请附上。日志中的用户目录写作 `%USERPROFILE%`。 |
+
+在 Word 或 WPS 的 **WordGit → 数据目录** 中可以更改存放位置。WordGit 会校验并迁移全部历史，Word 和 WPS 共用这项设置。正在使用的审阅稿和预览继续保存在 `sessions`。
 
 历史按稿件的完整路径关联。稿件改名或移动后会对应新的历史位置，原历史仓库仍保留。
 
@@ -260,3 +262,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\package.ps1 -Test
 - [使用说明](docs/USAGE.md)：分支合并、返稿导入、远程协作和版本取回的详细步骤。
 - [开发说明](docs/DEVELOPMENT.md)：源码安装、测试命令和模块开发。
 - [发布说明](docs/RELEASING.md)：安装包制作、发布检查及兼容性记录。
+
+## 检查更新
+
+Word 和 WPS 启动后会在后台检查已发布版本。发现新版时会显示当前版本、新版本和更新日志，同一个版本只自动提醒一次。功能区的「检查更新」可以主动查询和下载，勾选「接收 Beta 更新提醒」后也会收到试用版更新。

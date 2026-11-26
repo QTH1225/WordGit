@@ -152,7 +152,11 @@ pub fn enable_autostart(executable: &Path) -> Result<String> {
     }
     #[cfg(windows)]
     {
-        let value = format!("\"{}\" serve", executable.display());
+        let launcher = executable.with_file_name("wordgit-launcher.exe");
+        if !launcher.is_file() {
+            return Err(Error::invalid("缺少 WordGit 无窗口启动程序，请重新安装。"));
+        }
+        let value = format!("\"{}\"", launcher.display());
         let status = std::process::Command::new("reg")
             .args(["add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "WordGit", "/t", "REG_SZ", "/d"])
             .arg(&value)

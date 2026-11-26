@@ -79,6 +79,12 @@ impl Context {
         self.notices.lock().unwrap_or_else(|p| p.into_inner()).extend(messages);
     }
 
+    pub fn has_pending_replacement(&self) -> bool {
+        let mut plans = self.plans.lock().unwrap_or_else(|p| p.into_inner());
+        plans.retain(|_, plan| plan.created.elapsed() < PLAN_LIFETIME);
+        !plans.is_empty()
+    }
+
     fn repo_for_history(&self, history_path: &Path) -> Result<Repo> {
         let maintenance = Arc::clone(&self.maintenance);
         let hook: history::CommitHook = Arc::new(move |path: &Path| maintenance.schedule(path));
@@ -340,6 +346,7 @@ impl Context {
             "api": 1,
             "os": std::env::consts::OS,
             "home": self.paths.root,
+            "dataDirectory": self.paths.data_directory(),
             "sessions": self.paths.sessions(),
         })
     }

@@ -83,12 +83,13 @@ namespace WordGitSetup
             catch { result.Dispose(); throw; }
         }
 
-        public ScriptResult Run(string mode)
+        public ScriptResult Run(string mode, string dataDirectory = null)
         {
             var executable = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
             var script = System.IO.Path.Combine(Root, "install.ps1");
             var arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(script);
             if (!String.IsNullOrEmpty(mode)) arguments += " " + mode;
+            if (!String.IsNullOrEmpty(dataDirectory)) arguments += " -DataDirectory " + Quote(dataDirectory);
             arguments += " -SetupExecutable " + Quote(Assembly.GetExecutingAssembly().Location);
             var start = new ProcessStartInfo(executable, arguments) {
                 UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden,
@@ -140,10 +141,12 @@ namespace WordGitSetup
         private readonly Button uninstall = new Button { Text = "卸载", AutoSize = true };
         private readonly Button check = new Button { Text = "检查环境", AutoSize = true };
         private readonly Button close = new Button { Text = "关闭", AutoSize = true };
+        private readonly Button browse = new Button { Text = "浏览…", AutoSize = true };
+        private readonly TextBox dataDirectory = new TextBox { Dock = DockStyle.Fill, AccessibleName = "数据目录" };
         private readonly ProgressBar progress = new ProgressBar { Dock = DockStyle.Fill, Height = 14, Visible = false, Style = ProgressBarStyle.Marquee };
         private bool busy, removed;
 
-        public SetupForm(Payload payload, bool uninstallMode)
+        public SetupForm(Payload payload, bool uninstallMode, bool checkEnvironment = true)
         {
             this.payload = payload;
             Text = "WordGit 安装与维护";
@@ -152,8 +155,9 @@ namespace WordGitSetup
             ClientSize = new Size(610, 420);
             MinimumSize = new Size(560, 400);
             StartPosition = FormStartPosition.CenterScreen;
-            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(18) };
+            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, Padding = new Padding(18) };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -162,24 +166,73 @@ namespace WordGitSetup
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             Controls.Add(layout);
             layout.Controls.Add(new Label { Text = "WordGit " + new Version(payload.Manifest.Version).ToString(3), Font = new Font(Font.FontFamily, 20, FontStyle.Bold), AutoSize = true }, 0, 0);
-            layout.Controls.Add(new Label { Text = "在 Microsoft Word 中提交版本、查看分支、对比并处理修订。\r\n安装到当前 Windows 用户；安装和卸载前请保存并关闭 Word。", AutoSize = true, Margin = new Padding(0, 10, 0, 10) }, 0, 1);
+            layout.Controls.Add(new Label { Text = "适用于 Microsoft Word 和 WPS 文字。\r\n安装、更新或卸载前，请保存并关闭编辑器。", AutoSize = true, Margin = new Padding(0, 10, 0, 10) }, 0, 1);
             var links = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 10) };
             AddLink(links, "下载 Git for Windows", "https://git-scm.com/install/windows");
             AddLink(links, "下载 .NET Framework 4.8", "https://dotnet.microsoft.com/download/dotnet-framework/net48");
             layout.Controls.Add(links, 0, 2);
+            var current = CurrentDataDirectory();
+            dataDirectory.Text = current;
+            var location = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3,
+                Margin = new Padding(0, 0, 0, 10), Visible = !uninstallMode };
+            location.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            location.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            var locationLabel = new Label { Text = "数据目录", AutoSize = true };
+            var locationHint = new Label { Text = "更改位置会迁移已有提交历史。", AutoSize = true };
+            location.Controls.Add(locationLabel, 0, 0);
+            location.Controls.Add(dataDirectory, 0, 1);
+            location.Controls.Add(browse, 1, 1);
+            location.Controls.Add(locationHint, 0, 2);
+            location.SetColumnSpan(locationHint, 2);
+            layout.Controls.Add(location, 0, 3);
             log.Text = uninstallMode ? "点击“卸载”移除插件，版本历史和审阅稿会保留。" : "正在检查运行环境和安装文件……";
-            layout.Controls.Add(log, 0, 3);
-            layout.Controls.Add(progress, 0, 4);
+            layout.Controls.Add(log, 0, 4);
+            layout.Controls.Add(progress, 0, 5);
             var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 0), WrapContents = true };
             foreach (var button in new[] { install, uninstall, check, close }) { button.Padding = new Padding(8, 3, 8, 3); buttons.Controls.Add(button); }
-            layout.Controls.Add(buttons, 0, 5);
-            install.Click += (sender, args) => Run("");
+            layout.Controls.Add(buttons, 0, 6);
+            install.Click += (sender, args) =>
+            {
+                var selected = dataDirectory.Text.Trim();
+                if (!uninstallMode && selected.Length == 0) { dataDirectory.Focus(); return; }
+                Run("", uninstallMode || String.Equals(CurrentDataDirectory(), selected, StringComparison.OrdinalIgnoreCase) ? null : selected);
+            };
+            browse.Click += (sender, args) => BrowseDataDirectory();
             uninstall.Click += (sender, args) => Run("-Uninstall");
             check.Click += (sender, args) => Run("-CheckOnly");
             close.Click += (sender, args) => Close();
             FormClosing += (sender, args) => { if (busy) args.Cancel = true; };
             FormClosed += (sender, args) => { if (removed) Program.ScheduleCleanup(); };
-            if (!uninstallMode) Shown += (sender, args) => Run("-CheckOnly");
+            if (!uninstallMode && checkEnvironment) Shown += (sender, args) => Run("-CheckOnly");
+        }
+
+        private static string CurrentDataDirectory()
+        {
+            var root = Environment.GetEnvironmentVariable("WORDGIT_HOME");
+            if (String.IsNullOrEmpty(root))
+                root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WordGit");
+            try
+            {
+                var config = Path.Combine(root, "data-directory.json");
+                if (File.Exists(config))
+                {
+                    var values = new JavaScriptSerializer().Deserialize<Dictionary<string, string>>(File.ReadAllText(config));
+                    string directory;
+                    if (values != null && values.TryGetValue("directory", out directory) && !String.IsNullOrEmpty(directory))
+                        return directory;
+                }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            catch (ArgumentException) { }
+            catch (InvalidOperationException) { }
+            return root;
+        }
+
+        private void BrowseDataDirectory()
+        {
+            using (var picker = new FolderBrowserDialog { Description = "选择 WordGit 数据目录", SelectedPath = dataDirectory.Text })
+                if (picker.ShowDialog(this) == DialogResult.OK) dataDirectory.Text = picker.SelectedPath;
         }
 
         private static void AddLink(FlowLayoutPanel parent, string title, string url)
@@ -189,16 +242,17 @@ namespace WordGitSetup
             parent.Controls.Add(link);
         }
 
-        private async void Run(string mode)
+        private async void Run(string mode, string selectedDirectory = null)
         {
             if (busy) return;
             busy = true;
             foreach (var button in new[] { install, uninstall, check, close }) button.Enabled = false;
+            browse.Enabled = dataDirectory.Enabled = false;
             progress.Visible = true;
             log.Text = mode == "-Uninstall" ? "正在卸载插件，保留版本历史……" : mode == "-CheckOnly" ? "正在检查运行环境……" : "正在安装 WordGit……";
             try
             {
-                var result = await Task.Run(() => payload.Run(mode));
+                var result = await Task.Run(() => payload.Run(mode, selectedDirectory));
                 removed = result.Code == 0 && mode == "-Uninstall" || removed && mode == "-CheckOnly";
                 log.Text = result.Output.Trim();
                 if (result.Code != 0) log.AppendText("\r\n\r\n操作未完成。请根据上面的提示处理后重试。");
@@ -209,6 +263,7 @@ namespace WordGitSetup
                 busy = false;
                 progress.Visible = false;
                 foreach (var button in new[] { install, uninstall, check, close }) button.Enabled = true;
+                browse.Enabled = dataDirectory.Enabled = true;
             }
         }
     }

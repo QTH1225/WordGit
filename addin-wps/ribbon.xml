@@ -29,6 +29,8 @@
                     <button id="WordGitRestore" label="恢复旧版" size="large" getImage="GetImage" onAction="OnAction" supertip="先保存当前稿，再恢复所选版本，并记录一次新提交。"/>
                 </group>
                 <group id="WordGitInformation" label="关于">
+                    <button id="WordGitDataDirectory" label="数据目录" size="large" getImage="GetImage" onAction="OnAction" supertip="查看或更改提交历史的存放目录。"/>
+                    <button id="WordGitUpdates" label="检查更新" size="large" getImage="GetImage" onAction="OnAction" supertip="查看 WordGit 更新日志和下载选项。"/>
                     <button id="WordGitAbout" getLabel="GetLabel" size="large" getImage="GetImage" onAction="OnAction" supertip="查看版本、服务状态、作者和项目链接。"/>
                 </group>
             </tab>

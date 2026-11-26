@@ -477,6 +477,14 @@
         });
     };
 
+    WG.dataDirectory = function () {
+        return WG.run("数据目录", async function () {
+            var info = await WG.call("info", {});
+            if (!info.dataDirectory) throw new Error("请更新 WordGit 内核后再更改数据目录。");
+            await WG.dialog("data-directory", "WordGit · 数据目录", 540, 270, { directory: info.dataDirectory });
+        });
+    };
+
     // Messages queued by the service at startup (e.g. an interrupted replacement repaired).
     WG.showNotices = async function () {
         try {

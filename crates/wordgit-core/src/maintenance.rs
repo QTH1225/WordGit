@@ -69,7 +69,7 @@ impl Maintenance {
                 }
             }
             while !this.stopped.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_secs(5));
+                std::thread::park_timeout(Duration::from_secs(5));
                 this.run_pending();
             }
         })

@@ -22,7 +22,7 @@ namespace WordGit
 
         internal AboutDialog(Func<CancellationToken, Task<UpdateResult>> check = null)
         {
-            this.check = check ?? (token => UpdateChecker.CheckAsync(AppInfo.Version, token));
+            this.check = check ?? (token => UpdateChecker.CheckAsync(AppInfo.DisplayVersion, UpdatePreferences.IncludeBeta, token));
             Text = "关于 WordGit";
             Font = SystemFonts.MessageBoxFont;
             AutoScaleMode = AutoScaleMode.Font;
@@ -34,13 +34,13 @@ namespace WordGit
             ShowInTaskbar = false;
             MinimizeBox = MaximizeBox = false;
 
-            var layout = DialogLayout.Stack(5);
+            var layout = DialogLayout.Stack(6);
             layout.Dock = DockStyle.Top;
             layout.AutoSize = true;
             layout.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             layout.Padding = new Padding(18, 14, 18, 12);
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (var row = 0; row < 5; row++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            for (var row = 0; row < 6; row++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             var header = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 0, 0, 8) };
@@ -71,7 +71,11 @@ namespace WordGit
             links.Controls.Add(Link("发布页", AppInfo.ReleasesUrl));
             links.Controls.Add(Link("反馈问题", AppInfo.IssuesUrl));
             layout.Controls.Add(links, 0, 2);
-            layout.Controls.Add(updateStatus, 0, 3);
+            var beta = new CheckBox { Text = "接收 Beta 更新提醒", AutoSize = true,
+                Checked = UpdatePreferences.IncludeBeta, Margin = new Padding(0, 6, 0, 2) };
+            beta.CheckedChanged += (sender, args) => UpdatePreferences.IncludeBeta = beta.Checked;
+            layout.Controls.Add(beta, 0, 3);
+            layout.Controls.Add(updateStatus, 0, 4);
 
             var actions = DialogLayout.Buttons(true);
             actions.WrapContents = true;
@@ -81,7 +85,7 @@ namespace WordGit
             checkButton.Click += async (sender, args) => await CheckForUpdatesAsync();
             actions.Controls.Add(close);
             actions.Controls.Add(checkButton);
-            layout.Controls.Add(actions, 0, 4);
+            layout.Controls.Add(actions, 0, 5);
 
             // Keep the window width stable and let its height follow the visible rows.
             Action wrap = () => updateStatus.MaximumSize = new Size(
@@ -112,7 +116,11 @@ namespace WordGit
             try
             {
                 var result = await check(cancellation.Token);
-                if (!IsDisposed && !Disposing) updateStatus.Text = result.Message;
+                if (!IsDisposed && !Disposing)
+                {
+                    updateStatus.Text = result.Message;
+                    UpdateDialog.ShowResult(this, result, true);
+                }
             }
             catch (OperationCanceledException) { }
             catch (Exception) { if (!IsDisposed && !Disposing) updateStatus.Text = "检查更新失败，请稍后重试，或打开发布页。"; }

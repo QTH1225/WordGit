@@ -25,7 +25,7 @@ namespace WordGitSetup
             {
                 Application.EnableVisualStyles();
                 using (var payload = Payload.Extract())
-                using (var form = new SetupForm(payload, true))
+                using (var form = new SetupForm(payload, false, false))
                 {
                     form.ShowInTaskbar = false;
                     form.Opacity = 0;
@@ -35,6 +35,9 @@ namespace WordGitSetup
                         form.Show();
                         Application.DoEvents();
                         form.PerformLayout();
+                        var directory = All(form).Single(control => control.AccessibleName == "数据目录");
+                        if (!directory.Visible || directory.Text.Length == 0 || !directory.Parent.ClientRectangle.Contains(directory.Bounds))
+                            throw new Exception("Missing or clipped data directory field.");
                         foreach (var control in All(form).Where(control => control is Button || control is Label))
                             if (control.Visible && !control.Parent.ClientRectangle.Contains(control.Bounds))
                                 throw new Exception("Clipped setup control: " + control.Text);

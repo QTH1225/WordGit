@@ -24,7 +24,7 @@ WPS 文字通过 JS 加载项连接 WordGit 的 Rust 本地服务，支持提交
 
 ## 安装（Linux）
 
-需要：WPS 文字（个人版 12.1 或更新）、git。
+需要 WPS 文字个人版 12.1 或更新版本，以及 Git。Linux x86_64 可从 GitHub Release 下载压缩包，解压后在保留的目录运行 `./install.sh`。源码构建使用以下命令。
 
 ```sh
 cargo build --release -p wordgit
@@ -51,7 +51,9 @@ WPS 内置浏览器依赖 NSS、ATK、AT-SPI、ALSA 等系统库。桌面发行�
 | macOS | `~/Library/Containers/com.kingsoft.wpsoffice.mac/Data/WordGit`（位于 WPS 沙盒内，WPS 才能打开预览和合并稿） |
 | Windows | `%LOCALAPPDATA%\WordGit`（与 Word 版共用） |
 
-目录下有 `repositories`（历史仓库）、`sessions`（预览、对比和合并稿）、`logs/wordgit.log` 和 `service.json`（服务端口与口令，仅当前用户可读）。可用环境变量 `WORDGIT_HOME` 改到别处，`WORDGIT_GIT` 指定 git 路径。
+通过 **WordGit → 数据目录** 查看或迁移 `repositories` 历史仓库。Windows 安装时也可选择位置。Linux 首次安装可执行 `./install.sh --data-directory /完整/路径`。
+
+`sessions`（预览、对比和合并稿）、日志以及 `service.json` 仍由服务保存在上表的运行目录中，以便编辑器继续访问已打开的审阅稿。`WORDGIT_HOME` 可指定运行目录，`WORDGIT_GIT` 可指定 Git 路径。
 
 ## 命令行
 

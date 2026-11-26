@@ -20,7 +20,7 @@
         document.getElementById("version").textContent = window.WORDGIT_VERSION || "";
         var service = document.getElementById("service");
         if (data.info) {
-            service.textContent = "本地服务：已连接（" + data.info.version + "，" + data.info.os + "）\n数据目录：" + data.info.home;
+            service.textContent = "本地服务：已连接（" + data.info.version + "，" + data.info.os + "）\n数据目录：" + (data.info.dataDirectory || data.info.home);
         } else {
             service.className = "error";
             service.textContent = "本地服务：未连接。" + (data.error || "");

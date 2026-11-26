@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/version.js"></script>
+    <script src="../js/core.js"></script>
+    <script src="../js/updates.js"></script>
+</head>
+<body class="dialog">
+    <h3>WordGit 更新</h3>
+    <p class="hint">当前版本 <strong id="current"></strong><span id="new" hidden>　→　新版本 <strong id="version"></strong></span></p>
+    <label><input type="checkbox" id="beta"> 接收 Beta 更新提醒</label>
+    <div class="grow" style="margin-top: 12px">
+        <div id="message" class="message" role="status"></div>
+        <div id="log" hidden>
+            <h3>更新日志</h3>
+            <div id="notes" class="message"></div>
+        </div>
+    </div>
+    <div class="buttons">
+        <button id="close">稍后</button>
+        <button id="check">检查更新</button>
+        <button id="download" class="primary" hidden>下载更新</button>
+    </div>
+    <script>
+        var data = WordGit.dialogData(), $ = function (id) { return document.getElementById(id); };
+        var beta = $("beta"), message = $("message"), download = $("download"), currentLink;
+        $("current").textContent = window.WORDGIT_VERSION;
+        beta.checked = WordGit.updatePreferences().beta;
+
+        function render(result) {
+            var available = !!result.version;
+            message.textContent = result.message || "";
+            $("new").hidden = $("log").hidden = !available;
+            $("version").textContent = result.version || "";
+            $("notes").textContent = result.notes || "";
+            currentLink = WordGit.isUpdateLink(result.url) ? result.url : null;
+            download.hidden = !currentLink;
+            download.textContent = result.direct ? "下载更新" : "打开发布页";
+            WordGit.rememberUpdate(result);
+        }
+
+        async function check() {
+            $("check").disabled = beta.disabled = true;
+            render({ message: "正在检查更新…" });
+            try { render(await WordGit.checkUpdates(beta.checked)); }
+            finally { $("check").disabled = beta.disabled = false; }
+        }
+
+        beta.onchange = function () {
+            try { WordGit.setUpdateBeta(beta.checked); void check(); }
+            catch (error) { beta.checked = !beta.checked; message.textContent = WordGit.errorText(error); }
+        };
+        $("check").onclick = check;
+        $("close").onclick = function () { WordGit.finishDialog(false); };
+        download.onclick = function () {
+            if (!WordGit.isUpdateLink(currentLink)) return;
+            try { WordGit.app().OAAssist.ShellExecute(currentLink); }
+            catch (error) {
+                // Let the user copy a verified link if WPS cannot launch the default browser.
+                message.textContent = "请在浏览器打开此下载地址\n" + currentLink;
+            }
+        };
+        window.addEventListener("pagehide", function () {
+            var key = WordGit.dialogKey();
+            if (key) WordGit.app().PluginStorage.setItem(key, JSON.stringify({ closed: true, result: false }));
+        });
+        document.addEventListener("keydown", function (event) {
+            if (event.key === "Escape") WordGit.finishDialog(false);
+        });
+
+        if (data.result) render(data.result);
+        else void check();
+    </script>
+</body>
+</html>

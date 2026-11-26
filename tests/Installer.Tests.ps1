@@ -95,6 +95,14 @@ try {
             try { $legacy.SetValue('LoadBehavior', 3, [Microsoft.Win32.RegistryValueKind]::DWord) } finally { $legacy.Dispose() }
             Register-WordGitPlugin $base $identity.FullName $identity.Version.ToString() ([Uri]$installed).AbsoluteUri
             Register-WordGitProgram $base $app $identity.Version.ToString()
+            $runPath = 'Software\Microsoft\Windows\CurrentVersion\Run'
+            Set-WordGitRegistryValue $base $runPath 'WordGit' ('"' + (Join-Path $app 'wordgit.exe') + '" serve')
+            [void](Register-WordGitKernel $base $app)
+            $key = $base.OpenSubKey($runPath)
+            try {
+                $launcher = Join-Path $app 'wordgit-launcher.exe'
+                Assert-InstallTest ($key.GetValue('WordGit') -eq ('"' + $launcher + '"') -and (Test-Path -LiteralPath $launcher)) 'Login still launches the console executable'
+            } finally { $key.Dispose() }
             $key = $base.OpenSubKey('Software\Classes\CLSID\{C5707F76-F46F-4A11-800B-18E7D98377D3}\InprocServer32')
             try {
                 Assert-InstallTest ($key.GetValue('CodeBase') -eq ([Uri]$installed).AbsoluteUri -and $key.GetValue('ThreadingModel') -eq 'Both') 'Invalid COM registration'

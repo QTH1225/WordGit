@@ -12,4 +12,5 @@ WordGit — Word/WPS 文档版本管理
                                     wordgit call branch/create '{"document":"/x/a.docx","name":"review"}'
   wordgit version
 
-数据目录可用环境变量 WORDGIT_HOME 指定；git 路径可用 WORDGIT_GIT 指定。
+wordgit data-directory [绝对路径]  查看数据目录；服务停止时可迁移历史。
+运行目录可用环境变量 WORDGIT_HOME 指定；git 路径可用 WORDGIT_GIT 指定。

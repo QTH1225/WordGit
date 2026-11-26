@@ -5,7 +5,7 @@
 //! random token on every call except `ping`. The token lives in `service.json`, readable only by
 //! the user; the add-in reads it through WPS's file API, which ordinary web pages do not have.
 
-use crate::ops::{self, Context};
+use crate::{data_directory, ops::{self, Context}};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
@@ -15,8 +15,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::thread::JoinHandle;
 use wordgit_core::Error;
 
 pub const DEFAULT_PORT: u16 = 47821;
@@ -24,9 +25,65 @@ pub const TOKEN_HEADER: &str = "x-wordgit-token";
 
 #[derive(Clone)]
 pub struct AppState {
-    pub ctx: Arc<Context>,
+    running: Arc<RwLock<RunningContext>>,
     pub token: String,
     pub port: u16,
+}
+
+struct RunningContext {
+    ctx: Arc<Context>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl RunningContext {
+    fn new(ctx: Arc<Context>) -> Self {
+        Self { worker: Some(ctx.maintenance.spawn()), ctx }
+    }
+
+    fn stop_worker(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            self.ctx.maintenance.stop();
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for RunningContext {
+    fn drop(&mut self) {
+        self.stop_worker();
+    }
+}
+
+impl AppState {
+    pub fn new(ctx: Arc<Context>, token: String, port: u16) -> Self {
+        Self { running: Arc::new(RwLock::new(RunningContext::new(ctx))), token, port }
+    }
+
+    fn read(&self) -> wordgit_core::Result<RwLockReadGuard<'_, RunningContext>> {
+        self.running.try_read().map_err(|_| Error::invalid("正在迁移 WordGit 历史，请稍后重试。"))
+    }
+
+    fn change_data_directory(&self, directory: PathBuf) -> wordgit_core::Result<Value> {
+        let mut running = self.running.try_write().map_err(|_| Error::invalid("WordGit 正在处理文档，请完成当前操作后再迁移。"))?;
+        if running.ctx.has_pending_replacement() {
+            return Err(Error::invalid("有正在进行的恢复、切换或合并，请完成后再迁移。"));
+        }
+        running.stop_worker();
+        let previous = &running.ctx;
+        let result = data_directory::migrate(&previous.paths, &directory);
+        let paths = result.as_ref().map(|done| done.paths.clone()).unwrap_or_else(|_| previous.paths.clone());
+        let ctx = crate::make_context(paths, previous.git.clone());
+        let notices = previous.take_notices();
+        ctx.add_notices(notices["notices"].as_array().into_iter().flatten().filter_map(|entry| entry.as_str().map(str::to_owned)).collect());
+        *running = RunningContext::new(ctx);
+        result.map(|done| json!({ "dataDirectory": done.paths.data_directory(), "message": done.message }))
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct DataDirectoryRequest {
+    directory: PathBuf,
 }
 
 fn error_response(error: &Error) -> Response {
@@ -53,10 +110,12 @@ where
                 .into_response()
         }
     };
-    let ctx = Arc::clone(&state.ctx);
-    ctx.maintenance.touch();
     let outcome = tokio::task::spawn_blocking(move || {
-        let result = run(&ctx, request);
+        let running = state.read()?;
+        let ctx = &running.ctx;
+        data_directory::ensure_access(&ctx.paths)?;
+        ctx.maintenance.touch();
+        let result = run(ctx, request);
         ctx.maintenance.touch();
         if let Err(error) = &result {
             if matches!(error, Error::Io(_) | Error::Data(_)) {
@@ -69,10 +128,7 @@ where
     match outcome {
         Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err(error)) => error_response(&error),
-        Err(panic) => {
-            state.ctx.paths.log_error(&format!("operation panicked: {panic}"));
-            error_response(&Error::invalid("WordGit 服务内部错误，详情见日志。"))
-        }
+        Err(_) => error_response(&Error::invalid("WordGit 服务内部错误。")),
     }
 }
 
@@ -92,22 +148,36 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/ping", get(ping))
         .route(
             "/api/v1/info",
-            post(|State(state): State<AppState>| async move { Json(state.ctx.ping()) }),
+            post(|State(state): State<AppState>| async move {
+                match state.read() { Ok(running) => Json(running.ctx.ping()).into_response(), Err(error) => error_response(&error) }
+            }),
         )
         .route(
             "/api/v1/notices",
-            post(|State(state): State<AppState>| async move { Json(state.ctx.take_notices()) }),
+            post(|State(state): State<AppState>| async move {
+                match state.read() { Ok(running) => Json(running.ctx.take_notices()).into_response(), Err(error) => error_response(&error) }
+            }),
         )
         .route(
             "/api/v1/cancel",
             post(|State(state): State<AppState>, Json(body): Json<ops::CancelRequest>| async move {
-                Json(state.ctx.cancel(&body))
+                match state.read() { Ok(running) => Json(running.ctx.cancel(&body)).into_response(), Err(error) => error_response(&error) }
             }),
         )
         .route(
             "/api/v1/plan/cancel",
             post(|State(state): State<AppState>, Json(body): Json<ops::PlanRequest>| async move {
-                Json(state.ctx.cancel_plan(&body))
+                match state.read() { Ok(running) => Json(running.ctx.cancel_plan(&body)).into_response(), Err(error) => error_response(&error) }
+            }),
+        )
+        .route(
+            "/api/v1/settings/data-directory",
+            post(|State(state): State<AppState>, Json(body): Json<DataDirectoryRequest>| async move {
+                match tokio::task::spawn_blocking(move || state.change_data_directory(body.directory)).await {
+                    Ok(Ok(value)) => Json(value).into_response(),
+                    Ok(Err(error)) => error_response(&error),
+                    Err(_) => error_response(&Error::invalid("数据目录迁移中断。请重新打开设置检查当前目录。")),
+                }
             }),
         );
     route!(api, "/api/v1/status", Context::status);

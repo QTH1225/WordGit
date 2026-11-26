@@ -53,6 +53,7 @@ namespace WordGit
                 VerifyRemoteUi(args[0], items);
                 VerifyImportReview(args[0], items);
                 VerifyAboutDialog(args[0]);
+                VerifyUpdateDialog(args[0]);
                 VerifyBackgroundOperationCancel();
                 VerifyHistoryPane(args[0], items, one, three);
                 VerifyRevisionActions(args[0]);
@@ -698,12 +699,14 @@ namespace WordGit
                 throw new InvalidOperationException("Storage optimization is exposed as a primary Ribbon button");
             var buttons = ribbon.GetElementsByTagName("button").Cast<System.Xml.XmlElement>().ToArray();
             var callbacks = buttons.Select(button => button.GetAttribute("onAction")).ToArray();
-            if (buttons.Length != 18 || callbacks.Distinct().Count() != 18 || !callbacks.Contains("OnDeleteBranch") ||
+            if (buttons.Length != 19 || callbacks.Distinct().Count() != 19 || !callbacks.Contains("OnDeleteBranch") ||
                 callbacks.Contains("OnMergeReview") ||
                 !buttons.Any(button => button.GetAttribute("id") == "WordGitImportReview" &&
                     button.GetAttribute("label").Replace("\u2060", "").Replace("\u200B", "") == "返稿合并") ||
                 !buttons.Any(button => button.GetAttribute("label").Replace('\u00A0', ' ') == "WordGit " + AppInfo.DisplayVersion && button.GetAttribute("onAction") == "OnAbout") ||
                 !callbacks.Contains("OnCheckUpdates") || !callbacks.Contains("OnImportReview") ||
+                !buttons.Any(button => button.GetAttribute("onAction") == "OnDataDirectory" &&
+                    button.GetAttribute("label") == "数\u2060据\u200B目\u2060录") ||
                 new[] { "OnLinkRemote", "OnCloneRemote", "OnFetchRemote", "OnPullRemote", "OnPushRemote" }.Any(action => !callbacks.Contains(action)) ||
                 callbacks.Contains("OnCompressHistory") || ribbon.GetElementsByTagName("menu").Cast<System.Xml.XmlElement>().Any(menu => menu.GetAttribute("id") == "WordGitMaintenance") ||
                 buttons.Any(button => String.IsNullOrEmpty(button.GetAttribute("imageMso")) == String.IsNullOrEmpty(button.GetAttribute("getImage"))) ||
@@ -902,6 +905,25 @@ namespace WordGit
             if (!cancellation.Task.IsCanceled) throw new InvalidOperationException("Closed update dialog kept its request alive");
         }
 
+        private static void VerifyUpdateDialog(string output)
+        {
+            var result = new UpdateResult(UpdateState.Available, "当前版本 0.12.0  →  新版本 0.12.1-beta.2",
+                "0.12.1-beta.2", String.Join("\n", Enumerable.Repeat("更新日志：修复和改进。", 40)),
+                AppInfo.ReleasesUrl + "/tag/v0.12.1-beta.2");
+            using (var dialog = new UpdateDialog(result))
+            {
+                dialog.Show();
+                Application.DoEvents();
+                var versions = Descendants(dialog).OfType<Label>().Single(label => label.Name == "releaseVersions");
+                var notes = Descendants(dialog).OfType<TextBox>().Single(box => box.Name == "releaseNotes");
+                var download = Descendants(dialog).OfType<Button>().Single(button => button.Text == "下载更新");
+                if (versions.Text != result.Message || !notes.ReadOnly || !notes.Text.Contains("更新日志") ||
+                    !download.Visible || !download.Enabled)
+                    throw new InvalidOperationException("Update popup lacks version, notes or download");
+                VerifyNoOverlap(dialog);
+                Render(dialog, Path.Combine(output, "update-dialog.png"));
+            }
+        }
         private static void VerifyAboutContent(AboutDialog dialog)
         {
             if (!dialog.Visible) dialog.Show();

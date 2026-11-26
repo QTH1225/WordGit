@@ -12,11 +12,12 @@ use std::time::{Duration, SystemTime};
 #[derive(Clone, Debug)]
 pub struct AppPaths {
     pub root: PathBuf,
+    data_directory: Option<PathBuf>,
 }
 
 impl AppPaths {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        AppPaths { root: root.into() }
+        AppPaths { root: root.into(), data_directory: None }
     }
 
     /// `WORDGIT_HOME` overrides the platform default (used by tests and portable setups).
@@ -33,7 +34,20 @@ impl AppPaths {
     }
 
     pub fn repositories(&self) -> PathBuf {
-        self.root.join("repositories")
+        self.data_directory().join("repositories")
+    }
+
+    pub fn data_directory(&self) -> &Path {
+        self.data_directory.as_deref().unwrap_or(&self.root)
+    }
+
+    pub fn has_custom_data_directory(&self) -> bool {
+        self.data_directory.is_some()
+    }
+
+    pub fn with_data_directory(mut self, directory: PathBuf) -> Self {
+        self.data_directory = Some(directory);
+        self
     }
 
     pub fn sessions(&self) -> PathBuf {

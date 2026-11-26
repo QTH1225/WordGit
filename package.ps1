@@ -4,7 +4,10 @@ $ErrorActionPreference = 'Stop'
 if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -Test:$Test -UiTest:$Test -PaneTest:$Test -KernelTest:$KernelTest }
 $sourceDll = Join-Path $PSScriptRoot 'bin\WordGit.dll'
 $identity = [Reflection.AssemblyName]::GetAssemblyName($sourceDll)
-$version = $identity.Version.ToString(3)
+$version = [Diagnostics.FileVersionInfo]::GetVersionInfo($sourceDll).ProductVersion
+if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[1-9][0-9]*)?$' -or $version.Split('-')[0] -ne $identity.Version.ToString(3)) {
+    throw '插件的完整版本号与程序集版本不一致。'
+}
 # src/AddIn.cs is the single source of the version; published documents must agree with it.
 $readme = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'README.md'))
 $releasing = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'docs\RELEASING.md'))
@@ -12,7 +15,7 @@ $stale = @()
 if ($readme -notmatch ('(?m)^# WordGit ' + [regex]::Escape($version) + '\s*$')) { $stale += 'README.md 标题' }
 if ($readme -notmatch [regex]::Escape('WordGit-' + $version + '-Setup.exe')) { $stale += 'README.md 安装包名' }
 if ($releasing -notmatch [regex]::Escape('WordGit ' + $version)) { $stale += 'docs/RELEASING.md 当前版本' }
-$otherVersions = [regex]::Matches($readme, 'WordGit[ -](\d+\.\d+\.\d+)') | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ -ne $version } | Select-Object -Unique
+$otherVersions = [regex]::Matches($readme, 'WordGit[ -](\d+\.\d+\.\d+(?:-beta\.\d+)?)') | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ -ne $version } | Select-Object -Unique
 if ($otherVersions) { $stale += ('README.md 仍提到 ' + ($otherVersions -join '、')) }
 if ($stale.Count -gt 0) { throw ('文档版本与插件版本 ' + $version + ' 不一致：' + ($stale -join '；')) }
 $bin = Join-Path $PSScriptRoot 'bin'
@@ -21,7 +24,7 @@ $package = Join-Path $work ("WordGit-" + $version)
 $dist = Join-Path $PSScriptRoot 'dist'
 New-Item -ItemType Directory -Path $package,$dist -Force | Out-Null
 try {
-    $allowlist = @('bin/WordGit.dll','bin/wordgit.exe','install.ps1','Install.cmd','Uninstall.cmd','Check.cmd','README.md',
+    $allowlist = @('bin/WordGit.dll','bin/wordgit.exe','bin/wordgit-launcher.exe','install.ps1','Install.cmd','Uninstall.cmd','Check.cmd','README.md',
         'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','docs/WPS.md','LICENSE','addin-wps/')
     # 目录项（以 / 结尾）展开成逐个文件，安装包里才能带上 WPS 文字加载项。
     $entries = @()

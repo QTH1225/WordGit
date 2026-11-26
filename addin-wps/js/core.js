@@ -65,6 +65,8 @@
         return folder.replace(/\/ui$/, "");
     }
 
+    WG.addinFolder = addinFolder;
+
     // ---- service ------------------------------------------------------------------------------
 
     var service = null;
@@ -582,12 +584,12 @@
 
     // Opens ui/<page>.html as a WPS dialog; `data` is passed through PluginStorage and the
     // dialog's result comes back the same way.
-    WG.dialog = function (page, title, width, height, data) {
+    WG.dialog = function (page, title, width, height, data, modal) {
         var app = WG.app();
         var key = "wordgit.dialog." + WG.newOperationId();
         app.PluginStorage.setItem(key, JSON.stringify({ data: data || {}, result: null }));
         var scale = global.devicePixelRatio || 1;
-        app.ShowDialog(WG.baseUrl() + "ui/" + page + ".html?key=" + key, title, width * scale, height * scale, true);
+        app.ShowDialog(WG.baseUrl() + "ui/" + page + ".html?key=" + key, title, width * scale, height * scale, modal !== false);
         return new Promise(function (resolve) {
             var timer = setInterval(function () {
                 var raw = app.PluginStorage.getItem(key);

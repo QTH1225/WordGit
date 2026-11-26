@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wordgit-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and extract changelog
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          python3 scripts/prepare-release.py "$RELEASE_TAG" release-notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  test:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  linux-package:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build Linux x86_64 distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --locked --release --target x86_64-unknown-linux-musl -p wordgit
+          bash scripts/package-linux.sh target/x86_64-unknown-linux-musl/release/wordgit dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wordgit-linux
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, test, linux-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: wordgit-package
+          path: windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: wordgit-linux
+          path: linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+      - name: Assemble and verify release assets
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          mkdir release
+          setup="WordGit-$VERSION-Setup.exe"
+          windows="WordGit-$VERSION-windows.zip"
+          linux="WordGit-$VERSION-linux-x86_64.tar.gz"
+          source="WordGit-$VERSION-source.zip"
+          (cd windows && sha256sum -c SHA256SUMS.txt)
+          (cd linux && sha256sum -c "$linux.sha256")
+          cp "windows/$setup" "windows/$windows" "linux/$linux" "linux/$linux.sha256" release/
+          git archive --format=zip --prefix="WordGit-$VERSION-source/" -o "release/$source" HEAD
+          (cd release && sha256sum "$setup" "$windows" "$linux" "$source" > SHA256SUMS.txt)
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: bash scripts/publish-release.sh
