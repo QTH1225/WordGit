@@ -2,7 +2,17 @@
 
 ## 当前版本
 
-WordGit 0.11.2 调整提交与信息窗口：
+WordGit 0.12.0 把版本历史统一到 Rust 内核：
+
+- Word 与 WPS 共用同一个内核 `wordgit.exe`（本地服务，仅监听 127.0.0.1，请求需带服务口令），界面层不再各自实现 Git 操作，历史实现从两套减为一套。
+- 既有历史、分支、远程协作与 Word 原生对比、修订合并全部保留；后台 Word 生成合并稿、多轮返稿去重（`merge/context`）照旧可用。
+- 切换分支、恢复、拉取、完成合并统一走两段式替换：先取计划，关掉文档后应用，失败可取消并用恢复记录回滚。
+- WPS 加载项改名为 WordGit，口令来源跟随安装目录；安装器一并更新 WPS 加载项并清理旧的原型注册。
+- 提交图侧栏先画骨架再读数据，首次打开不再黑屏等待；空历史提示语不再被拆成两行。
+- 安装包包含界面插件和静态链接 VC++ 运行库的内核。内核在安装后启动，退出后可由 Word 自动拉起。
+- Word 远程操作的「取消」会向内核发出带口令的请求。内核收到后停止对应的 Git 操作。
+
+0.11.2 的提交与信息窗口调整继续保留：
 
 - 提交版本使用单独的标题和多行详细内容输入框，放大编辑区；详细内容可留空，保留 Ctrl + Enter 提交。
 - 提交结果和关于窗口按当前 Word 窗口居中显示，侧栏入口使用相同的窗口归属。
@@ -56,10 +66,10 @@ WordGit 0.11.2 调整提交与信息窗口：
 
 ## 生成与发布
 
-1. 版本号只在 `src/AddIn.cs` 的 `AssemblyVersion` / `AssemblyFileVersion` 中修改，同时更新 README 标题、安装包文件名与本文“当前版本”；package.ps1 会核对三者是否一致。
-2. 在开发机运行 `package.ps1 -Test -WordTest`。同一次运行先编译插件，再用同一份源码完成核心、远程、界面、Word 实机与安装测试，最后打包这次编译出的 DLL。
+1. 对齐 `src/AddIn.cs` 的程序集版本和 `Cargo.toml` 的工作区版本。同步更新 README 标题、安装包文件名与本文的当前版本。
+2. 在开发机运行 `package.ps1 -Test -KernelTest`。同一次运行先编译插件与内核，再用同一份源码完成更新检查、界面、侧栏、Word 实机与安装测试，最后打包这次编译出的 DLL 与 `wordgit.exe`。
 3. 核对 EXE、ZIP 的版本与 SHA256SUMS.txt，并确认 GitHub Actions 的 CI 与 CodeQL 均已通过。
-4. 在准备发布的位置上传两个安装文件和校验文件，并附上相同版本标签对应的完整源码；源码包含 src、packaging、tests、docs、根目录构建与安装脚本及 LICENSE。
+4. 上传安装程序、ZIP 安装包和校验文件，并附上同一版本标签的完整源码。源码包含 Word 加载项 `src/`、Rust 内核 `crates/`、WPS 加载项 `addin-wps/`、`Cargo.toml`、`Cargo.lock`、`.cargo/`、`packaging/`、`tests/`、`docs/`、根目录的构建、打包和安装脚本，以及 `LICENSE`。
 5. 发布说明写明验证过的 Windows、Word 位数、Git 版本和已知限制。
 6. 核对作者 QTH1225、项目链接与 GPL-3.0-only 许可证，正式分发时配置发布者代码签名（`signtool sign /fd SHA256 /tr <时间戳服务器> /td SHA256`，对 WordGit.dll 与 WordGit.Setup.exe 各签一次，签 DLL 须在打包之前）。
 

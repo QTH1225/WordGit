@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>WordGit 探测对话框</title>
+    <style> body { font: 13px/1.5 sans-serif; margin: 16px; } </style>
+</head>
+<body>
+    <h3>WordGit 探测对话框</h3>
+    <p id="status">正在访问本地服务…</p>
+    <script>
+        var SERVICE = "http://127.0.0.1:47820";
+        function send(step, data) {
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open("POST", SERVICE + "/api/v1/report", true);
+                xhr.setRequestHeader("Content-Type", "application/json");
+                xhr.send(JSON.stringify({ step: step, data: data }));
+            } catch (e) { /* reported through the page text */ }
+        }
+        send("dialog.loaded", { href: location.href, origin: location.origin, hasApplication: typeof window.Application });
+        fetch(SERVICE + "/api/v1/ping", { cache: "no-store" })
+            .then(function (r) { return r.text(); })
+            .then(function (text) { document.getElementById("status").textContent = "本地服务正常：" + text; send("dialog.ping", { ok: true }); })
+            .catch(function (e) { document.getElementById("status").textContent = "失败：" + e; send("dialog.ping", { ok: false, error: String(e) }); });
+        // Closing from script is part of the probe: WordGit dialogs must be able to dismiss themselves.
+        setTimeout(function () {
+            try { window.close(); send("dialog.close", { ok: true }); } catch (e) { send("dialog.close", { ok: false, error: String(e) }); }
+        }, 8000);
+    </script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
-param([switch]$Test, [switch]$WordTest, [switch]$NoBuild)
+param([switch]$Test, [switch]$KernelTest, [switch]$NoBuild)
 $ErrorActionPreference = 'Stop'
-if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -Test:$Test -UiTest:$Test -WordTest:$WordTest }
+if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -Test:$Test -UiTest:$Test -PaneTest:$Test -KernelTest:$KernelTest }
 $sourceDll = Join-Path $PSScriptRoot 'bin\WordGit.dll'
 $identity = [Reflection.AssemblyName]::GetAssemblyName($sourceDll)
 $version = $identity.Version.ToString(3)
@@ -21,11 +21,21 @@ $package = Join-Path $work ("WordGit-" + $version)
 $dist = Join-Path $PSScriptRoot 'dist'
 New-Item -ItemType Directory -Path $package,$dist -Force | Out-Null
 try {
-    $allowlist = @('bin/WordGit.dll','install.ps1','Install.cmd','Uninstall.cmd','Check.cmd','README.md',
-        'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','LICENSE')
+    $allowlist = @('bin/WordGit.dll','bin/wordgit.exe','install.ps1','Install.cmd','Uninstall.cmd','Check.cmd','README.md',
+        'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','docs/WPS.md','LICENSE','addin-wps/')
+    # 目录项（以 / 结尾）展开成逐个文件，安装包里才能带上 WPS 文字加载项。
+    $entries = @()
+    foreach ($name in $allowlist) {
+        if (-not $name.EndsWith('/')) { $entries += $name; continue }
+        $folder = Join-Path $PSScriptRoot $name.TrimEnd('/')
+        if (-not (Test-Path -LiteralPath $folder -PathType Container)) { throw "发布目录缺失：$name" }
+        $entries += @(Get-ChildItem -LiteralPath $folder -Recurse -File | ForEach-Object {
+            $_.FullName.Substring($PSScriptRoot.Length + 1).Replace('\', '/')
+        })
+    }
     $files = @()
     $number = 0
-    foreach ($name in $allowlist) {
+    foreach ($name in $entries) {
         $from = Join-Path $PSScriptRoot $name
         $to = Join-Path $package $name
         if (-not(Test-Path -LiteralPath $from -PathType Leaf)) { throw "发布文件缺失：$name" }

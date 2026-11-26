@@ -10,6 +10,9 @@ namespace WordGit
     {
         internal Func<int> ReviewHeight;
         internal Func<int> FooterHeight;
+        // Set the first time the surface actually reaches the screen.
+        internal bool Painted { get; private set; }
+        internal Action FirstPaint;
 
         internal PaneLoadingFrame()
         {
@@ -29,6 +32,13 @@ namespace WordGit
 
         protected override void OnPaint(PaintEventArgs args)
         {
+            if (!Painted)
+            {
+                Painted = true;
+                var firstPaint = FirstPaint;
+                FirstPaint = null;
+                if (firstPaint != null) firstPaint();
+            }
             var graphics = args.Graphics;
             graphics.Clear(BackColor);
             if (ClientSize.Width < 40 || ClientSize.Height < 120) return;

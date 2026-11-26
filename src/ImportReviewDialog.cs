@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -21,7 +21,7 @@ namespace WordGit
         internal readonly TextBox BranchName = new TextBox { Dock = DockStyle.Fill, AccessibleName = "返稿分支名" };
         internal readonly TextBox Reviewer = new TextBox { Dock = DockStyle.Fill, Text = "老师返稿", AccessibleName = "返稿来源" };
         internal readonly CheckBox SaveOriginal = new CheckBox { AutoSize = true, Checked = true,
-            Text = "将原始返稿保存为独立分支", Margin = new Padding(0, 10, 0, 8) };
+            Text = "在分支列表显示原始返稿", Margin = new Padding(0, 10, 0, 8) };
         internal ImportReviewOptions Options { get; private set; }
         internal bool ChooseHistoricalMerge { get; private set; }
         private readonly string originalPath;
@@ -74,14 +74,14 @@ namespace WordGit
             if (supportsTrackedMerge) layout.Controls.Add(Field("合入分支", target), 0, 2);
             var defaultBranch = "review-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
             BranchName.Text = defaultBranch;
-            for (var suffix = 2; GitHistory.ReviewBranchConflict(BranchName.Text, branches) != null; suffix++)
+            for (var suffix = 2; ReferenceText.Conflict(BranchName.Text, branches) != null; suffix++)
                 BranchName.Text = defaultBranch + "-" + suffix;
             if (supportsTrackedMerge) layout.Controls.Add(SaveOriginal, 0, 3);
             var branchRow = Field("返稿分支", BranchName);
             var reviewerRow = Field("返稿来源", Reviewer);
             layout.Controls.Add(branchRow, 0, 4);
             layout.Controls.Add(reviewerRow, 0, 5);
-            var note = DialogLayout.Label(supportsTrackedMerge ? "当前稿需要提交时，会先请你提交，再使用这里选好的返稿和送审版本继续。"
+            var note = DialogLayout.Label(supportsTrackedMerge ? "原始返稿保留在提交图中。当前稿需要提交时，会使用这里选好的返稿和送审版本继续。"
                 : "当前 WPS 文字支持将原始返稿保存为分支，可在提交图中预览或对比。自动生成修订合并稿暂不可用。");
             layout.Controls.Add(note, 0, 6);
             var historical = new LinkLabel { Text = "合并两个历史版本…", AutoSize = true, Margin = new Padding(0, 2, 0, 0),
@@ -112,7 +112,7 @@ namespace WordGit
                         throw new InvalidOperationException("请选择收到的返稿文件。");
                     var branchName = SaveOriginal.Checked ? BranchName.Text.Trim() : null;
                     Options = new ImportReviewOptions { FilePath = path, Branch = branchName, Basis = revisions[BasisPicker.SelectedIndex - 1],
-                        Reviewer = branchName == null ? null : Reviewer.Text.Trim(), CreateMergeDraft = createMergeDraft };
+                        Reviewer = Reviewer.Text.Trim(), CreateMergeDraft = createMergeDraft };
                     DialogResult = DialogResult.OK;
                 }
                 catch (Exception error) { MessageBox.Show(this, error.Message, "WordGit", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
@@ -122,11 +122,10 @@ namespace WordGit
             EventHandler validate = (sender, args) => {
                 var keepBranch = SaveOriginal.Checked;
                 var hasFile = File.Exists(FilePath.Text.Trim());
-                var branchReady = !String.IsNullOrWhiteSpace(BranchName.Text) && !String.IsNullOrWhiteSpace(Reviewer.Text);
+                var branchReady = !String.IsNullOrWhiteSpace(BranchName.Text);
                 branchRow.Visible = keepBranch;
-                reviewerRow.Visible = keepBranch;
                 saveOnly.Visible = keepBranch;
-                var ready = hasFile && BasisPicker.SelectedIndex > 0;
+                var ready = hasFile && BasisPicker.SelectedIndex > 0 && !String.IsNullOrWhiteSpace(Reviewer.Text);
                 saveOnly.Enabled = ready && branchReady;
                 merge.Enabled = ready && (!keepBranch || branchReady);
             };

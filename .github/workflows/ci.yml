@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, rust-core]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and run history, update-check and remote tests
+      - name: Build the add-in and kernel, run update-check tests
         shell: powershell
         run: .\build.ps1 -Test
 
@@ -26,14 +26,52 @@ jobs:
         shell: powershell
         run: .\build.ps1 -UiTest
 
+      - name: Run history pane first-paint tests
+        shell: powershell
+        run: .\build.ps1 -NoRust -PaneTest
+
       # package.ps1 -Test also runs installer probes that need desktop Word, so CI only
       # verifies that the release package builds and that document versions match.
       - name: Build release package
         shell: powershell
         run: .\package.ps1 -NoBuild
 
+      - name: Verify the Windows release payload
+        shell: powershell
+        run: |
+          $setup = Get-ChildItem -LiteralPath .\dist -Filter '*-Setup.exe' | Select-Object -First 1
+          $probe = Start-Process -FilePath $setup.FullName -ArgumentList '/verify' -WindowStyle Hidden -Wait -PassThru
+          if ($probe.ExitCode -ne 0) { throw 'Setup payload verification failed.' }
+          $zip = Get-ChildItem -LiteralPath .\dist -Filter '*-windows.zip' | Select-Object -First 1
+          $staging = Join-Path $env:RUNNER_TEMP 'wordgit-release-check'
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $staging
+          $payload = Get-ChildItem -LiteralPath $staging -Directory | Select-Object -First 1
+          if (!(Test-Path -LiteralPath (Join-Path $payload.FullName 'docs\WPS.md'))) { throw 'Missing WPS installation guide.' }
+          & (Join-Path $payload.FullName 'bin\wordgit.exe') version
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged kernel could not start.' }
+
       - uses: actions/upload-artifact@v4
         with:
           name: wordgit-package
           path: dist/
           if-no-files-found: error
+
+  rust:
+    # Rust core and service: unit tests, real-git integration tests and the HTTP service tests.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup component add clippy
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked --workspace
+      - name: Add-in scripts parse
+        if: runner.os == 'Linux'
+        run: for f in addin-wps/js/*.js addin-wps/test/*.js; do node --check "$f"; done

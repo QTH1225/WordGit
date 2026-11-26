@@ -3,3 +3,6 @@ obj/
 dist/
 *.user
 .codegraph/
+/target/
+docker/wps-linux/cache/
+docker/wps-linux/out/

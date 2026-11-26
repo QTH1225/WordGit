@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/version.js"></script>
+    <script src="../js/core.js"></script>
+    <script src="../js/graph.js"></script>
+    <script src="../js/flows.js"></script>
+</head>
+<body class="pane">
+    <main id="paneContent" class="pane-content">
+        <section class="pane-review" aria-label="批注与修订">
+            <div class="pane-header">
+                <span id="reviewTitle">批注与修订</span>
+                <select id="filter" aria-label="筛选批注与修订">
+                    <option value="all">全部</option><option value="comment">批注</option><option value="revision">修订</option>
+                </select>
+            </div>
+            <div id="items" class="items" role="listbox" aria-label="批注与修订列表"><div class="empty">正在读取批注与修订…</div></div>
+            <div class="review-actions">
+                <button id="accept" disabled title="接受选中的修订，并定位下一条。">接受</button>
+                <button id="reject" disabled title="拒绝选中的修订，并定位下一条。">拒绝</button>
+                <span class="muted" id="reviewStatus" role="status"></span>
+            </div>
+        </section>
+        <div id="splitter" class="pane-splitter" role="separator" aria-label="调整批注与提交图的高度"
+            aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="38" tabindex="0"></div>
+        <section class="pane-versions" aria-label="Git 提交记录">
+            <div class="pane-history">
+                <div class="pane-header">
+                    <strong id="branch" class="pane-ellipsis">当前分支 —</strong>
+                    <button id="refresh">刷新</button>
+                </div>
+                <div id="file" class="pane-filename pane-ellipsis muted"></div>
+                <div class="pane-grid working-row">
+                    <span id="state" class="pane-ellipsis" role="status">正在读取…</span>
+                    <button id="compareLatest" disabled title="对比当前稿和当前分支的最新提交。">对比最新提交</button>
+                </div>
+                <fieldset class="pane-remote">
+                    <legend>远程协作</legend>
+                    <div id="remoteCaption" class="pane-ellipsis muted">尚未关联远程仓库</div>
+                    <div class="pane-grid remote-buttons">
+                        <button id="link" disabled>关联</button>
+                        <button id="fetch" disabled>获取</button>
+                        <button id="pull" disabled>拉取</button>
+                        <button id="push" disabled>推送</button>
+                    </div>
+                </fieldset>
+                <select id="branchFilter" aria-label="筛选分支" disabled><option value="">全部分支</option></select>
+                <div class="pane-grid version-buttons">
+                    <button id="commit" disabled>提交<wbr>版本</button>
+                    <button id="importReview" disabled>返稿<wbr>合并</button>
+                    <button id="preview" disabled title="双击提交也可只读打开。">预览</button>
+                    <button id="compare" disabled title="按 Ctrl 可选择两个历史版本。">对比当前稿</button>
+                </div>
+                <div id="graph" class="graph" role="listbox" aria-label="Git 提交记录" aria-multiselectable="true">
+                    <div class="empty">正在读取提交记录…</div>
+                </div>
+                <div id="historyStatus" class="pane-hint muted" role="status"></div>
+            </div>
+        </section>
+    </main>
+    <footer class="pane-footer"><button type="button" class="pane-link" id="about" title="查看版本、作者和项目链接。">WordGit <span id="version"></span> · QTH1225</button></footer>
+    <script src="../js/pane.js"></script>
+</body>
+</html>

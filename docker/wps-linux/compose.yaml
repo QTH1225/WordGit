@@ -1,0 +1,19 @@
+name: wordgit-p0
+
+services:
+  wps:
+    build:
+      context: ../..
+      dockerfile: docker/wps-linux/Dockerfile
+    image: wordgit-wps-linux:p0
+    environment:
+      PROBE_MODE: ${PROBE_MODE:-e2e}
+      WPS_WINDOW_MODE: ${WPS_WINDOW_MODE:-fusion}
+    ports:
+      - "127.0.0.1:6080:6080"
+    volumes:
+      - ./out:/out
+    shm_size: 2gb
+    # WPS embeds Chromium for add-in pages; its sandbox needs syscalls Docker's default profile blocks.
+    security_opt:
+      - seccomp=unconfined

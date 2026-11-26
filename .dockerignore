@@ -1,0 +1,8 @@
+.git
+.codegraph
+.claude
+bin
+obj
+dist
+target
+docker/wps-linux/out

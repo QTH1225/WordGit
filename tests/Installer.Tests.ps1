@@ -70,11 +70,9 @@ try {
     $verify = Invoke-SetupProbe '/verify'
     Assert-InstallTest ($verify -match 'PASS') 'Standalone setup payload verification failed'
     $installationPlan = Invoke-SetupProbe '/plan' | ConvertFrom-Json
-    Assert-InstallTest ($installationPlan.Scope -eq 'CurrentUser' -and $installationPlan.Version -eq $identity.Version.ToString() -and @($installationPlan.Hosts).Count -gt 0) 'Invalid setup plan'
-    foreach ($officeHost in $installationPlan.Hosts) {
-        Assert-InstallTest ($officeHost.Bits -in @(32,64) -and $officeHost.RegistryView -eq ('Registry' + $officeHost.Bits) -and
-            (Test-Path -LiteralPath $officeHost.Path -PathType Leaf)) 'Invalid editor path or architecture in setup plan'
-    }
+    Assert-InstallTest ($installationPlan.Scope -eq 'CurrentUser' -and $installationPlan.Version -eq $identity.Version.ToString()) 'Invalid setup plan'
+    Assert-InstallTest ($installationPlan.WordBits -in @(32,64) -and $installationPlan.RegistryView -eq ('Registry' + $installationPlan.WordBits) -and
+        (Test-Path -LiteralPath $installationPlan.WordPath -PathType Leaf)) 'Invalid Word path or architecture in setup plan'
     $installed = Install-WordGitFiles $app $PackageRoot $identity (Join-Path $PackageRoot 'WordGit.Setup.exe')
     $sourceHash = (Get-FileHash -LiteralPath (Join-Path $PackageRoot 'bin\WordGit.dll')).Hash
     Assert-InstallTest ((Get-FileHash -LiteralPath $installed).Hash -eq $sourceHash) 'Installed DLL mismatch'
@@ -89,7 +87,13 @@ try {
         $base = $null
         try {
             $base = $hive.CreateSubKey($registryName)
-            Register-WordGitPlugin $base $identity.FullName $identity.Version.ToString() ([Uri]$installed).AbsoluteUri -Word -Wps
+            # 早期版本把同一个 COM 加载项也注册给 WPS；安装程序必须清掉它（WPS 现在用 JS 加载项）。
+            $wpsListPath = 'Software\Kingsoft\Office\WPS\AddinsWL'
+            Set-WordGitRegistryValue $base $wpsListPath 'Example.OtherAddIn' ''
+            Set-WordGitRegistryValue $base $wpsListPath $WordGitConnectProgId ''
+            $legacy = $base.CreateSubKey("Software\Kingsoft\Office\WPS\Addins\$WordGitConnectProgId")
+            try { $legacy.SetValue('LoadBehavior', 3, [Microsoft.Win32.RegistryValueKind]::DWord) } finally { $legacy.Dispose() }
+            Register-WordGitPlugin $base $identity.FullName $identity.Version.ToString() ([Uri]$installed).AbsoluteUri
             Register-WordGitProgram $base $app $identity.Version.ToString()
             $key = $base.OpenSubKey('Software\Classes\CLSID\{C5707F76-F46F-4A11-800B-18E7D98377D3}\InprocServer32')
             try {
@@ -98,19 +102,16 @@ try {
             $key = $base.OpenSubKey('Software\Microsoft\Office\Word\Addins\WordGit.Connect')
             try { Assert-InstallTest ($key.GetValue('LoadBehavior') -eq 3) 'Word add-in is not enabled' }
             finally { $key.Dispose() }
-            $key = $base.OpenSubKey('Software\Kingsoft\Office\WPS\Addins\WordGit.Connect')
-            try { Assert-InstallTest ($key -and $key.GetValue('LoadBehavior') -eq 3) 'WPS add-in registration is missing' }
-            finally { if ($key) { $key.Dispose() } }
-            $wpsListPath = 'Software\Kingsoft\Office\WPS\AddinsWL'
-            Set-WordGitRegistryValue $base $wpsListPath 'Example.OtherAddIn' ''
+            Assert-InstallTest ($null -eq $base.OpenSubKey('Software\Kingsoft\Office\WPS\Addins\WordGit.Connect')) 'Installer kept the legacy WPS COM add-in'
             $key = $base.OpenSubKey($wpsListPath)
-            try { Assert-InstallTest ($key -and $key.GetValueNames() -contains $WordGitConnectProgId) 'WPS WordGit entry is missing' }
+            try { Assert-InstallTest ($key -and -not($key.GetValueNames() -contains $WordGitConnectProgId)) 'Installer kept the legacy WPS add-in list entry' }
             finally { if ($key) { $key.Dispose() } }
             $key = $base.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Uninstall\WordGit')
             try { Assert-InstallTest ($key.GetValue('UninstallString') -match 'WordGit.Setup.exe.* /uninstall') 'Missing installed-app uninstaller' }
             finally { $key.Dispose() }
             Remove-WordGitRegistration $base
             Assert-InstallTest ($null -eq $base.OpenSubKey('Software\Classes\WordGit.Connect')) 'COM registration remained after uninstall'
+            Assert-InstallTest ($null -eq $base.OpenSubKey('Software\Microsoft\Office\Word\AddinsData\WordGit.Connect')) 'Word load-state entry remained after uninstall'
             Assert-InstallTest ($null -eq $base.OpenSubKey('Software\Kingsoft\Office\WPS\Addins\WordGit.Connect')) 'WPS registration remained after uninstall'
             $key = $base.OpenSubKey($wpsListPath)
             try { Assert-InstallTest ($key -and @($key.GetValueNames()).Count -eq 1 -and

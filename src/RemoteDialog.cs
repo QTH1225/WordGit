@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
@@ -68,7 +68,7 @@ namespace WordGit
             DocumentPath.TextChanged += validate;
             accept.Click += (sender, args) => {
                 try {
-                    var normalized = GitHistory.NormalizeRemoteUrl(Url.Text);
+                    var normalized = Url.Text.Trim();
                     var path = clone ? Path.GetFullPath(DocumentPath.Text.Trim()) : null;
                     if (clone && (File.Exists(path) || Directory.Exists(path) || Path.GetExtension(path).ToLowerInvariant() != ".docx"))
                         throw new IOException("请选择一个尚不存在的 .docx 文件名，已有文件不会被覆盖。");

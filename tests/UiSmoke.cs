@@ -15,6 +15,9 @@ namespace WordGit
             try
             {
                 Application.EnableVisualStyles();
+                // The pane talks to the core; keep it away from real history.
+                if (String.IsNullOrEmpty(Environment.GetEnvironmentVariable("WORDGIT_HOME")))
+                    Environment.SetEnvironmentVariable("WORDGIT_HOME", Path.Combine(Path.GetTempPath(), "wordgit-ui-" + Guid.NewGuid().ToString("N")));
                 var day = DateTimeOffset.Now;
                 var one = new string('a', 40);
                 var two = new string('b', 40);
@@ -506,13 +509,8 @@ namespace WordGit
                 Array custom = null;
                 try
                 {
-                    var reviewType = typeof(Connect).GetNestedType("PendingReview", System.Reflection.BindingFlags.NonPublic);
-                    var review = Activator.CreateInstance(reviewType, true);
-                    reviewType.GetField("Original").SetValue(review, original);
-                    reviewType.GetField("Branch").SetValue(review, "main");
-                    reviewType.GetField("SourceBranch").SetValue(review, "review");
-                    reviewType.GetField("SourceTip").SetValue(review, sourceTip);
-                    reviewType.GetMethod("Save").Invoke(review, new object[] { resultPath, head });
+                    // The core owns the sidecar now; the add-in only reads it through status.
+                    File.WriteAllLines(resultPath + ".wordgit", new[] { original, head, "main", "review", sourceTip });
                     draft.FullName = resultPath;
                     typeof(Connect).GetMethod("ShowMergePane", fields).Invoke(connect, new object[] { draft });
                     if (factory.Creates != 1 || !factory.Pane.Visible || !factory.Pane.Control.CanReuse(resultPath) ||
@@ -744,14 +742,14 @@ namespace WordGit
                     throw new InvalidOperationException("Remote instructions overlap buttons");
                 dialog.Show();
                 ((Button)dialog.AcceptButton).PerformClick();
-                if (dialog.Options == null || dialog.Options.Url != "https://github.com/owner/paper.git" || dialog.Options.Branch != "main")
+                if (dialog.Options == null || dialog.Options.Url != "https://github.com/owner/paper" || dialog.Options.Branch != "main")
                     throw new InvalidOperationException("Remote dialog lost connection options");
             }
             var actions = new List<HistoryAction>();
             string lastFilter = null;
             var data = new HistoryPaneData {
                 DocumentPath = @"C:\test\当前稿.docx", HistoryPath = @"C:\test\当前稿.docx", Branch = "main", Head = items[0].Id,
-                Branches = new[] { "main", GitHistory.RemotePrefix + "main" },
+                Branches = new[] { "main", ReferenceText.RemotePrefix + "main" },
                 Load = filter => { lastFilter = filter; return filter == null ? items : items.Take(2).ToList(); },
                 WorkingState = () => WorkingCopyState.Clean,
                 LoadReviewItems = () => new List<DocumentReviewItem>(),
@@ -772,8 +770,8 @@ namespace WordGit
                 if (!actions.SequenceEqual(new[] { HistoryAction.FetchRemote, HistoryAction.PullRemote, HistoryAction.PushRemote }))
                     throw new InvalidOperationException("Remote buttons sent the wrong actions");
                 var filter = Descendants(pane).OfType<ComboBox>().Single(box => box.AccessibleName == "筛选分支");
-                filter.SelectedItem = GitHistory.RemotePrefix + "main";
-                if (lastFilter != GitHistory.RemotePrefix + "main" || Descendants(pane).OfType<DataGridView>().Single().RowCount != 2)
+                filter.SelectedItem = ReferenceText.RemotePrefix + "main";
+                if (lastFilter != ReferenceText.RemotePrefix + "main" || Descendants(pane).OfType<DataGridView>().Single().RowCount != 2)
                     throw new InvalidOperationException("Remote branch view did not load its own history");
                 host.ClientSize = new Size(300, 520);
                 Render(host, Path.Combine(output, "remote-history-narrow.png"));
@@ -836,7 +834,7 @@ namespace WordGit
                         throw new InvalidOperationException("Historical merge link is clipped by the scrolling form");
                     var merge = (Button)dialog.AcceptButton;
                     var saveOnly = Descendants(dialog).OfType<Button>().Single(button => button.Text == "仅保存为分支");
-                    if (dialog.BranchName.Visible != keep || dialog.Reviewer.Visible != keep || saveOnly.Visible != keep || !merge.Enabled)
+                    if (dialog.BranchName.Visible != keep || !dialog.Reviewer.Visible || saveOnly.Visible != keep || !merge.Enabled)
                         throw new InvalidOperationException("Optional review branch settings did not follow the checkbox");
                     foreach (var button in Descendants(dialog).OfType<Button>().Where(button => button.Visible))
                         if (!dialog.ClientRectangle.Contains(dialog.RectangleToClient(button.Parent.RectangleToScreen(button.Bounds))))
@@ -845,7 +843,7 @@ namespace WordGit
                     (createMerge ? merge : saveOnly).PerformClick();
                     if (dialog.DialogResult != DialogResult.OK || dialog.Options.FilePath != file || dialog.Options.Basis.Id != items[3].Id ||
                         dialog.Options.Branch != (keep ? "review-老师一审" : null) ||
-                        dialog.Options.Reviewer != (keep ? "导师甲" : null) || dialog.Options.CreateMergeDraft != createMerge)
+                        dialog.Options.Reviewer != "导师甲" || dialog.Options.CreateMergeDraft != createMerge)
                         throw new InvalidOperationException("Review merge lost selected options");
                 }
             }

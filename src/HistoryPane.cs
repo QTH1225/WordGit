@@ -41,6 +41,9 @@ namespace WordGit
         private readonly Label working = new Label { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
         private readonly Button compareLatest = DialogLayout.Button("对比最新提交");
         private readonly Timer workingTimer = new Timer { Interval = 1200 };
+        private readonly Timer reloadFallback = new Timer { Interval = 700 };
+        private bool reloadPending;
+        private int reloadPendingGeneration;
         private readonly Button commit = DialogLayout.Button("提交版本");
         private readonly Button importReview = DialogLayout.Button("返稿合并");
         private readonly Label remoteStatus = new Label { AutoSize = false, Dock = DockStyle.Fill, AutoEllipsis = true, AccessibleName = "远程同步状态" };
@@ -254,8 +257,8 @@ namespace WordGit
             filter.FormattingEnabled = true;
             filter.Format += (sender, args) => {
                 var reference = args.ListItem as string;
-                if (reference != null && reference.StartsWith(GitHistory.RemotePrefix, StringComparison.Ordinal))
-                    args.Value = "远程 " + GitHistory.ReferenceLabel(reference);
+                if (reference != null && reference.StartsWith(ReferenceText.RemotePrefix, StringComparison.Ordinal))
+                    args.Value = "远程 " + ReferenceText.Label(reference);
             };
             filter.Margin = new Padding(0);
             filter.SelectedIndexChanged += (sender, args) => { if (!updating && data != null) LoadGraph(null); };
@@ -284,7 +287,8 @@ namespace WordGit
             graph.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0 && preview.Enabled) OpenSelected(false); };
             layout.Controls.Add(graph, 0, 6);
 
-            status.MaximumSize = new Size(255, 0);
+            status.MaximumSize = new Size(StatusWidth(), 0);
+            layout.Resize += (sender, args) => FitStatusWidth();
             layout.Controls.Add(status, 0, 7);
             var actions = ButtonGrid(2, commit, importReview, preview, compare);
             actions.Margin = new Padding(0, 8, 0, 0);
@@ -304,6 +308,7 @@ namespace WordGit
             Controls.Add(loadingFrame);
             loadingFrame.BringToFront();
             ShowSelection();
+            reloadFallback.Tick += (sender, args) => StartQueuedReload(reloadPendingGeneration);
         }
 
         protected override CreateParams CreateParams
@@ -336,15 +341,54 @@ namespace WordGit
                 (showQueued || loading || (data != null && String.Equals(data.DocumentPath, path, StringComparison.OrdinalIgnoreCase)));
         }
 
+        // The pane starts loading only once its loading surface has reached the screen, so Word
+        // never sits on an unpainted pane while the core and the document are read.
+        internal bool SurfacePainted { get { return loadingFrame.Painted; } }
+
+        // Short status lines (the empty-history hint) must fit on one line, and the wrap limit must
+        // follow the column width: a fixed cap wraps CJK text mid-phrase on scaled displays and
+        // leaves an orphaned tail line.
+        internal bool StatusIsSingleLine
+        {
+            get
+            {
+                var host = status.Parent;
+                if (host == null) return true;
+                var available = Math.Max(160, host.ClientSize.Width - status.Margin.Horizontal - 2);
+                if (status.MaximumSize.Width != available) return false;
+                var width = TextRenderer.MeasureText(status.Text, status.Font, new Size(int.MaxValue, int.MaxValue),
+                    TextFormatFlags.NoPadding).Width;
+                return width <= available;
+            }
+        }
+
         internal void QueueReload()
         {
             var generation = reloadGeneration;
-            BeginInvoke(new Action(() =>
-            {
-                if (!CurrentLoad(generation)) return;
-                showQueued = false;
-                Reload();
-            }));
+            reloadPending = true;
+            reloadPendingGeneration = generation;
+            loadingFrame.FirstPaint = () => PostQueuedReload(generation);
+            reloadFallback.Stop();
+            if (loadingFrame.Painted) { PostQueuedReload(generation); return; }
+            // Safety net: a pane that never paints must still load.
+            reloadFallback.Interval = 700;
+            reloadFallback.Start();
+        }
+
+        private void PostQueuedReload(int generation)
+        {
+            if (!IsHandleCreated || IsDisposed || Disposing) return;
+            BeginInvoke(new Action(() => StartQueuedReload(generation)));
+        }
+
+        private void StartQueuedReload(int generation)
+        {
+            reloadFallback.Stop();
+            loadingFrame.FirstPaint = null;
+            if (!reloadPending || generation != reloadPendingGeneration || !CurrentLoad(generation)) return;
+            reloadPending = false;
+            showQueued = false;
+            Reload();
         }
 
         private static void PrepareChildHandles(Control root)
@@ -442,6 +486,9 @@ namespace WordGit
         internal void Detach()
         {
             workingTimer.Stop();
+            reloadFallback.Stop();
+            reloadPending = false;
+            loadingFrame.FirstPaint = null;
             ++reloadGeneration;
             ++graphGeneration;
             data = null;
@@ -561,15 +608,24 @@ namespace WordGit
             fetchRemote.Enabled = canFetchRemote;
             pullRemote.Enabled = pushRemote.Enabled = canPushOrPull;
             ShowSelection();
+            // Reveal the graph as soon as it is ready: the review list needs a slow Word pass,
+            // so it must not hold the whole pane on the loading surface.
+            if (CurrentLoad(generation)) FinishPresentation();
             if (loadAsync != null) working.Text = "正在检查修改…";
+            commentsTitle.Text = "正在读取批注与修订…";
             try
             {
                 UpdateWorkingState();
                 ReloadComments();
             }
-            finally
+            catch (Exception error)
             {
-                if (CurrentLoad(generation)) FinishPresentation();
+                if (!CurrentLoad(generation)) return;
+                AppPaths.LogError("history pane lists: " + error);
+                comments.Enabled = reviewFilter.Enabled = false;
+                commentsTitle.Text = "批注与修订 · 稍后重试";
+                status.Text = error.Message;
+                hints.SetToolTip(status, error.Message);
             }
         }
 
@@ -932,6 +988,21 @@ namespace WordGit
             status.Text = graphError ?? ((loading || graphLoading) ? "正在读取提交记录…" :
                 (revisions.Count == 0 ? "提交版本后，历史会显示在这里。"
                 : (count > 2 ? "对比时请选择一条或两条提交。" : revisions.Count + " 条提交  ·  双击预览")));
+        }
+
+        // 状态行最多占满所在栏宽：短句（如空历史提示）一行放下，长错误消息才换行。
+        private int StatusWidth()
+        {
+            var host = status.Parent;
+            var width = host != null && host.ClientSize.Width > 0 ? host.ClientSize.Width : ClientSize.Width;
+            return Math.Max(160, width - status.Margin.Horizontal - 2);
+        }
+
+        // 只有栏宽真正变化时才改上限，避免设置 MaximumSize 触发多余的布局。
+        private void FitStatusWidth()
+        {
+            var width = StatusWidth();
+            if (status.MaximumSize.Width != width) status.MaximumSize = new Size(width, 0);
         }
 
         private void OpenSelected(bool diff)
