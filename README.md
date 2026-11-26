@@ -8,12 +8,12 @@
 
 | 环境 | 要求 |
 | --- | --- |
-| 系统 | Windows 10 / 11 |
-| 编辑器 | Windows 桌面版 Microsoft Word；WPS 文字（通过 JS 加载项，见 [WPS 说明](docs/WPS.md)） |
+| 系统 | Windows 10 / 11 x64 |
+| 编辑器 | 图形安装程序要求安装桌面版 Microsoft Word，可同时部署 WPS 文字加载项。仅使用 WPS 时见 [WPS 独立安装](docs/WPS.md#安装windows) |
 | Git | [Git for Windows 2.51+](https://git-scm.com/install/windows) |
 | 运行时 | [.NET Framework 4.8+](https://dotnet.microsoft.com/download/dotnet-framework/net48) |
 
-版本历史、分支、返稿合并和远程同步由随安装包部署的 Rust 内核 `wordgit.exe` 完成，只需在登录时后台运行，不需要单独的 Rust 工具链。
+版本历史、分支、返稿合并和远程同步由随安装包部署的 Rust 内核 `wordgit.exe` 完成。安装后会启动内核，内核退出后可由 Word 自动拉起。Windows 内核已静态链接 VC++ 运行库，安装包无需另外安装 VC++ 运行库或 Rust 工具链。
 
 1. 准备 `WordGit-0.12.0-Setup.exe` 安装包。
 2. 保存文档，关闭所有 Word 窗口。
@@ -24,7 +24,7 @@ ZIP 包的用法相同：完整解压 `WordGit-0.12.0-windows.zip`，运行其�
 
 安装作用于当前 Windows 用户。升级时直接运行新版安装程序，已有提交、分支和审阅稿继续保留。卸载可从 Windows“已安装的应用”或安装程序进入，历史数据也会保留。
 
-当前已在 64 位 Word 实机验证；32 位 Word 的完整功能验证仍在补充。发布包的签名与兼容性状态见 [发布说明](docs/RELEASING.md)。
+本轮发布包在 Windows 11 x64、64 位 Word 上完成实机回归。32 位 Word 已验证注册表写入，实机功能仍待验证。发布包的签名与兼容性状态见 [发布说明](docs/RELEASING.md)。
 
 ## 在 Word 中载入插件
 

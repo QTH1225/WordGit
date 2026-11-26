@@ -214,7 +214,7 @@ impl Repo {
         let prefix = format!(
             "{BACKUP_ROOT}{}-{}/",
             crate::paths::compact_utc(crate::paths::now_seconds()),
-            &crate::random_hex(3)
+            crate::random_hex(3)
         );
         let operations: Vec<String> = tips
             .iter()

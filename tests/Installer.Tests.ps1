@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$PackageRoot)
+﻿param([Parameter(Mandatory=$true)][string]$PackageRoot)
 $ErrorActionPreference = 'Stop'
 $PackageRoot = [IO.Path]::GetFullPath($PackageRoot)
 . (Join-Path $PackageRoot 'install.ps1') -LibraryOnly

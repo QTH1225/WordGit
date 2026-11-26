@@ -1,4 +1,4 @@
-param([switch]$Test, [switch]$WordTest, [switch]$UiTest, [switch]$KernelTest, [switch]$PaneTest, [switch]$NoRust)
+﻿param([switch]$Test, [switch]$WordTest, [switch]$UiTest, [switch]$KernelTest, [switch]$PaneTest, [switch]$NoRust)
 $ErrorActionPreference = 'Stop'
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (-not (Test-Path -LiteralPath $framework)) { $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319' }
@@ -27,7 +27,7 @@ if (-not $NoRust) {
     if (-not $cargoPath) { throw '需要 Rust 工具链（cargo）来构建 wordgit 内核。' }
     Push-Location $PSScriptRoot
     try {
-        & $cargoPath build --release --package wordgit
+        & $cargoPath build --locked --release --package wordgit
         if ($LASTEXITCODE -ne 0) { throw '内核构建失败。' }
     } finally { Pop-Location }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target\release\wordgit.exe') -Destination $kernel -Force

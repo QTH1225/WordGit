@@ -1,6 +1,6 @@
 # WordGit for WPS（Linux / macOS / Windows）
 
-WordGit 的跨平台版本：Rust 本地服务 + WPS 文字加载项。功能与 Windows Word 版相同：提交版本、分支、返稿合并、对比与恢复、通过 GitHub / Gitee 远程协作。稿件历史与 Word 版使用同一种仓库格式，两边可以互相读取。
+WPS 文字通过 JS 加载项连接 WordGit 的 Rust 本地服务，支持提交版本、分支、返稿合并、对比、恢复和 GitHub / Gitee 远程协作。Word 和 WPS 使用同一种历史仓库格式。
 
 ## 组成
 
@@ -11,6 +11,16 @@ WordGit 的跨平台版本：Rust 本地服务 + WPS 文字加载项。功能与
 | WPS 加载项 | `addin-wps/` | 功能区、"批注、修订与提交"侧栏和对话框 |
 
 加载项不能直接运行 Git，所有历史操作都交给本地服务；对比、修订、打开和关闭文档由加载项调用 WPS 自己完成。
+
+## 安装（Windows）
+
+若同时安装了 Microsoft Word，运行 WordGit 的 Windows 图形安装程序即可部署两个加载项。只使用 WPS 文字时，将 ZIP 安装包解压到长期保留的目录，安装 Git for Windows 2.51 或更新版，并在解压目录运行：
+
+```powershell
+.\bin\wordgit.exe install --addin .\addin-wps
+```
+
+命令会部署 WPS 加载项、注册登录自启并启动内核。重新打开 WPS 文字完成加载。卸载时在同一目录运行 `.\bin\wordgit.exe uninstall`，已有历史保留。
 
 ## 安装（Linux）
 
@@ -56,7 +66,7 @@ wordgit call branch/create '{"document":"/path/论文.docx","name":"review"}'
 
 ## 与 Word 版的差异
 
-- **合并稿**：WPS 不支持 Word 的三方修订合并，WordGit 用"对比"生成合并稿。只有对方有修改时结果与 Word 版一致；双方都有修改时，合并稿中也会出现"撤销自己修改"的修订，加载项会同时打开一份"当前分支的修改"对照稿，请把与之相反的修订拒绝。
+- **合并稿**：WPS 使用自身的对比功能生成修订。返稿合并以选定的送审版本为基准。远程分歧会提示选择保留本地或远端的冲突内容。部分本地分支合并会另外打开「当前分支的修改」对照稿，供审阅时参考。
 - **切换分支、恢复、拉取、完成合并**：加载项先关闭当前稿，由服务替换文件并更新分支，再重新打开。替换前会写入恢复记录，中途崩溃后服务下次启动时自动还原或完成。
 - **克隆稿件**：Windows 上会给克隆的稿件加"来自互联网"标记；Linux 和 macOS 没有这个机制。
 

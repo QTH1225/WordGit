@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([switch]$Test, [switch]$KernelTest, [switch]$NoBuild)
 $ErrorActionPreference = 'Stop'
 if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -Test:$Test -UiTest:$Test -PaneTest:$Test -KernelTest:$KernelTest }

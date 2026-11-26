@@ -9,7 +9,8 @@ WordGit 0.12.0 把版本历史统一到 Rust 内核：
 - 切换分支、恢复、拉取、完成合并统一走两段式替换：先取计划，关掉文档后应用，失败可取消并用恢复记录回滚。
 - WPS 加载项改名为 WordGit，口令来源跟随安装目录；安装器一并更新 WPS 加载项并清理旧的原型注册。
 - 提交图侧栏先画骨架再读数据，首次打开不再黑屏等待；空历史提示语不再被拆成两行。
-- 安装包同时包含界面插件与内核，内核登录时自启；“另存旧版”在原稿同目录自动命名，不再弹出保存对话框。
+- 安装包包含界面插件和静态链接 VC++ 运行库的内核。内核在安装后启动，退出后可由 Word 自动拉起。
+- Word 远程操作的「取消」会向内核发出带口令的请求。内核收到后停止对应的 Git 操作。
 
 0.11.2 的提交与信息窗口调整继续保留：
 
@@ -65,7 +66,7 @@ WordGit 0.12.0 把版本历史统一到 Rust 内核：
 
 ## 生成与发布
 
-1. 版本号只在 `src/AddIn.cs` 的 `AssemblyVersion` / `AssemblyFileVersion` 中修改，同时更新 README 标题、安装包文件名与本文“当前版本”；package.ps1 会核对三者是否一致。
+1. 对齐 `src/AddIn.cs` 的程序集版本和 `Cargo.toml` 的工作区版本。同步更新 README 标题、安装包文件名与本文的当前版本。
 2. 在开发机运行 `package.ps1 -Test -KernelTest`。同一次运行先编译插件与内核，再用同一份源码完成更新检查、界面、侧栏、Word 实机与安装测试，最后打包这次编译出的 DLL 与 `wordgit.exe`。
 3. 核对 EXE、ZIP 的版本与 SHA256SUMS.txt，并确认 GitHub Actions 的 CI 与 CodeQL 均已通过。
 4. 上传安装程序、ZIP 安装包和校验文件，并附上同一版本标签的完整源码。源码包含 Word 加载项 `src/`、Rust 内核 `crates/`、WPS 加载项 `addin-wps/`、`Cargo.toml`、`Cargo.lock`、`.cargo/`、`packaging/`、`tests/`、`docs/`、根目录的构建、打包和安装脚本，以及 `LICENSE`。
