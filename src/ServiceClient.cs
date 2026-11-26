@@ -34,22 +34,21 @@ namespace WordGit
     {
         internal const int DefaultPort = 47821;
         private static readonly object Gate = new object();
+        private static readonly string DefaultRoot =
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WordGit");
+        private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        private static readonly HttpClient Quick = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
         private static ServiceClient current;
 
+        private readonly int port;
         private readonly string address;
         private readonly string token;
-        private readonly HttpClient http;
-        private readonly HttpClient quick;
 
-        private ServiceClient(string address, string token)
+        private ServiceClient(int port, string token)
         {
-            this.address = address;
-            this.token = token ?? String.Empty;
-            http = new HttpClient();
-            http.Timeout = TimeSpan.FromMinutes(10);
-            http.DefaultRequestHeaders.Add("x-wordgit-token", this.token);
-            quick = new HttpClient();
-            quick.Timeout = TimeSpan.FromSeconds(4);
+            this.port = port;
+            address = "http://127.0.0.1:" + port.ToString(CultureInfo.InvariantCulture);
+            this.token = token;
         }
 
         internal static string Root
@@ -57,9 +56,7 @@ namespace WordGit
             get
             {
                 var home = Environment.GetEnvironmentVariable("WORDGIT_HOME");
-                return String.IsNullOrEmpty(home)
-                    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WordGit")
-                    : home;
+                return String.IsNullOrEmpty(home) ? DefaultRoot : home;
             }
         }
 
@@ -81,7 +78,6 @@ namespace WordGit
         {
             lock (Gate)
             {
-                if (current != null) current.Dispose();
                 current = null;
             }
         }
@@ -119,7 +115,7 @@ namespace WordGit
         internal Dictionary<string, object> Call(string endpoint, IDictionary<string, object> body)
         {
             var payload = Json.Send(body);
-            var client = this;
+            var client = Connect();
             for (var attempt = 0; attempt < 2; attempt++)
             {
                 try
@@ -128,17 +124,18 @@ namespace WordGit
                 }
                 catch (ServiceException error)
                 {
-                    if (attempt == 0 && error.Retryable) { client = Refresh(); continue; }
+                    if (error.IsCancelled) throw new OperationCanceledException(error.Message, error);
+                    if (attempt == 0 && error.Retryable) { client = client.Refresh(); continue; }
                     throw;
                 }
                 catch (HttpRequestException)
                 {
-                    if (attempt == 0) { client = Refresh(); continue; }
+                    if (attempt == 0) { client = client.Refresh(); continue; }
                     throw new ServiceException("无法连接 WordGit 内核，请重新打开编辑器后再试。", "io");
                 }
                 catch (TaskCanceledException)
                 {
-                    if (attempt == 0) { client = Refresh(); continue; }
+                    if (attempt == 0) { client = client.Refresh(); continue; }
                     throw new ServiceException("WordGit 内核响应超时。", "timeout");
                 }
             }
@@ -149,66 +146,59 @@ namespace WordGit
         internal void CancelOperation(string operation)
         {
             if (String.IsNullOrEmpty(operation)) return;
-            try
+            using (var request = CreateRequest("cancel", Json.Send(Args("operation", operation))))
+            using (var response = Quick.SendAsync(request).GetAwaiter().GetResult())
             {
-                using (var content = new StringContent(Json.Send(Args("operation", operation)), Encoding.UTF8, "application/json"))
-                {
-                    var response = quick.PostAsync(address + "/api/v1/cancel", content).GetAwaiter().GetResult();
-                    if (response != null) response.Dispose();
-                }
+                response.EnsureSuccessStatusCode();
             }
-            catch (Exception)
-            {
-                // Cancelling is advisory; an unreachable service has nothing to cancel.
-            }
-        }
-
-        internal void Dispose()
-        {
-            http.Dispose();
-            quick.Dispose();
         }
 
         private Dictionary<string, object> CallOnce(string endpoint, string payload)
         {
-            using (var content = new StringContent(payload, Encoding.UTF8, "application/json"))
+            using (var request = CreateRequest(endpoint, payload))
+            using (var response = Http.SendAsync(request).GetAwaiter().GetResult())
             {
-                var response = http.PostAsync(address + "/api/v1/" + endpoint, content).GetAwaiter().GetResult();
-                using (response)
+                var text = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                Dictionary<string, object> parsed = null;
+                try { parsed = Json.Parse(text); }
+                catch (InvalidOperationException) { parsed = null; }
+                if (!response.IsSuccessStatusCode)
                 {
-                    var text = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-                    Dictionary<string, object> parsed = null;
-                    try { parsed = Json.Parse(text); }
-                    catch (InvalidOperationException) { parsed = null; }
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        var message = parsed == null ? null : Json.String(parsed, "error");
-                        var kind = parsed == null ? null : Json.String(parsed, "kind");
-                        throw new ServiceException(
-                            String.IsNullOrEmpty(message) ? "WordGit 内核返回错误（" + (int)response.StatusCode + "）。" : message,
-                            kind, response.StatusCode == HttpStatusCode.Unauthorized);
-                    }
-                    if (parsed == null) throw new ServiceException("WordGit 内核返回的数据无法识别。", "io");
-                    return parsed;
+                    var message = parsed == null ? null : Json.String(parsed, "error");
+                    var kind = parsed == null ? null : Json.String(parsed, "kind");
+                    throw new ServiceException(
+                        String.IsNullOrEmpty(message) ? "WordGit 内核返回错误（" + (int)response.StatusCode + "）。" : message,
+                        kind, response.StatusCode == HttpStatusCode.Unauthorized);
                 }
+                if (parsed == null) throw new ServiceException("WordGit 内核返回的数据无法识别。", "io");
+                return parsed;
             }
         }
 
-        private static ServiceClient Refresh()
+        private HttpRequestMessage CreateRequest(string endpoint, string payload = null)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, address + "/api/v1/" + endpoint);
+            request.Headers.Add("x-wordgit-token", token);
+            if (payload != null) request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+            return request;
+        }
+
+        private ServiceClient Refresh()
         {
             lock (Gate)
             {
-                if (current != null) current.Dispose();
-                current = Discover();
+                if (current != null && current != this) return current;
+                current = null;
+                current = Discover(port);
                 return current;
             }
         }
 
-        private static ServiceClient Discover()
+        private static ServiceClient Discover(int port = DefaultPort)
         {
             var running = FromServiceFile();
             if (running != null) return running;
-            Start();
+            Start(port);
             var started = WaitForStartup();
             if (started != null) return started;
             throw new InvalidOperationException(
@@ -223,24 +213,22 @@ namespace WordGit
                 var info = Json.Parse(File.ReadAllText(ServiceFile));
                 var port = Json.Int(info, "port");
                 var token = Json.String(info, "token");
-                if (port <= 0 || String.IsNullOrEmpty(token)) return null;
-                var client = new ServiceClient("http://127.0.0.1:" + port.ToString(CultureInfo.InvariantCulture), token);
-                if (client.Ping()) return client;
-                client.Dispose();
-                return null;
+                if (port <= 0 || port > UInt16.MaxValue || String.IsNullOrEmpty(token)) return null;
+                var client = new ServiceClient(port, token);
+                return client.IsReady() ? client : null;
             }
             catch (IOException) { return null; }
             catch (UnauthorizedAccessException) { return null; }
             catch (InvalidOperationException) { return null; }
         }
 
-        private static void Start()
+        private static void Start(int port)
         {
             var executable = ExecutablePath();
             if (executable == null) return;
             try
             {
-                var info = new ProcessStartInfo(executable, "serve");
+                var info = new ProcessStartInfo(executable, "serve --port " + port.ToString(CultureInfo.InvariantCulture));
                 info.UseShellExecute = false;
                 info.CreateNoWindow = true;
                 info.WindowStyle = ProcessWindowStyle.Hidden;
@@ -255,6 +243,16 @@ namespace WordGit
         {
             var configured = Environment.GetEnvironmentVariable("WORDGIT_SERVICE_EXE");
             if (!String.IsNullOrEmpty(configured) && File.Exists(configured)) return configured;
+            // The COM add-in is loaded into Word's application domain, whose base is the host.
+            var assemblyDirectory = Path.GetDirectoryName(typeof(ServiceClient).Assembly.Location);
+            if (!String.IsNullOrEmpty(assemblyDirectory))
+            {
+                var alongside = Path.Combine(assemblyDirectory, "wordgit.exe");
+                if (File.Exists(alongside)) return alongside;
+            }
+
+            var installed = Path.Combine(DefaultRoot, "app", "wordgit.exe");
+            if (File.Exists(installed)) return installed;
             var local = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wordgit.exe");
             return File.Exists(local) ? local : null;
         }
@@ -271,12 +269,13 @@ namespace WordGit
             return null;
         }
 
-        private bool Ping()
+        private bool IsReady()
         {
             try
             {
-                var response = quick.GetAsync(address + "/api/v1/ping").GetAwaiter().GetResult();
-                using (response)
+                // The public ping succeeds even when service.json still contains the previous token.
+                using (var request = CreateRequest("info"))
+                using (var response = Quick.SendAsync(request).GetAwaiter().GetResult())
                 {
                     if (!response.IsSuccessStatusCode) return false;
                     var text = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();

@@ -51,6 +51,35 @@ namespace WordGit
             return client;
         }
 
+        public static void VerifyRestart(ServiceClient client)
+        {
+            var file = Path.Combine(Home, "service.json");
+            var previous = Json.Parse(File.ReadAllText(file));
+            var executable = owned.MainModule.FileName;
+            owned.Kill();
+            if (!owned.WaitForExit(10000)) throw new InvalidOperationException("测试内核没有退出。");
+            owned.Dispose();
+            owned = null;
+
+            var configured = Environment.GetEnvironmentVariable("WORDGIT_SERVICE_EXE");
+            Environment.SetEnvironmentVariable("WORDGIT_SERVICE_EXE", null);
+            try
+            {
+                client.Call("notices", ServiceClient.Args());
+                var next = Json.Parse(File.ReadAllText(file));
+                if (Json.String(next, "token") == Json.String(previous, "token"))
+                    throw new InvalidOperationException("WordGit 没有重新启动测试内核。");
+                var process = System.Diagnostics.Process.GetProcessById(Json.Int(next, "pid"));
+                if (!String.Equals(process.MainModule.FileName, executable, StringComparison.OrdinalIgnoreCase))
+                {
+                    process.Dispose();
+                    throw new InvalidOperationException("WordGit 启动的内核与测试包不一致。");
+                }
+                owned = process;
+            }
+            finally { Environment.SetEnvironmentVariable("WORDGIT_SERVICE_EXE", configured); }
+        }
+
         private static int FreePort()
         {
             var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);

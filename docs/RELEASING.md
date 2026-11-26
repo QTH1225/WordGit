@@ -68,7 +68,7 @@ WordGit 0.12.0 把版本历史统一到 Rust 内核：
 1. 版本号只在 `src/AddIn.cs` 的 `AssemblyVersion` / `AssemblyFileVersion` 中修改，同时更新 README 标题、安装包文件名与本文“当前版本”；package.ps1 会核对三者是否一致。
 2. 在开发机运行 `package.ps1 -Test -KernelTest`。同一次运行先编译插件与内核，再用同一份源码完成更新检查、界面、侧栏、Word 实机与安装测试，最后打包这次编译出的 DLL 与 `wordgit.exe`。
 3. 核对 EXE、ZIP 的版本与 SHA256SUMS.txt，并确认 GitHub Actions 的 CI 与 CodeQL 均已通过。
-4. 在准备发布的位置上传两个安装文件和校验文件，并附上相同版本标签对应的完整源码；源码包含 src、packaging、tests、docs、根目录构建与安装脚本及 LICENSE。
+4. 上传安装程序、ZIP 安装包和校验文件，并附上同一版本标签的完整源码。源码包含 Word 加载项 `src/`、Rust 内核 `crates/`、WPS 加载项 `addin-wps/`、`Cargo.toml`、`Cargo.lock`、`.cargo/`、`packaging/`、`tests/`、`docs/`、根目录的构建、打包和安装脚本，以及 `LICENSE`。
 5. 发布说明写明验证过的 Windows、Word 位数、Git 版本和已知限制。
 6. 核对作者 QTH1225、项目链接与 GPL-3.0-only 许可证，正式分发时配置发布者代码签名（`signtool sign /fd SHA256 /tr <时间戳服务器> /td SHA256`，对 WordGit.dll 与 WordGit.Setup.exe 各签一次，签 DLL 须在打包之前）。
 

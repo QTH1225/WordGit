@@ -70,11 +70,9 @@ try {
     $verify = Invoke-SetupProbe '/verify'
     Assert-InstallTest ($verify -match 'PASS') 'Standalone setup payload verification failed'
     $installationPlan = Invoke-SetupProbe '/plan' | ConvertFrom-Json
-    Assert-InstallTest ($installationPlan.Scope -eq 'CurrentUser' -and $installationPlan.Version -eq $identity.Version.ToString() -and @($installationPlan.Hosts).Count -gt 0) 'Invalid setup plan'
-    foreach ($officeHost in $installationPlan.Hosts) {
-        Assert-InstallTest ($officeHost.Bits -in @(32,64) -and $officeHost.RegistryView -eq ('Registry' + $officeHost.Bits) -and
-            (Test-Path -LiteralPath $officeHost.Path -PathType Leaf)) 'Invalid editor path or architecture in setup plan'
-    }
+    Assert-InstallTest ($installationPlan.Scope -eq 'CurrentUser' -and $installationPlan.Version -eq $identity.Version.ToString()) 'Invalid setup plan'
+    Assert-InstallTest ($installationPlan.WordBits -in @(32,64) -and $installationPlan.RegistryView -eq ('Registry' + $installationPlan.WordBits) -and
+        (Test-Path -LiteralPath $installationPlan.WordPath -PathType Leaf)) 'Invalid Word path or architecture in setup plan'
     $installed = Install-WordGitFiles $app $PackageRoot $identity (Join-Path $PackageRoot 'WordGit.Setup.exe')
     $sourceHash = (Get-FileHash -LiteralPath (Join-Path $PackageRoot 'bin\WordGit.dll')).Hash
     Assert-InstallTest ((Get-FileHash -LiteralPath $installed).Hash -eq $sourceHash) 'Installed DLL mismatch'

@@ -74,6 +74,10 @@ namespace WordGit
             Require(client.Status(path).History.Count == 1, "提交历史应有一条记录");
             Console.WriteLine("PASS: 首次提交入库。");
 
+            TestKernel.VerifyRestart(client);
+            Require(client.Status(path).Head == head1, "内核重启后应保留原来的提交");
+            Console.WriteLine("PASS: 内核退出后自动启动，原有提交可读取。");
+
             document.Content.InsertAfter("第二节 恢复与合并。\r");
             document.Save();
             var second = TestFiles.Snapshot((object)document);
