@@ -22,7 +22,7 @@ $dist = Join-Path $PSScriptRoot 'dist'
 New-Item -ItemType Directory -Path $package,$dist -Force | Out-Null
 try {
     $allowlist = @('bin/WordGit.dll','bin/wordgit.exe','install.ps1','Install.cmd','Uninstall.cmd','Check.cmd','README.md',
-        'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','LICENSE','addin-wps/')
+        'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','docs/WPS.md','LICENSE','addin-wps/')
     # 目录项（以 / 结尾）展开成逐个文件，安装包里才能带上 WPS 文字加载项。
     $entries = @()
     foreach ($name in $allowlist) {
