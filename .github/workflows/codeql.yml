@@ -42,7 +42,7 @@ jobs:
       - name: Build the Windows add-in and installer
         if: matrix.language == 'csharp'
         shell: powershell
-        run: .\package.ps1
+        run: .\scripts\package.ps1
 
       - uses: github/codeql-action/analyze@v3
         with:

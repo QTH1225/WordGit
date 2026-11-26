@@ -72,13 +72,13 @@ WordGit 是 Word 的 COM 加载项，**不需要在 Word 里手动添加文件**
 
 ```powershell
 # 1. 编译界面插件与 Rust 内核，生成 bin\WordGit.dll 和 bin\wordgit.exe
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 
 # 2. 关闭所有 Word 窗口后，注册到当前用户（与安装程序写入相同的注册项，并部署内核与 WPS 加载项）
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-`install.ps1` 面向 Windows PowerShell 5.1，用 `powershell.exe` 运行。重新编译后再运行一次 `install.ps1`，Word 下次启动就会载入新版本；`install.ps1 -Uninstall` 可撤销注册。只想编译 C# 界面时可加 `-NoRust`，直接复用已有的 `bin\wordgit.exe`。
+`scripts/install.ps1` 面向 Windows PowerShell 5.1，用 `powershell.exe` 运行。重新编译后再运行一次 `scripts/install.ps1`，Word 下次启动就会载入新版本；`scripts/install.ps1 -Uninstall` 可撤销注册。只想编译 C# 界面时可加 `-NoRust`，直接复用已有的 `bin\wordgit.exe`。
 
 ## 快速开始
 
@@ -194,14 +194,15 @@ WordGit/
 │  ├─ WPS.md            WPS 文字加载项说明
 │  └─ RELEASING.md      打包、发布与验证记录
 ├─ .github/             CI、CodeQL、PR 与 Issue 模板
-├─ build.ps1            编译内核与界面插件并运行测试
-├─ package.ps1          生成 EXE、ZIP 和 SHA-256 校验文件
-├─ install.ps1          当前用户安装、升级和卸载
-├─ Install.cmd          安装入口
-├─ Check.cmd            环境检查入口
-├─ Uninstall.cmd        卸载入口
+├─ scripts/
+│  ├─ build.ps1          编译内核与界面插件并运行测试
+│  ├─ package.ps1        打包 Windows EXE 和 ZIP
+│  ├─ install.ps1        安装、升级和卸载
+│  ├─ Install.cmd、Check.cmd、Uninstall.cmd
+│  └─ Linux 打包、发布说明生成和 GitHub 发布脚本
 ├─ bin/                 编译与测试输出（生成）
 ├─ dist/                发布包（生成）
+├─ Cargo.toml、Cargo.lock
 ├─ README.md
 └─ LICENSE
 ```
@@ -253,10 +254,10 @@ Copyright (C) 2026 QTH1225。
 
 ```powershell
 # 构建并检查功能与界面
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test -UiTest
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Test -UiTest
 
 # 生成并验证发布包
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\package.ps1 -Test
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Test
 ```
 
 - [使用说明](docs/USAGE.md)：分支合并、返稿导入、远程协作和版本取回的详细步骤。

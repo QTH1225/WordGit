@@ -58,7 +58,7 @@ WordGit 0.13.0 支持启动后检查更新、自选数据目录和 Windows 无�
 - **工程**：
   - 新增 CI、CodeQL、PR 与 Issue 模板以及 `.gitattributes`。
   - 测试统一走生产用的文件与流式接口，所有测试程序跑完后汇总失败。
-  - package.ps1 校验文档版本号，并为安装程序生成版本清单。
+  - scripts/package.ps1 校验文档版本号，并为安装程序生成版本清单。
   - 安装测试核对 COM 标识。
 - 移除只有测试在用的内存版接口和已经停用的“优化仓库存储”回调。存储格式不变，旧仓库可直接继续使用。
 
@@ -71,7 +71,7 @@ WordGit 0.13.0 支持启动后检查更新、自选数据目录和 Windows 无�
 3. 变更进入 `main` 后，给对应提交添加并推送标签，例如 `v0.12.1-beta.1`。Release 工作流校验版本，调用常规 CI，再生成 Windows 和 Linux x86_64 安装包、完整源码和 SHA-256 校验文件。推送普通提交只执行常规 CI。
 4. 所有产物校验后才公开 Release。带 `-beta.N` 的标签发布为预发布，纯数字版本发布为稳定版。若发布任务上传中断，在同一次运行中重新执行失败的任务即可复用原产物并续传。
 
-本地 Windows 验证可运行 `package.ps1 -Test -KernelTest`，覆盖更新检查、界面、Word 实机与安装测试。Linux x86_64 包使用 `scripts/package-linux.sh` 从 musl 构建产物生成。
+本地 Windows 验证可运行 `scripts/package.ps1 -Test -KernelTest`，覆盖更新检查、界面、Word 实机与安装测试。Linux x86_64 包使用 `scripts/package-linux.sh` 从 musl 构建产物生成。
 
 
 当前安装包未进行代码签名，不能宣称已签名或已通过所有 Windows/Office 版本认证。.NET Framework 自带的编译器不支持确定性编译，同一源码两次编译的 DLL 哈希不同；发布时以本次打包的 SHA256SUMS.txt 为准。现有 Word 实机验证以本机 64 位 Word 为准；32 位 Word 的注册路径有测试覆盖，完整功能仍需补充实机验证。

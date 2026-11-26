@@ -1,13 +1,14 @@
 ﻿param([switch]$Test, [switch]$WordTest, [switch]$UiTest, [switch]$KernelTest, [switch]$PaneTest, [switch]$NoRust)
 $ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (-not (Test-Path -LiteralPath $framework)) { $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319' }
 $compiler = Join-Path $framework 'csc.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw '需要 Windows .NET Framework 4.8。' }
-$bin = Join-Path $PSScriptRoot 'bin'
+$bin = Join-Path $repoRoot 'bin'
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
-$sources = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'src') -Filter '*.cs' | Select-Object -ExpandProperty FullName)
-$support = Join-Path $PSScriptRoot 'tests\TestSupport.cs'
+$sources = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'src') -Filter '*.cs' | Select-Object -ExpandProperty FullName)
+$support = Join-Path $repoRoot 'tests\TestSupport.cs'
 $references = @('System.Windows.Forms.dll','System.Drawing.dll','System.IO.Compression.dll','Microsoft.CSharp.dll','System.Net.Http.dll','System.Web.Extensions.dll')
 $options = @('/nologo','/codepage:65001','/langversion:5','/optimize+') + @($references | ForEach-Object { "/reference:$_" })
 & $compiler @options /target:library "/out:$bin\WordGit.dll" @sources
@@ -25,13 +26,13 @@ if (-not $NoRust) {
         if (Test-Path -LiteralPath $candidate) { $cargoPath = $candidate }
     }
     if (-not $cargoPath) { throw '需要 Rust 工具链（cargo）来构建 wordgit 内核。' }
-    Push-Location $PSScriptRoot
+    Push-Location $repoRoot
     try {
         & $cargoPath build --locked --release --package wordgit
         if ($LASTEXITCODE -ne 0) { throw '内核构建失败。' }
     } finally { Pop-Location }
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target\release\wordgit.exe') -Destination $kernel -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target\release\wordgit-launcher.exe') -Destination $bin -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'target\release\wordgit.exe') -Destination $kernel -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'target\release\wordgit-launcher.exe') -Destination $bin -Force
     Write-Output $kernel
 }
 
@@ -40,7 +41,7 @@ if (-not $NoRust) {
 $failures = New-Object System.Collections.Generic.List[string]
 function Invoke-TestProgram([string]$Name, [string]$Label, [string[]]$Arguments = @(), [string[]]$Extra = @()) {
     $exe = Join-Path $bin ('WordGit.' + $Name + '.exe')
-    & $compiler @options @Extra /target:exe "/out:$exe" @sources $support (Join-Path $PSScriptRoot ('tests\' + $Name + '.cs'))
+    & $compiler @options @Extra /target:exe "/out:$exe" @sources $support (Join-Path $repoRoot ('tests\' + $Name + '.cs'))
     if ($LASTEXITCODE -ne 0) { $failures.Add($Label + '（构建）'); return }
     & $exe @Arguments
     if ($LASTEXITCODE -ne 0) { $failures.Add($Label) }

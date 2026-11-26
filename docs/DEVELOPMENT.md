@@ -9,7 +9,7 @@
 在项目根目录打开 PowerShell：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test -UiTest
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Test -UiTest
 ```
 
 输出界面插件 `bin/WordGit.dll` 和内核 `bin/wordgit.exe`。脚本先用系统 .NET Framework 编译器（C# 5）编译界面，不下载 NuGet 依赖，再用 `cargo build --release -p wordgit` 编译内核并复制过来；只想重编界面时加 `-NoRust`。
@@ -29,7 +29,7 @@ GitHub Actions 在每次推送和 PR 时运行 `-Test`、`-UiTest` 并生成发�
 真机测试会自己启动隐藏的 Word 实例，新建独立测试文档与会话：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -KernelTest
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 -KernelTest
 ```
 
 ## 从源码安装
@@ -37,14 +37,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -KernelTest
 构建完成、保存并关闭 Word 后：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
 只检查环境和文件：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -CheckOnly
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Plan
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -CheckOnly
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Plan
 ```
 
 -CheckOnly 与 -Plan 均不安装；后者输出 JSON 形式的安装计划。
@@ -52,7 +52,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Plan
 ## 生成发布包
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\package.ps1 -Test
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Test
 ```
 
 也可增加 -KernelTest，执行 Word 真机的提交、预览、恢复与合并测试。打包前会核对 README 与 docs/RELEASING.md 中的版本号是否与插件一致。发布文件位于 dist/：
@@ -69,7 +69,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\package.ps1 -Test
 
 服务只监听 `127.0.0.1`，端口与 48 位十六进制口令写在 `%LOCALAPPDATA%\WordGit\service.json`（退出即删除）。除 `/api/v1/ping` 外所有请求都要带 `x-wordgit-token`，并校验 `Host` 与 `Origin`，因此浏览器页面无法借用本机服务。加载项启动时读取该文件；口令对不上会提示重启编辑器。
 
-WordGit.Connect 和 WordGit.HistoryPane 注册到当前用户的 COM 类和 Word 加载项项下，安装器根据 WINWORD.EXE 的实际架构选择 32/64 位注册表视图。CLSID 与 ProgID 同时写在源码属性和 install.ps1 开头的变量中，安装测试会核对两者一致。卸载不处理历史仓库或审阅稿。内核用 `HKCU\...\Run` 的 `WordGit` 值登录自启，WPS 加载项由 `wordgit install --addin` 写入 `jsaddons` 与 `publish.xml`。
+WordGit.Connect 和 WordGit.HistoryPane 注册到当前用户的 COM 类和 Word 加载项项下，安装器根据 WINWORD.EXE 的实际架构选择 32/64 位注册表视图。CLSID 与 ProgID 同时写在源码属性和 scripts/install.ps1 开头的变量中，安装测试会核对两者一致。卸载不处理历史仓库或审阅稿。内核用 `HKCU\...\Run` 的 `WordGit` 值登录自启，WPS 加载项由 `wordgit install --addin` 写入 `jsaddons` 与 `publish.xml`。
 
 所有 git.exe 调用都在 `crates/wordgit-core/src/git.rs`：清除继承的 GIT_* 环境变量、屏蔽全局与系统配置（网络操作除外，以使用用户的凭据和代理）、`core.longpaths`、`core.fsync=committed`，并支持超时取消与整棵进程树结束。新增 Git 调用时不要绕过它直接启动进程。
 

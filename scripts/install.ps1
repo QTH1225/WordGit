@@ -218,21 +218,21 @@ function Install-WordGitWpsAddin([string]$InstallDirectory) {
     if ($LASTEXITCODE -ne 0) { Write-Output 'WPS 文字加载项未能自动更新，重新打开 WPS 后可再次运行安装程序。' }
 }
 
-function Test-WordGitPayload {
-    $source = Join-Path $PSScriptRoot 'bin\WordGit.dll'
-    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw '缺少 bin\WordGit.dll。请完整解压安装包；从源码安装时先运行 build.ps1。' }
+function Test-WordGitPayload([string]$SourceDirectory) {
+    $source = Join-Path $SourceDirectory 'bin\WordGit.dll'
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw '缺少 bin\WordGit.dll。请完整解压安装包；从源码安装时先运行 scripts\build.ps1。' }
     $identity = [Reflection.AssemblyName]::GetAssemblyName($source)
     if ($identity.Name -ne 'WordGit') { throw '插件程序集名称不正确。' }
-    $kernel = Join-Path $PSScriptRoot 'bin\wordgit.exe'
-    if (-not (Test-Path -LiteralPath $kernel -PathType Leaf)) { throw '缺少 bin\wordgit.exe（Rust 内核）。请完整解压安装包；从源码安装时先运行 build.ps1。' }
-    if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'bin\wordgit-launcher.exe') -PathType Leaf)) { throw '缺少无窗口启动程序 wordgit-launcher.exe。' }
-    $manifestFile = Join-Path $PSScriptRoot 'manifest.json'
+    $kernel = Join-Path $SourceDirectory 'bin\wordgit.exe'
+    if (-not (Test-Path -LiteralPath $kernel -PathType Leaf)) { throw '缺少 bin\wordgit.exe（Rust 内核）。请完整解压安装包；从源码安装时先运行 scripts\build.ps1。' }
+    if (-not (Test-Path -LiteralPath (Join-Path $SourceDirectory 'bin\wordgit-launcher.exe') -PathType Leaf)) { throw '缺少无窗口启动程序 wordgit-launcher.exe。' }
+    $manifestFile = Join-Path $SourceDirectory 'manifest.json'
     if (Test-Path -LiteralPath $manifestFile) {
         $manifest = Get-Content -Raw -LiteralPath $manifestFile -Encoding UTF8 | ConvertFrom-Json
         if ($manifest.Version -ne $identity.Version.ToString()) { throw '安装包版本与插件版本不一致。' }
-        $root = [IO.Path]::GetFullPath($PSScriptRoot) + [IO.Path]::DirectorySeparatorChar
+        $root = [IO.Path]::GetFullPath($SourceDirectory) + [IO.Path]::DirectorySeparatorChar
         foreach ($entry in $manifest.Files) {
-            $target = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $entry.Path))
+            $target = [IO.Path]::GetFullPath((Join-Path $SourceDirectory $entry.Path))
             if (-not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw '安装包包含无效文件路径。' }
             if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $entry.Sha256) {
                 throw "安装文件校验失败：$($entry.Path)"
@@ -267,6 +267,9 @@ function Install-WordGitFiles([string]$InstallDirectory, [string]$SourceDirector
     }
     foreach ($name in @('install.ps1','Uninstall.cmd')) {
         $from = Join-Path $SourceDirectory $name
+        if (-not (Test-Path -LiteralPath $from -PathType Leaf)) {
+            $from = Join-Path $SourceDirectory "scripts\$name"
+        }
         $to = Join-Path $destination $name
         if ((Test-Path -LiteralPath $from -PathType Leaf) -and [IO.Path]::GetFullPath($from) -ne [IO.Path]::GetFullPath($to)) {
             Copy-Item -LiteralPath $from -Destination $to -Force
@@ -346,9 +349,16 @@ if ($Uninstall) {
     return
 }
 $environmentInfo = Get-WordGitEnvironment
-$identity = Test-WordGitPayload
+$sourceRoot = $PSScriptRoot
+$parent = Split-Path -Parent $PSScriptRoot
+if ((Split-Path -Leaf $PSScriptRoot) -eq 'scripts' -and $parent -and
+    (Test-Path -LiteralPath (Join-Path $parent 'Cargo.toml') -PathType Leaf) -and
+    -not (Test-Path -LiteralPath (Join-Path $sourceRoot 'manifest.json') -PathType Leaf)) {
+    $sourceRoot = $parent
+}
+$identity = Test-WordGitPayload $sourceRoot
 $version = $identity.Version.ToString()
-$source = Join-Path $PSScriptRoot 'bin\WordGit.dll'
+$source = Join-Path $sourceRoot 'bin\WordGit.dll'
 $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
 $installed = Join-Path $installDir "WordGit.$version.$($hash.Substring(0,12)).dll"
 $view = if ($environmentInfo.WordBits -eq 64) { [Microsoft.Win32.RegistryView]::Registry64 } else { [Microsoft.Win32.RegistryView]::Registry32 }
@@ -368,18 +378,18 @@ if (Get-Process -Name WINWORD -ErrorAction SilentlyContinue) { throw '请先保�
 if (Get-Process -Name wps -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }) {
     throw '请先保存并关闭所有 WPS 文字窗口，再安装或更新 WordGit。'
 }
-if (-not $SetupExecutable) { $SetupExecutable = Join-Path $PSScriptRoot 'WordGit.Setup.exe' }
+if (-not $SetupExecutable) { $SetupExecutable = Join-Path $sourceRoot 'WordGit.Setup.exe' }
 Stop-WordGitKernel $installDir
 if ($DataDirectory) {
     try {
-        & (Join-Path $PSScriptRoot 'bin\wordgit.exe') data-directory $DataDirectory
+        & (Join-Path $sourceRoot 'bin\wordgit.exe') data-directory $DataDirectory
         if ($LASTEXITCODE -ne 0) { throw '数据目录迁移未完成。' }
     } catch {
         Start-WordGitKernel (Join-Path $installDir 'wordgit.exe')
         throw
     }
 }
-$installed = Install-WordGitFiles $installDir $PSScriptRoot $identity $SetupExecutable
+$installed = Install-WordGitFiles $installDir $sourceRoot $identity $SetupExecutable
 $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
 try {
     Register-WordGitPlugin $base $identity.FullName $version ([Uri]$installed).AbsoluteUri

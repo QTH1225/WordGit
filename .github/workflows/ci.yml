@@ -21,21 +21,21 @@ jobs:
 
       - name: Build the add-in and kernel, run update-check tests
         shell: powershell
-        run: .\build.ps1 -Test
+        run: .\scripts\build.ps1 -Test
 
       - name: Run UI layout tests
         shell: powershell
-        run: .\build.ps1 -UiTest
+        run: .\scripts\build.ps1 -UiTest
 
       - name: Run history pane first-paint tests
         shell: powershell
-        run: .\build.ps1 -NoRust -PaneTest
+        run: .\scripts\build.ps1 -NoRust -PaneTest
 
-      # package.ps1 -Test also runs installer probes that need desktop Word, so CI only
+      # scripts/package.ps1 -Test also runs installer probes that need desktop Word, so CI only
       # verifies that the release package builds and that document versions match.
       - name: Build release package
         shell: powershell
-        run: .\package.ps1 -NoBuild
+        run: .\scripts\package.ps1 -NoBuild
 
       - name: Verify the Windows release payload
         shell: powershell

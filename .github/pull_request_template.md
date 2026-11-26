@@ -13,9 +13,9 @@
 
 ## 验证
 
-- [ ] `build.ps1 -Test -UiTest` 通过
-- [ ] 涉及 Word 行为时，`build.ps1 -WordTest` 在桌面版 Word 中通过（注明 Word 位数与版本）
-- [ ] 涉及安装时，`package.ps1 -Test` 通过
+- [ ] `scripts/build.ps1 -Test -UiTest` 通过
+- [ ] 涉及 Word 行为时，`scripts/build.ps1 -WordTest` 在桌面版 Word 中通过（注明 Word 位数与版本）
+- [ ] 涉及安装时，`scripts/package.ps1 -Test` 通过
 - [ ] 改动版本号时，README 与 docs/RELEASING.md 已同步
 
 <!-- 不要附带真实稿件、repositories、sessions 或日志中的个人信息。 -->
