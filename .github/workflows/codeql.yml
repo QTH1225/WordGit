@@ -22,10 +22,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The project builds with the .NET Framework csc directly (no project file);
-          # buildless extraction analyses the sources without tracing that build.
+          # Trace the existing .NET Framework compiler invocation.
           - language: csharp
-            build-mode: none
+            build-mode: manual
           - language: actions
             build-mode: none
           - language: rust
@@ -39,6 +38,11 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+
+      - name: Build the Windows Word add-in
+        if: matrix.language == 'csharp'
+        shell: powershell
+        run: .\build.ps1 -NoRust
 
       - uses: github/codeql-action/analyze@v3
         with:
