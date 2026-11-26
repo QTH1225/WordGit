@@ -39,10 +39,10 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
-      - name: Build the Windows Word add-in
+      - name: Build the Windows add-in and installer
         if: matrix.language == 'csharp'
         shell: powershell
-        run: .\build.ps1 -NoRust
+        run: .\package.ps1
 
       - uses: github/codeql-action/analyze@v3
         with:
