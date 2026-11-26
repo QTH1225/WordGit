@@ -597,24 +597,29 @@ namespace WordGit
             {
                 CopyShared(target, currentFile);
                 List<DocumentComment> comments;
-                bool hasPendingChanges;
+                bool preserveCurrentRevisions;
                 var current = Open(currentFile, true, false);
                 try
                 {
                     comments = Comments(current, true);
-                    hasPendingChanges = !plan.BasisIsTarget && ReviewItems(current).Any(item => !item.IsComment);
+                    preserveCurrentRevisions = ReviewItems(current).Any(item => !item.IsComment);
                 }
                 finally { CloseReviewInput(current); }
 
                 if (plan.BasisIsTarget)
                 {
-                    CopyShared(incoming, incomingRevisions);
-                    result = ReviewStaged(folder, currentFile, incomingRevisions, true, null);
+                    if (preserveCurrentRevisions)
+                        result = ReviewFiles(target, incoming, false, plan.IncomingAuthor);
+                    else
+                    {
+                        CopyShared(incoming, incomingRevisions);
+                        result = ReviewStaged(folder, currentFile, incomingRevisions, true, null);
+                    }
                 }
                 else
                 {
                     var previousReturns = plan.PreviousReturns;
-                    var continued = hasPendingChanges ? null : FindContinuedReturn(previousReturns, incoming, rawReturn, previousReturn);
+                    var continued = FindContinuedReturn(previousReturns, incoming, rawReturn, previousReturn);
                     var continuedFile = continued == null ? basis : continued.File;
                     string currentBody = null;
                     if (continued != null)
@@ -645,22 +650,19 @@ namespace WordGit
                     }
                     finally { CloseReviewInput(proposal); }
 
-                    // Word's native combine may duplicate the original text when both sides replace the
-                    // same range. Build the suggested result from the returned edit and compare it with
-                    // the actual current draft so rejecting the conflict always restores the current text.
-                    var hasConflict = false;
-                    if (!hasPendingChanges)
+                    // Build the suggested result with native Word combine, then compare it against
+                    // the current manuscript when its committed content already contains revisions.
+                    // Those revisions belong to the manuscript and must not be offered for rejection.
+                    bool hasConflict;
+                    var trackedCurrent = Open(currentRevisions, false, true);
+                    try
                     {
-                        var trackedCurrent = Open(currentRevisions, false, true);
-                        try
-                        {
-                            hasConflict = ReturnReviewDecisions.PrepareConflictProposal(this, trackedCurrent, incomingItems, continued != null);
-                            if (hasConflict) ((dynamic)trackedCurrent).Save();
-                        }
-                        finally { CloseReviewInput(trackedCurrent); }
+                        hasConflict = ReturnReviewDecisions.PrepareConflictProposal(this, trackedCurrent, incomingItems, continued != null);
+                        if (hasConflict) ((dynamic)trackedCurrent).Save();
                     }
+                    finally { CloseReviewInput(trackedCurrent); }
                     result = ReviewStaged(folder, currentRevisions, incomingRevisions, true, null);
-                    if (hasConflict)
+                    if (hasConflict || preserveCurrentRevisions)
                     {
                         ((dynamic)result).AcceptAllRevisions();
                         ((dynamic)result).SaveAs2(FileName: proposedFile, FileFormat: 16, AddToRecentFiles: false);
@@ -669,7 +671,7 @@ namespace WordGit
                         var authors = incomingItems.Where(item => !item.IsComment).Select(item => item.Author).Distinct().ToArray();
                         result = ReviewStaged(folder, currentFile, proposedFile, false, authors.Length == 1 ? authors[0] : "返稿");
                     }
-                    else if (!hasPendingChanges) ReturnReviewDecisions.KeepCurrentChanges(this, result, currentAuthor,
+                    else ReturnReviewDecisions.KeepCurrentChanges(this, result, currentAuthor,
                         continued == null ? null : incomingItems, currentBody);
                 }
                 RestoreResolvedReviewComments(ref result, comments);

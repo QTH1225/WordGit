@@ -297,77 +297,22 @@
         return items;
     }
 
-    function preserveComments(doc, current, incoming) {
-        var existing = readComments(doc), used = new Set(), required = current.slice();
-        function matching(notes, note, used) {
-            var candidates = [];
-            notes.forEach(function (item, index) {
-                if ((!used || !used.has(index)) && item.author === note.author && item.text.trim() === note.text.trim()) {
-                    candidates.push(index);
-                }
-            });
-            var dated = candidates.filter(function (index) { return note.date && notes[index].date === note.date; });
-            if (dated.length === 1) return dated[0];
-            var anchored = candidates.filter(function (index) { return notes[index].anchor === note.anchor; });
-            if (anchored.length === 1) return anchored[0];
-            return candidates.length === 1 && (!note.anchor || !notes[candidates[0]].anchor) ? candidates[0] : -1;
-        }
-        incoming.forEach(function (note) {
-            if (matching(current, note) < 0) required.push(note);
-        });
-        var tracking = doc.TrackRevisions;
-        doc.TrackRevisions = false;
-        try {
-            required.forEach(function (note) {
-                var index = matching(existing, note, used);
-                if (index >= 0) {
-                    used.add(index);
-                    if (note.done && !existing[index].done) doc.Comments.Item(index + 1).Done = true;
-                    return;
-                }
-                var range = doc.Content.Duplicate, find = range.Find;
-                find.ClearFormatting();
-                if (!note.anchor || !find.Execute(note.anchor, true, false, false, false, false, true, 0, false)) {
-                    throw new Error("不能定位批注「" + note.text.trim() + "」的原文。原始返稿已保留。");
-                }
-                var match = range.Duplicate;
-                var rest = doc.Range(match.End, doc.Content.End);
-                if (rest.Find.Execute(note.anchor, true, false, false, false, false, true, 0, false)) {
-                    throw new Error("批注「" + note.text.trim() + "」的原文出现多次。原始返稿已保留。");
-                }
-                var added = doc.Comments.Add(match, note.text.trimEnd());
-                added.Author = note.author;
-                if (note.initials) added.Initial = note.initials;
-                if (note.done) added.Done = true;
-            });
-        } finally {
-            doc.TrackRevisions = tracking;
-        }
-        var finalNotes = readComments(doc), retained = new Set();
-        required.forEach(function (note) {
-            var index = matching(finalNotes, note, retained);
-            if (index < 0 || note.done && !finalNotes[index].done) {
-                throw new Error("WPS 未能保留原有批注的状态。原始返稿已保留。");
-            }
-            retained.add(index);
-        });
-    }
-
     // Use only changes introduced by this return. The base of the output is always the
     // current manuscript, including its local changes and the decisions from earlier rounds.
     WG.buildReturnedReview = async function (plan) {
-        var old = null, raw = null, current = null, proposal = null, diff = null, output = null;
-        var snapshots = plan.previousReturns || [], base = plan.basis, known = [];
+        var old = null, raw = null, proposal = null, diff = null, output = null;
+        var snapshots = plan.previousReturns || [], base = plan.basis, known = [], earlierNotes = [];
         var options = { comments: false, granularity: 0 };
         try {
+            var currentNotes = await collaborationComments(plan.target);
+            var notes = await collaborationComments(plan.incoming);
             raw = await WG.open(plan.incoming, true);
-            current = await WG.open(plan.target, true);
-            var notes = readComments(raw), currentNotes = readComments(current), incoming = revisionKeys(raw);
-            await WG.close(current); current = null;
+            var incoming = revisionKeys(raw);
             await WG.close(raw); raw = null;
             for (var entry of snapshots) {
                 old = await WG.open(entry.file, true);
                 var marks = revisionKeys(old);
+                earlierNotes = earlierNotes.concat(readComments(old));
                 await WG.close(old); old = null;
                 if (marks.size && Array.from(marks).every(function (pair) { return (incoming.get(pair[0]) || 0) >= pair[1]; })) {
                     base = entry.file;
@@ -398,11 +343,11 @@
                 var item = proposed[i];
                 if (!allowed.some(function (change) { return intersectsReturn(item, change); })) proposal.Revisions.Item(item.index).Reject();
             }
-            preserveComments(proposal, currentNotes, notes);
+            restoreCollaborationComments(proposal, currentNotes, notes, earlierNotes);
             output = proposal; proposal = null;
             return output;
         } finally {
-            for (var doc of [proposal, diff, current, raw, old]) if (doc) await WG.close(doc);
+            for (var doc of [proposal, diff, raw, old]) if (doc) await WG.close(doc);
         }
     };
 
@@ -466,18 +411,28 @@
         return matches[0];
     }
 
-    function restoreCollaborationComments(doc, current, incoming) {
+    function restoreCollaborationComments(doc, current, incoming, earlierNotes) {
         var matched = new Set(), required = current.slice(), existing = readComments(doc), retained = new Set();
         function same(left, right) {
             return left.author === right.author && left.text.trim() === right.text.trim() &&
                 left.anchor.trim() === right.anchor.trim();
         }
         incoming.forEach(function (note) {
-            var index = current.findIndex(function (old, i) {
-                return !matched.has(i) && same(old, note) && old.date === note.date &&
-                    old.before === note.before && old.after === note.after;
+            var candidates = current.map(function (old, i) { return !matched.has(i) && same(old, note) ? i : -1; })
+                .filter(function (i) { return i >= 0; });
+            var index = candidates.find(function (i) {
+                var old = current[i];
+                return old.date === note.date && old.before === note.before && old.after === note.after;
             });
-            if (index < 0) required.push(note); else matched.add(index);
+            if (index == null && earlierNotes && candidates.length === 1) {
+                var candidate = current[candidates[0]];
+                // WPS assigns a new date when it recreates a comment. Match that copy on
+                // later rounds only if the incoming comment is already in an archived return.
+                if ((note.date && candidate.date === note.date) || earlierNotes.some(function (archived) {
+                    return same(archived, note) && archived.date === note.date;
+                })) index = candidates[0];
+            }
+            if (index == null) required.push(note); else matched.add(index);
         });
         doc.TrackRevisions = false;
         var additions = [];
