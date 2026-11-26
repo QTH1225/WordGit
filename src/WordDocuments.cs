@@ -167,7 +167,7 @@ namespace WordGit
         }
     }
 
-    internal sealed class WordDocuments
+    internal sealed partial class WordDocuments
     {
         private readonly dynamic word;
         public bool IsWpsHost { get; private set; }
@@ -444,7 +444,7 @@ namespace WordGit
                 AddToRecentFiles: false, Visible: visible);
         }
 
-        public object ReviewFiles(string original, string revised, bool merge, string author = null)
+        public object ReviewFiles(string original, string revised, bool merge, string author = null, bool collaboration = false)
         {
             if (merge) EnsureTrackedMergeSupported();
             var folder = AppPaths.NewSession();
@@ -452,7 +452,7 @@ namespace WordGit
             var rightFile = Path.Combine(folder, "修订版本.docx");
             CopyShared(original, leftFile);
             CopyShared(revised, rightFile);
-            return ReviewStaged(folder, leftFile, rightFile, merge, author);
+            return ReviewStaged(folder, leftFile, rightFile, merge, author, collaboration);
         }
 
         public object ReviewPaths(string original, string revised, bool merge, string author = null)
@@ -505,7 +505,7 @@ namespace WordGit
                 input.CopyTo(output);
         }
 
-        private object ReviewStaged(string folder, string leftFile, string rightFile, bool merge, string author)
+        private object ReviewStaged(string folder, string leftFile, string rightFile, bool merge, string author, bool collaboration = false)
         {
             dynamic left = null, right = null;
             var screenUpdating = (bool)word.ScreenUpdating;
@@ -524,7 +524,8 @@ namespace WordGit
                 else
                     result = word.CompareDocuments(OriginalDocument: left, RevisedDocument: right, Destination: 2,
                         CompareFormatting: true, CompareTables: true, CompareHeaders: true, CompareFootnotes: true,
-                        CompareTextboxes: true, CompareFields: true, CompareComments: true, RevisedAuthor: author ?? "WordGit",
+                        CompareTextboxes: true, CompareFields: true, CompareComments: !collaboration, CompareMoves: !collaboration,
+                        Granularity: collaboration ? 0 : 1, RevisedAuthor: author ?? "WordGit",
                         IgnoreAllComparisonWarnings: true);
                 if (result == null) throw new InvalidOperationException("编辑器未生成独立的修订稿。");
                 ActivateIfNeeded((object)result);

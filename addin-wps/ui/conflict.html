@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="style.css">
+    <script src="../js/core.js"></script>
+    <style>
+        .versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-height: 0; }
+        .versions section { display: flex; flex-direction: column; min-height: 0; gap: 5px; }
+        .versions pre { margin: 0; flex: 1; border: 1px solid var(--border, #b6b6b6); border-radius: 4px;
+            padding: 8px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+    </style>
+</head>
+<body class="dialog">
+    <p id="base" class="hint">双方修改了同一处。请选择这一处要保留的版本。</p>
+    <div class="versions grow">
+        <section><strong>本地版本</strong><pre id="local"></pre></section>
+        <section><strong>远端版本</strong><pre id="remote"></pre></section>
+    </div>
+    <div class="buttons">
+        <button id="cancel">取消合并</button>
+        <button id="take-local">保留本地</button>
+        <button id="take-remote">保留远端</button>
+    </div>
+    <script>
+        var data = WordGit.dialogData();
+        var original = (data.original || "").trim().replace(/\s+/g, " ");
+        if (original) document.getElementById("base").textContent = "双方修改了同一处 · 原文「" +
+            (original.length > 60 ? original.slice(0, 60) + "…" : original) + "」";
+        document.getElementById("local").textContent = data.local || "";
+        document.getElementById("remote").textContent = data.remote || "";
+        document.getElementById("take-local").onclick = function () { WordGit.finishDialog("local"); };
+        document.getElementById("take-remote").onclick = function () { WordGit.finishDialog("remote"); };
+        document.getElementById("cancel").onclick = function () { WordGit.finishDialog(null); };
+        document.addEventListener("keydown", function (e) { if (e.key === "Escape") WordGit.finishDialog(null); });
+    </script>
+</body>
+</html>

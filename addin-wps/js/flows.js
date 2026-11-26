@@ -264,19 +264,24 @@
     // Builds a merge draft in WPS from the files the service prepared, saves it in the session
     // folder, registers it and opens it for review.
     async function buildMergeDraft(plan, targetLabel) {
+        var collaborative = !plan.original && !plan.basisIsTarget && !plan.submittedBase &&
+            plan.review && String(plan.review.sourceBranch || "").startsWith("refs/remotes/");
         var draft;
         if (plan.original) {
             draft = await WG.compare(plan.original, plan.revised, "修订版本", false);
         } else if (plan.submittedBase) {
             draft = await WG.buildReturnedReview(plan);
+        } else if (collaborative) {
+            draft = await WG.buildCollaborationReview(plan);
+            if (!draft) return null;
         } else {
             // Exact when the current branch did not change since the common version. Otherwise the
             // draft also shows the current branch's own changes as revisions that would undo them;
             // a reference document lists those so the author can reject them.
             draft = await WG.compare(plan.target, plan.incoming, plan.incomingAuthor, !!plan.preserveIncoming && plan.basisIsTarget);
         }
-        WG.saveAs(draft, plan.draft);
-        await WG.close(draft);
+        try { WG.saveAs(draft, plan.draft); }
+        finally { await WG.close(draft); }
         await WG.settle(50);
         await WG.call("merge/register", { draft: plan.draft, review: {
             original: plan.review.original, head: plan.review.head, branch: plan.review.branch,
@@ -284,7 +289,7 @@
             applyToOriginal: !!plan.review.applyToOriginal, recordOnlyMerge: !!plan.review.recordOnlyMerge
         } });
         var notice = plan.notice;
-        if (!plan.original && !plan.basisIsTarget && !plan.submittedBase) {
+        if (!plan.original && !plan.basisIsTarget && !plan.submittedBase && !collaborative) {
             await WG.compare(plan.basis, plan.target, targetLabel || "当前分支", false);
             notice += "\n\n双方都有修改：WPS 只能对比两份文稿，合并稿中也会出现「撤销当前分支修改」的修订。" +
                 "已另外打开一份「当前分支的修改」对照稿；合并稿中与对照稿相反的修订请选择「拒绝」。";
@@ -434,7 +439,8 @@
             if (result.action === "merge") {
                 var plan = await WG.call("merge/branch", { document: ctx.path, source: result.source });
                 var notice = await buildMergeDraft(plan, ctx.status.branch);
-                return "双方修改已生成修订合并稿。" + notice + "\n确认修订后点击「完成合并」，再回到原稿推送。";
+                if (!notice) return null;
+                return "双方修改已生成合并稿。" + notice + "\n确认修订后点击「完成合并」，再回到原稿推送。";
             }
             if (result.action === "replace") return applyReplacement(result);
             return result.message;

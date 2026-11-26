@@ -677,8 +677,35 @@ namespace WordGit
             var plan = MergePlan.From(await Task.Run(() => client.Call("merge/context", request)));
             if (plan.UpToDate) return plan.Message ?? "来源分支的提交已包含在当前分支。";
             if (plan.Draft == null) throw new InvalidOperationException("没能准备合并稿，请稍后重试。");
+            if (!plan.BasisIsTarget && plan.SubmittedBase == null && plan.Review != null &&
+                (plan.Review.SourceBranch ?? "").StartsWith("refs/remotes/", StringComparison.Ordinal))
+                return await GenerateCollaborationReview(plan, document, path);
             await OpenBackgroundReview(plan.Draft, worker => worker.BuildBranchMergeFile(plan, plan.Draft), plan.Review);
             return plan.Notice ?? "已打开合并稿。处理修订后点击右侧的「完成合并」。";
+        }
+
+        private async Task<string> GenerateCollaborationReview(MergePlan plan, object document, string path)
+        {
+            var staging = Path.Combine(Path.GetDirectoryName(plan.Draft), "协作修订暂存.docx");
+            try
+            {
+                CollaborationReview review = null;
+                var executable = Path.Combine((string)application.Path, "WINWORD.EXE");
+                await QuietWord.Run(executable, worker => review = worker.PrepareCollaboration(plan, staging));
+                var selected = review.Choose(word.Owner);
+                if (selected == null) return null;
+                await OpenBackgroundReview(plan.Draft, worker => worker.CompleteCollaboration(review, selected, plan.Draft),
+                    plan.Review, () => {
+                        if (!(bool)((dynamic)document).Saved)
+                            throw new InvalidOperationException("合并期间主稿有未保存修改，请先提交再重试。");
+                        CheckMergeTarget(path);
+                    });
+                return "双方修改已合入审阅稿。核对正文和批注后，点击「完成合并」。";
+            }
+            finally
+            {
+                try { File.Delete(staging); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
         }
 
         // The draft is produced by a second, hidden Word instance so the document the user is

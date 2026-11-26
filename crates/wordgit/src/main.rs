@@ -10,6 +10,7 @@
 //! wordgit version
 //! ```
 
+mod collaboration;
 mod install;
 mod ops;
 mod service;
@@ -145,6 +146,7 @@ pub fn dispatch(ctx: &Context, endpoint: &str, body: Value) -> Result<Value, Str
         "version/export" => ctx.export(&parse(body)?),
         "version/compare" => ctx.compare_files(&parse(body)?),
         "version/restore" => ctx.restore_prepare(&parse(body)?),
+        "merge/collaboration" => collaboration::plan(&parse(body)?),
         "merge/branch" => ctx.merge_branch_plan(&parse(body)?),
         "merge/versions" => ctx.merge_versions_plan(&parse(body)?),
         "merge/register" => ctx.register_review(&parse(body)?),

@@ -121,6 +121,7 @@ pub fn router(state: AppState) -> Router {
     route!(api, "/api/v1/version/export", Context::export);
     route!(api, "/api/v1/version/compare", Context::compare_files);
     route!(api, "/api/v1/version/restore", Context::restore_prepare);
+    route!(api, "/api/v1/merge/collaboration", Context::collaboration_plan);
     route!(api, "/api/v1/merge/branch", Context::merge_branch_plan);
     route!(api, "/api/v1/merge/context", Context::merge_context);
     route!(api, "/api/v1/merge/versions", Context::merge_versions_plan);

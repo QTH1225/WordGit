@@ -710,6 +710,10 @@ impl Context {
         json!({ "ok": true })
     }
 
+    pub fn collaboration_plan(&self, request: &crate::collaboration::CollaborationRequest) -> Result<Value> {
+        crate::collaboration::plan(request)
+    }
+
     /// Files and options for merging a branch (or the remote branch) into the current one. The
     /// add-in builds the draft from them with the editor's compare function.
     pub fn merge_branch_plan(&self, request: &MergeBranchRequest) -> Result<Value> {

@@ -227,7 +227,7 @@
             await WG.settle(50);
             var before = openNames();
             var returned = app.CompareDocuments(left, right, 2, options ? options.granularity : 1,
-                true, true, true, true, true, true, true, true, !options || options.comments, true,
+                true, true, true, true, true, true, true, true, !options || options.comments, !options || options.moves !== false,
                 author || "WordGit", true);
             await WG.settle(80);
             return produced(returned, before);
@@ -404,6 +404,145 @@
         } finally {
             for (var doc of [proposal, diff, current, raw, old]) if (doc) await WG.close(doc);
         }
+    };
+
+
+
+    function collaborationMarks(doc) {
+        var marks = [];
+        for (var i = 1; i <= doc.Revisions.Count; i++) {
+            var revision = doc.Revisions.Item(i), range = revision.Range;
+            if (range.StoryType !== 4) marks.push({ index: i, story: range.StoryType + ":0", kind: revision.Type,
+                start: range.Start, end: range.End, text: String(range.Text || "") });
+        }
+        return marks;
+    }
+
+    async function collaborationDiff(original, revised, author) {
+        var doc = await WG.compare(original, revised, author, false, { comments: false, granularity: 0, moves: false });
+        try { return collaborationMarks(doc); }
+        finally { await WG.close(doc); }
+    }
+
+    async function collaborationComments(path) {
+        var doc = await WG.open(path, false);
+        try {
+            doc.TrackRevisions = false;
+            doc.AcceptAllRevisions();
+            return readComments(doc).map(function (note, i) {
+                var scope = doc.Comments.Item(i + 1).Scope;
+                note.story = scope.StoryType;
+                if (note.story !== 1) throw new Error("无法校验这条批注所在的文档区域，合并稿未生成。");
+                note.anchor = String(scope.Text || "");
+                note.before = String(doc.Range(Math.max(0, scope.Start - 32), scope.Start).Text || "");
+                note.after = String(doc.Range(scope.End, Math.min(doc.Content.End, scope.End + 32)).Text || "");
+                return note;
+            });
+        } finally { await WG.close(doc); }
+    }
+
+    function collaborationAnchor(doc, note) {
+        var matches = [], best = -1, limit = doc.Content.End;
+        var search = note.anchor || note.before + note.after;
+        for (var cursor = doc.Content.Duplicate; search && cursor.Start < limit;) {
+            var find = cursor.Find;
+            find.ClearFormatting();
+            if (!find.Execute(search.replace(/\^/g, "^^").replace(/\r/g, "^p"),
+                true, false, false, false, false, true, 0, false)) break;
+            var next = cursor.End;
+            var scope = note.anchor ? cursor.Duplicate : doc.Range(cursor.Start + note.before.length, cursor.Start + note.before.length);
+            var before = String(doc.Range(Math.max(0, scope.Start - 32), scope.Start).Text || "");
+            var after = String(doc.Range(scope.End, Math.min(limit, scope.End + 32)).Text || "");
+            var score = Number(before.endsWith(note.before)) + Number(after.startsWith(note.after));
+            if (score >= best) {
+                if (score > best) matches = [];
+                matches.push(scope);
+                best = score;
+            }
+            if (next <= scope.Start || next >= limit) break;
+            cursor = doc.Range(next, limit);
+        }
+        if (matches.length !== 1) throw new Error("无法准确定位「" + note.author + "」的批注原文，合并稿未生成。");
+        return matches[0];
+    }
+
+    function restoreCollaborationComments(doc, current, incoming) {
+        var matched = new Set(), required = current.slice(), existing = readComments(doc), retained = new Set();
+        function same(left, right) {
+            return left.author === right.author && left.text.trim() === right.text.trim() &&
+                left.anchor.trim() === right.anchor.trim();
+        }
+        incoming.forEach(function (note) {
+            var index = current.findIndex(function (old, i) {
+                return !matched.has(i) && same(old, note) && old.date === note.date &&
+                    old.before === note.before && old.after === note.after;
+            });
+            if (index < 0) required.push(note); else matched.add(index);
+        });
+        doc.TrackRevisions = false;
+        var additions = [];
+        required.forEach(function (note) {
+            var scope = collaborationAnchor(doc, note);
+            var index = existing.findIndex(function (item, i) {
+                return !retained.has(i) && same(item, note) && doc.Comments.Item(i + 1).Scope.Start === scope.Start;
+            });
+            if (index >= 0) {
+                retained.add(index);
+                if (note.done && !existing[index].done) doc.Comments.Item(index + 1).Done = true;
+            } else additions.push({ note: note, scope: scope });
+        });
+        for (var i = existing.length - 1; i >= 0; i--) if (!retained.has(i)) doc.Comments.Item(i + 1).Delete();
+        additions.forEach(function (addition) {
+            var note = addition.note, added = doc.Comments.Add(addition.scope, note.text.trimEnd());
+            added.Author = note.author;
+            if (note.initials) added.Initial = note.initials;
+            if (note.done) added.Done = true;
+        });
+        var finalNotes = readComments(doc), checked = new Set();
+        required.forEach(function (note) {
+            var scope = collaborationAnchor(doc, note);
+            var index = finalNotes.findIndex(function (item, i) {
+                return !checked.has(i) && same(item, note) && (!note.done || item.done) &&
+                    doc.Comments.Item(i + 1).Scope.Start === scope.Start;
+            });
+            if (index < 0) throw new Error("编辑器未能保留批注的作者或原文，合并稿未生成。");
+            checked.add(index);
+        });
+    }
+
+    WG.buildCollaborationReview = async function (plan) {
+        var doc = null;
+        var author = plan.incomingAuthor;
+        var local = await collaborationDiff(plan.basis, plan.target, "本地");
+        var remote = await collaborationDiff(plan.basis, plan.incoming, author);
+        var localNotes = await collaborationComments(plan.target);
+        var remoteNotes = await collaborationComments(plan.incoming);
+        try {
+            doc = await WG.compare(plan.target, plan.incoming, author, false, { comments: false, granularity: 0, moves: false });
+            var marks = collaborationMarks(doc);
+            var decisions = await WG.call("merge/collaboration", { local: local, remote: remote, comparison: marks });
+            var choices = [];
+            for (var i = 0; i < decisions.conflicts.length; i++) {
+                var choice = await WG.dialog("conflict", "WordGit · 处理冲突 " + (i + 1) + " / " + decisions.conflicts.length,
+                    620, 365, decisions.conflicts[i]);
+                if (choice !== "local" && choice !== "remote") return null;
+                choices.push(choice);
+            }
+            for (var j = marks.length - 1; j >= 0; j--) {
+                var mark = marks[j], decision = decisions.decisions[j];
+                var revision = doc.Revisions.Item(mark.index);
+                var range = revision.Range;
+                if (revision.Type !== mark.kind || range.Start !== mark.start || range.End !== mark.end ||
+                    String(range.Text || "") !== mark.text) throw new Error("修订范围已变化，请重新拉取。");
+                var accept = decision.conflict == null ? decision.incoming : choices[decision.conflict] === "remote";
+                if (accept) revision.Accept(); else revision.Reject();
+            }
+            if (doc.Revisions.Count !== 0) throw new Error("编辑器仍有未处理的修订，主稿保持原样。");
+            restoreCollaborationComments(doc, localNotes, remoteNotes);
+            var result = doc;
+            doc = null;
+            return result;
+        } finally { if (doc) await WG.close(doc); }
     };
 
 
