@@ -33,53 +33,53 @@ WordGit 为 Word 和 WPS 文字的 `.docx` 稿件提供 Git 版本管理。你�
 
 ## 界面展示
 
-<table>
+<table width="100%">
   <tr>
-    <td width="128" align="left" valign="middle">
+    <td width="19%" align="left" valign="middle">
       <strong>批&#8288;注&#8288;与&#8288;修&#8288;订</strong><br>
       查看批注和修订，按类型筛选，点击记录跳转到正文。
     </td>
-    <td width="240" align="center" valign="middle">
-      <a href="docs/assets/review-pane.png"><img src="docs/assets/review-pane.png" alt="WordGit 批注与修订" width="240"></a>
+    <td width="31%" align="center" valign="middle">
+      <a href="docs/assets/review-pane.png"><img src="docs/assets/review-pane.png" alt="WordGit 批注与修订" width="100%"></a>
     </td>
-    <td width="128" align="left" valign="middle">
+    <td width="19%" align="left" valign="middle">
       <strong>提&#8288;交&#8288;图&#8288;与&#8288;远&#8288;程&#8288;协&#8288;作</strong><br>
       查看分支、提交记录和同步状态，可预览旧版或对比当前稿。
     </td>
-    <td width="240" align="center" valign="middle">
-      <a href="docs/assets/commit-graph.png"><img src="docs/assets/commit-graph.png" alt="WordGit 提交图与远程协作" width="240"></a>
+    <td width="31%" align="center" valign="middle">
+      <a href="docs/assets/commit-graph.png"><img src="docs/assets/commit-graph.png" alt="WordGit 提交图与远程协作" width="100%"></a>
     </td>
   </tr>
   <tr>
-    <td width="128" align="left" valign="middle">
+    <td width="19%" align="left" valign="middle">
       <strong>提&#8288;交&#8288;版&#8288;本</strong><br>
       填写提交标题和可选说明，保存当前稿的一个版本。
     </td>
-    <td width="240" align="center" valign="middle">
-      <a href="docs/assets/commit-dialog.png"><img src="docs/assets/commit-dialog.png" alt="WordGit 提交版本" width="240"></a>
+    <td width="31%" align="center" valign="middle">
+      <a href="docs/assets/commit-dialog.png"><img src="docs/assets/commit-dialog.png" alt="WordGit 提交版本" width="100%"></a>
     </td>
-    <td width="128" align="left" valign="middle">
+    <td width="19%" align="left" valign="middle">
       <strong>新&#8288;建&#8288;分&#8288;支</strong><br>
       从提交图选择起始版本，再创建分支。
     </td>
-    <td width="240" align="center" valign="middle">
-      <a href="docs/assets/create-branch-dialog.png"><img src="docs/assets/create-branch-dialog.png" alt="WordGit 新建分支" width="240"></a>
+    <td width="31%" align="center" valign="middle">
+      <a href="docs/assets/create-branch-dialog.png"><img src="docs/assets/create-branch-dialog.png" alt="WordGit 新建分支" width="100%"></a>
     </td>
   </tr>
   <tr>
-    <td width="128" align="left" valign="middle">
+    <td width="19%" align="left" valign="middle">
       <strong>返&#8288;稿&#8288;合&#8288;并</strong><br>
       选定返稿文件和送审版本，生成修订合并稿。
     </td>
-    <td width="240" align="center" valign="middle">
-      <a href="docs/assets/review-merge-dialog.png"><img src="docs/assets/review-merge-dialog.png" alt="WordGit 返稿合并" width="240"></a>
+    <td width="31%" align="center" valign="middle">
+      <a href="docs/assets/review-merge-dialog.png"><img src="docs/assets/review-merge-dialog.png" alt="WordGit 返稿合并" width="100%"></a>
     </td>
-    <td width="128" align="left" valign="middle">
+    <td width="19%" align="left" valign="middle">
       <strong>关&#8288;联&nbsp;GitHub&nbsp;仓&#8288;库</strong><br>
       填写仓库地址和远程分支，连接协作仓库。
     </td>
-    <td width="240" align="center" valign="middle">
-      <a href="docs/assets/link-repository-dialog.png"><img src="docs/assets/link-repository-dialog.png" alt="WordGit 关联 GitHub 仓库" width="240"></a>
+    <td width="31%" align="center" valign="middle">
+      <a href="docs/assets/link-repository-dialog.png"><img src="docs/assets/link-repository-dialog.png" alt="WordGit 关联 GitHub 仓库" width="100%"></a>
     </td>
   </tr>
 </table>
@@ -98,9 +98,9 @@ WordGit 为 Word 和 WPS 文字的 `.docx` 稿件提供 Git 版本管理。你�
 | 环境 | 要求 |
 | --- | --- |
 | 系统 | Windows 10 / 11 x64 |
-| 编辑器 | 图形安装程序要求安装桌面版 Microsoft Word，可同时部署 WPS 文字加载项。仅使用 WPS 时见 [WPS 独立安装](docs/WPS.md#安装windows) |
+| 编&#8288;辑&#8288;器 | 图形安装程序要求安装桌面版 Microsoft Word，可同时部署 WPS 文字加载项。仅使用 WPS 时见 [WPS 独立安装](docs/WPS.md#安装windows) |
 | Git | [Git for Windows 2.51+](https://git-scm.com/install/windows) |
-| 运行时 | [.NET Framework 4.8+](https://dotnet.microsoft.com/download/dotnet-framework/net48) |
+| 运&#8288;行&#8288;时 | [.NET Framework 4.8+](https://dotnet.microsoft.com/download/dotnet-framework/net48) |
 
 版本历史、分支、返稿合并和远程同步由随安装包部署的 Rust 内核 `wordgit.exe` 完成。安装后会启动内核，内核退出后可由 Word 自动拉起。Windows 内核已静态链接 VC++ 运行库，安装包无需另外安装 VC++ 运行库或 Rust 工具链。
 
