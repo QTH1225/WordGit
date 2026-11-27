@@ -122,6 +122,8 @@ pub struct DocumentRequest {
     pub document: String,
     #[serde(default)]
     pub branch: Option<String>,
+    #[serde(default)]
+    pub working_only: bool,
 }
 
 #[derive(Deserialize)]
@@ -307,6 +309,16 @@ struct Opened {
     repo: Repo,
 }
 
+impl Opened {
+    fn working_state(&self, head: Option<&str>) -> Result<&'static str> {
+        let Some(tip) = head else { return Ok("noCommit") };
+        if self.review.is_some() {
+            return Ok("review");
+        }
+        Ok(if fsutil::file_checksum(&self.path)? == self.repo.snapshot_checksum(tip)? { "clean" } else { "changed" })
+    }
+}
+
 impl Context {
     fn open(&self, document: &str) -> Result<Opened> {
         let path = document_path(document)?;
@@ -364,19 +376,13 @@ impl Context {
             return Ok(json!({ "document": path, "session": true }));
         }
         let opened = self.open(&request.document)?;
+        if request.working_only {
+            let head = opened.repo.head()?;
+            return Ok(json!({ "workingState": opened.working_state(head.as_deref())? }));
+        }
         let view = opened.repo.read_view()?;
         let head = view.remote.local_tip.clone();
-        let working_state = match &head {
-            None => "noCommit",
-            Some(tip) if review.is_none() => {
-                if fsutil::file_checksum(&path)? == opened.repo.snapshot_checksum(tip)? {
-                    "clean"
-                } else {
-                    "changed"
-                }
-            }
-            Some(_) => "review",
-        };
+        let working_state = opened.working_state(head.as_deref())?;
         let graph = graph::layout(&view.history, head.as_deref());
         Ok(json!({
             "document": path,

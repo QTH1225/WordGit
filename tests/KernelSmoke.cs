@@ -78,8 +78,12 @@ namespace WordGit
             Require(client.Status(path).Head == head1, "内核重启后应保留原来的提交");
             Console.WriteLine("PASS: 内核退出后自动启动，原有提交可读取。");
 
+            var workingCopy = new WorkingCopy(path, () => client.WorkingState(path));
+            Require(workingCopy.State() == WorkingCopyState.Clean, "保存前应与最新提交一致");
             document.Content.InsertAfter("第二节 恢复与合并。\r");
             document.Save();
+            Require(workingCopy.State() == WorkingCopyState.Changed, "Word 保存后侧栏应识别未提交修改");
+            Console.WriteLine("PASS: Word 实际保存后识别出未提交修改。");
             var second = TestFiles.Snapshot((object)document);
             Require(!first.SequenceEqual(second), "第二次保存应改变文件内容");
             var head2 = Commit(client, path, "第二节");

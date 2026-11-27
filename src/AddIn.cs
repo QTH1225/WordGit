@@ -8,9 +8,9 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 [assembly: ComVisible(false)]
-[assembly: System.Reflection.AssemblyVersion("0.13.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.13.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.13.0")]
+[assembly: System.Reflection.AssemblyVersion("0.14.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.14.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.14.0")]
 [assembly: System.Reflection.AssemblyProduct("WordGit")]
 [assembly: System.Reflection.AssemblyTitle("WordGit Word 版本管理插件")]
 
@@ -393,7 +393,7 @@ namespace WordGit
                 var client = ServiceClient.Connect();
                 var status = client.Status(path);
                 var review = status.Review;
-                var workingCopy = new WorkingCopy(path, () => true, () => status.WorkingState);
+                var workingCopy = new WorkingCopy(path, () => client.WorkingState(path));
                 return new HistoryPaneData
                 {
                     DocumentPath = path, HistoryPath = HistoryPath(path, review), Branch = status.Branch,

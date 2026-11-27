@@ -1,1 +1,1 @@
-window.WORDGIT_VERSION = "0.13.0";
+window.WORDGIT_VERSION = "0.14.0";

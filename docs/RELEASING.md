@@ -2,7 +2,7 @@
 
 ## 当前版本
 
-WordGit 0.13.0 支持启动后检查更新、自选数据目录和 Windows 无窗口自启动。GitHub Release 和插件更新窗口共用 `CHANGELOG.md` 中本版本的内容。
+WordGit 0.14.0 修复 Word 保存后侧栏状态未刷新的问题。Linux WPS 升级会替换后台内核，沿用已有数据目录。GitHub Release 和插件更新窗口共用 `CHANGELOG.md` 中本版本的内容。
 
 0.12.0 把版本历史统一到 Rust 内核：
 

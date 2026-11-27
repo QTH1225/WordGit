@@ -57,6 +57,7 @@ namespace WordGit
                 VerifyUpdateDialog(args[0]);
                 VerifyBackgroundOperationCancel();
                 VerifyHistoryPane(args[0], items, one, three);
+                VerifySavedWorkingCopy();
                 VerifyRevisionActions(args[0]);
                 VerifyAsyncHistoryPane(args[0], items);
                 VerifyPaneReuse(items);
@@ -441,6 +442,27 @@ namespace WordGit
                 unfinished.GetAwaiter().GetResult();
                 Console.WriteLine("PASS: pane dispatch " + dispatchMs + " ms; UI heartbeat, background history/hash, UI-only saved state, stale results and close.");
             }
+        }
+
+        private static void VerifySavedWorkingCopy()
+        {
+            var path = Path.GetTempFileName();
+            try
+            {
+                File.WriteAllText(path, "first");
+                var modified = File.GetLastWriteTimeUtc(path);
+                var state = "clean";
+                var reads = 0;
+                var copy = new WorkingCopy(path, () => { reads++; return state; });
+                if (copy.State() != WorkingCopyState.Clean || copy.State() != WorkingCopyState.Clean || reads != 1)
+                    throw new InvalidOperationException("An unchanged saved file caused repeated checks");
+                state = "changed";
+                File.WriteAllText(path, "newer");
+                File.SetLastWriteTimeUtc(path, modified.AddSeconds(1));
+                if (copy.State() != WorkingCopyState.Changed || copy.State() != WorkingCopyState.Changed || reads != 2)
+                    throw new InvalidOperationException("A same-size save did not refresh the working state");
+            }
+            finally { File.Delete(path); }
         }
 
         private static void VerifyPaneReuse(List<Revision> items)

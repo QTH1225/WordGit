@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use wordgit_core::paths::{home_dir, AppPaths};
 use wordgit_core::{Error, Result};
 
+#[cfg(target_os = "linux")]
+pub mod linux;
+
 pub const ADDIN_NAME: &str = "WordGit";
 
 /// WPS's per-user add-in folder.
@@ -129,9 +132,16 @@ pub fn enable_autostart(executable: &Path) -> Result<String> {
     {
         let autostart = home_dir().join(".config/autostart");
         std::fs::create_dir_all(&autostart)?;
+        let installed = desktop_argument(executable.to_str().ok_or_else(|| Error::invalid("WordGit 安装路径需要使用 UTF-8。"))?)?;
+        let command = if std::env::var_os("WORDGIT_HOME").is_some_and(|root| !root.is_empty()) {
+            let home = std::fs::canonicalize(AppPaths::from_environment().root)?;
+            let home = home.to_str().ok_or_else(|| Error::invalid("WordGit 运行目录需要使用 UTF-8。"))?;
+            format!("env {} {installed} serve", desktop_argument(&format!("WORDGIT_HOME={home}"))?)
+        } else {
+            format!("{installed} serve")
+        };
         let entry = format!(
-            "[Desktop Entry]\nType=Application\nName=WordGit 服务\nComment=WordGit 文档版本管理的本地服务\nExec=\"{}\" serve\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
-            executable.display()
+            "[Desktop Entry]\nType=Application\nName=WordGit 服务\nComment=WordGit 文档版本管理的本地服务\nExec={command}\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n"
         );
         let file = autostart.join("wordgit.desktop");
         std::fs::write(&file, entry)?;
@@ -167,6 +177,16 @@ pub fn enable_autostart(executable: &Path) -> Result<String> {
         }
         Ok("已添加登录自启动（HKCU Run）。".into())
     }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn desktop_argument(value: &str) -> Result<String> {
+    if value.contains(['\r', '\n']) {
+        return Err(Error::invalid("WordGit 自启动路径不能包含换行符。"));
+    }
+    // Escape argument quoting first, then the Desktop Entry string itself.
+    let argument = value.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`").replace('%', "%%");
+    Ok(format!("\"{}\"", argument.replace('\\', "\\\\")))
 }
 
 pub fn disable_autostart() -> Result<()> {

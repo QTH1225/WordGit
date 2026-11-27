@@ -95,6 +95,11 @@ namespace WordGit
             return DocumentStatus.From(Call("status", Args("document", document)));
         }
 
+        internal string WorkingState(string document)
+        {
+            return Json.String(Call("status", Args("document", document, "workingOnly", true)), "workingState");
+        }
+
         // Swaps in the file the kernel prepared and publishes the matching ref change in one step.
         internal string ApplyPlan(string plan)
         {

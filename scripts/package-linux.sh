@@ -17,14 +17,25 @@ mkdir -p -- "$payload/docs" "$output"
 install -m 755 -- "$kernel" "$payload/wordgit"
 cp -R -- "$root/addin-wps" "$payload/addin-wps"
 cp -- "$root/LICENSE" "$root/README.md" "$payload/"
-cp -- "$root/docs/WPS.md" "$payload/docs/"
+cp -- "$root/docs/"{WPS,USAGE,DEVELOPMENT,RELEASING,INSTALL-DISCLAIMER}.md "$payload/docs/"
+cp -R -- "$root/docs/assets" "$payload/docs/"
 cat > "$payload/install.sh" <<'EOF'
 #!/bin/sh
 set -eu
 package_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec "$package_dir/wordgit" install --addin "$package_dir/addin-wps" "$@"
 EOF
-chmod 755 "$payload/install.sh"
+cat > "$payload/uninstall.sh" <<'EOF'
+#!/bin/sh
+set -eu
+package_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+installed="${WORDGIT_HOME:-$HOME/.local/share/WordGit}/app/wordgit"
+if [ -x "$installed" ]; then
+    exec "$installed" uninstall
+fi
+exec "$package_dir/wordgit" uninstall
+EOF
+chmod 755 "$payload/install.sh" "$payload/uninstall.sh"
 tar -C "$scratch" -czf "$output/$name.tar.gz" "$name"
 (
     cd "$output"

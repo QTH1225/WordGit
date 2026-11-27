@@ -143,27 +143,34 @@ namespace WordGit
     internal sealed class WorkingCopy
     {
         private readonly string path;
-        private readonly Func<bool> isSaved;
         private readonly Func<string> readState;
+        private DateTime modified, created;
+        private long length = -1;
+        private WorkingCopyState cached;
 
-        // The kernel computes the same answer from the stored snapshot; the add-in only adds the
-        // one thing the kernel cannot know: whether the window has unsaved edits.
-        public WorkingCopy(string path, Func<bool> isSaved, Func<string> readState)
+        public WorkingCopy(string path, Func<string> readState)
         {
             this.path = path;
-            this.isSaved = isSaved;
             this.readState = readState;
         }
 
         public WorkingCopyState State()
         {
-            if (!isSaved()) return WorkingCopyState.Unsaved;
-            switch (readState())
-            {
-                case "noCommit": return WorkingCopyState.NoCommit;
-                case "clean": return WorkingCopyState.Clean;
-                default: return WorkingCopyState.Changed;
-            }
+            var file = new FileInfo(path);
+            var size = file.Length;
+            var lastWrite = file.LastWriteTimeUtc;
+            var creation = file.CreationTimeUtc;
+            if (size == length && lastWrite == modified && creation == created)
+                return cached;
+
+            // Capture the stamp before the service read so a save during that read is checked again.
+            var state = readState();
+            cached = state == "clean" ? WorkingCopyState.Clean :
+                state == "noCommit" ? WorkingCopyState.NoCommit : WorkingCopyState.Changed;
+            length = size;
+            modified = lastWrite;
+            created = creation;
+            return cached;
         }
     }
 

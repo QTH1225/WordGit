@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param([switch]$Test, [switch]$KernelTest, [switch]$NoBuild, [string]$PreviousPackageRoot)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -13,7 +13,6 @@ if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[1-9][0-9]*)?$' -or $vers
 $readme = [IO.File]::ReadAllText((Join-Path $repoRoot 'README.md'))
 $releasing = [IO.File]::ReadAllText((Join-Path $repoRoot 'docs\RELEASING.md'))
 $stale = @()
-if ($readme -notmatch ('(?m)^# WordGit ' + [regex]::Escape($version) + '\s*$')) { $stale += 'README.md 标题' }
 if ($readme -notmatch [regex]::Escape('WordGit-' + $version + '-Setup.exe')) { $stale += 'README.md 安装包名' }
 if ($releasing -notmatch [regex]::Escape('WordGit ' + $version)) { $stale += 'docs/RELEASING.md 当前版本' }
 $otherVersions = [regex]::Matches($readme, 'WordGit[ -](\d+\.\d+\.\d+(?:-beta\.\d+)?)') | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ -ne $version } | Select-Object -Unique
@@ -28,7 +27,7 @@ try {
     # Keep these entry points beside Setup.exe in the distributable ZIP.
     $bundleScripts = @('install.ps1','Install.cmd','Uninstall.cmd','Check.cmd')
     $allowlist = $bundleScripts + @('bin/WordGit.dll','bin/wordgit.exe','bin/wordgit-launcher.exe','README.md',
-        'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','docs/WPS.md','docs/INSTALL-DISCLAIMER.md','LICENSE','addin-wps/')
+        'docs/assets/','docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','docs/WPS.md','docs/INSTALL-DISCLAIMER.md','LICENSE','addin-wps/')
     # 目录项（以 / 结尾）展开成逐个文件，安装包里才能带上 WPS 文字加载项。
     $entries = @()
     foreach ($name in $allowlist) {

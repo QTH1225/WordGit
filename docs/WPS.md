@@ -24,7 +24,7 @@ WPS 文字通过 JS 加载项连接 WordGit 的 Rust 本地服务，支持提交
 
 ## 安装（Linux）
 
-需要 WPS 文字个人版 12.1 或更新版本，以及 Git。Linux x86_64 可从 GitHub Release 下载压缩包，解压后在保留的目录运行 `./install.sh`。源码构建使用以下命令。
+需要 WPS 文字个人版 12.1 或更新版本，以及 Git。Linux x86_64 可从 GitHub Release 下载压缩包，解压后运行 `./install.sh`。源码构建使用以下命令。
 
 ```sh
 cargo build --release -p wordgit
@@ -34,12 +34,12 @@ cargo build --release -p wordgit
 `wordgit install` 会：
 
 1. 把加载项复制到 `~/.local/share/Kingsoft/wps/jsaddons/WordGit_<版本>/`，并在 `publish.xml` 中登记，保留其他加载项；
-2. 添加登录自启动 `~/.config/autostart/wordgit.desktop`；
-3. 启动服务。
+2. 将内核安装到 `~/.local/share/WordGit/app/wordgit`，并将登录自启指向该路径。安装完成后，解压目录可以删除；
+3. 关闭旧的 WordGit 服务并启动新版内核。升级前请先退出 WPS，再运行新版压缩包的 `./install.sh`。
 
 然后重新打开 WPS 文字。首次载入、以及升级后的第一次载入，WPS 会询问"是否信任 WordGit 加载项"，选择「确定」。不需要调整宏安全级别。
 
-卸载：`wordgit uninstall`。卸载只移除加载项和自启动，稿件历史保留。
+卸载可运行压缩包中的 `./uninstall.sh`，或运行 `~/.local/share/WordGit/app/wordgit uninstall`。卸载会停止服务，移除内核、加载项和自启记录，保留已有历史与审阅稿。
 
 WPS 内置浏览器依赖 NSS、ATK、AT-SPI、ALSA 等系统库。桌面发行版一般自带；如果 WordGit 选项卡不出现、WPS 的登录页也显示"页面加载失败"，请安装 `libnss3 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libasound2`。
 

@@ -105,7 +105,9 @@ function Invoke-TestService($Service, [string]$Endpoint, $Body) {
 
 $realRepositories = Join-Path $env:LOCALAPPDATA 'WordGit\repositories'
 $realBefore = Get-TestDataHashes $realRepositories
-$workspace = Join-Path ([IO.Path]::GetDirectoryName($PackageRoot)) ('it-' + [Guid]::NewGuid().ToString('N').Substring(0,12))
+# Use a short temporary path so Windows PowerShell can read and remove nested Git objects.
+$workspaceParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$workspace = Join-Path $workspaceParent ('wg-it-' + [Guid]::NewGuid().ToString('N').Substring(0,12))
 $wordgitRoot = Join-Path $workspace 'user\WordGit'
 $app = Join-Path $wordgitRoot 'app'
 $dataRoot = Join-Path $workspace 'configured-storage'
@@ -278,8 +280,8 @@ try {
     $env:WORDGIT_HOME = $originalHome
     $env:APPDATA = $originalAppData
     $target = [IO.Path]::GetFullPath($workspace)
-    $parent = [IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($PackageRoot)) + [IO.Path]::DirectorySeparatorChar
-    if ($target.StartsWith($parent,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($target) -match '^it-[a-f0-9]{12}$' -and (Test-Path -LiteralPath $target)) {
+    $parent = $workspaceParent.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if ($target.StartsWith($parent,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($target) -match '^wg-it-[a-f0-9]{12}$' -and (Test-Path -LiteralPath $target)) {
         Remove-Item -LiteralPath $target -Recurse -Force
     }
 }

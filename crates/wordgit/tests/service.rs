@@ -183,8 +183,13 @@ fn commit_branch_switch_round_trip() {
     let first = api(&service, "commit", serde_json::json!({ "document": path, "message": "初稿", "author": "测试" }));
     assert_eq!(first.status, 200, "{:?}", first.body);
     let first_id = first.body["commit"].as_str().unwrap().to_string();
+    let working = serde_json::json!({ "document": path, "workingOnly": true });
+    let clean = api(&service, "status", working.clone());
+    assert_eq!(clean.body, serde_json::json!({ "workingState": "clean" }));
 
     std::fs::write(&document, docx("第二版")).unwrap();
+    let changed = api(&service, "status", working);
+    assert_eq!(changed.body, serde_json::json!({ "workingState": "changed" }));
     let stale = api(&service, "commit", serde_json::json!({ "document": path, "message": "x", "expectedHead": "0".repeat(40) }));
     assert_eq!(stale.status, 400);
     assert!(stale.body["error"].as_str().unwrap().contains("已变化"));

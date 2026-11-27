@@ -684,7 +684,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wordgit"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "axum",
  "libc",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "wordgit-core"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "base64",
  "crc32fast",

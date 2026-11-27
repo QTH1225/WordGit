@@ -105,6 +105,8 @@ fn serve(args: &[String]) -> Result<(), String> {
     let token = wordgit_core::random_hex(24);
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     let result = runtime.block_on(async {
+        #[cfg(unix)]
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|error| error.to_string())?;
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
             .await
             .map_err(|e| format!("无法监听 127.0.0.1:{port}：{e}"))?;
@@ -113,7 +115,13 @@ fn serve(args: &[String]) -> Result<(), String> {
         eprintln!("WordGit 服务 {} 监听 http://127.0.0.1:{port}，数据目录 {}", env!("CARGO_PKG_VERSION"), ctx.paths.data_directory().display());
         let state = service::AppState::new(ctx, token, port);
         let app = service::router(state);
-        let shutdown = async {
+        let shutdown = async move {
+            #[cfg(unix)]
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = terminate.recv() => {},
+            }
+            #[cfg(not(unix))]
             let _ = tokio::signal::ctrl_c().await;
         };
         let served = axum::serve(listener, app).with_graceful_shutdown(shutdown).await.map_err(|e| e.to_string());
@@ -126,15 +134,29 @@ fn serve(args: &[String]) -> Result<(), String> {
 fn install(args: &[String]) -> Result<(), String> {
     let paths = AppPaths::from_environment();
     let source = option(args, "--addin").map(PathBuf::from).or_else(install::bundled_addin).ok_or("找不到加载项文件，请用 --addin 指定。")?;
+    let autostart = !args.iter().any(|a| a == "--no-autostart");
+    #[cfg(target_os = "linux")]
+    let _installation = {
+        if !source.join("ribbon.xml").is_file() {
+            return Err(format!("找不到加载项文件：{}", source.display()));
+        }
+        let lock = install::linux::lock_installation(&paths).map_err(|error| error.to_string())?;
+        if autostart {
+            install::linux::stop_service(&paths).and_then(|()| install::linux::ensure_default_port()).map_err(|error| error.to_string())?;
+        }
+        lock
+    };
     if let Some(directory) = option(args, "--data-directory") {
         configure_directory(&[directory])?;
     }
     let folder = install::install_addin(&source, &paths, env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())?;
     println!("已安装 WPS 加载项：{}", folder.display());
-    if !args.iter().any(|a| a == "--no-autostart") {
+    if autostart {
         let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "linux")]
+        let executable = install::linux::install_executable(&executable, &paths).map_err(|error| error.to_string())?;
         println!("{}", install::enable_autostart(&executable).map_err(|e| e.to_string())?);
-        if !service::service_running(service::DEFAULT_PORT) {
+        if cfg!(target_os = "linux") || !service::service_running(service::DEFAULT_PORT) {
             let mut command = std::process::Command::new(&executable);
             command.arg("serve").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
             #[cfg(windows)]
@@ -147,7 +169,12 @@ fn install(args: &[String]) -> Result<(), String> {
                 use std::os::unix::process::CommandExt;
                 command.process_group(0);
             }
-            command.spawn().map_err(|e| format!("无法启动服务：{e}"))?;
+            let _child = command.spawn().map_err(|e| format!("无法启动服务：{e}"))?;
+            #[cfg(target_os = "linux")]
+            {
+                let mut child = _child;
+                install::linux::wait_for_service(&mut child, &paths).map_err(|error| error.to_string())?;
+            }
             println!("WordGit 服务已启动。");
         }
     }
@@ -156,8 +183,17 @@ fn install(args: &[String]) -> Result<(), String> {
 }
 
 fn uninstall() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let (paths, _installation) = {
+        let paths = AppPaths::from_environment();
+        let lock = install::linux::lock_installation(&paths).map_err(|error| error.to_string())?;
+        install::linux::stop_service(&paths).map_err(|error| error.to_string())?;
+        (paths, lock)
+    };
     install::uninstall_addin().map_err(|e| e.to_string())?;
     install::disable_autostart().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    install::linux::uninstall_executable(&paths).map_err(|error| error.to_string())?;
     println!("已移除 WPS 加载项与自启动。稿件历史（repositories）保留不动。");
     Ok(())
 }
