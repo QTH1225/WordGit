@@ -909,19 +909,43 @@ namespace WordGit
         {
             var result = new UpdateResult(UpdateState.Available, "当前版本 0.12.0  →  新版本 0.12.1-beta.2",
                 "0.12.1-beta.2", String.Join("\n", Enumerable.Repeat("更新日志：修复和改进。", 40)),
-                AppInfo.ReleasesUrl + "/tag/v0.12.1-beta.2");
-            using (var dialog = new UpdateDialog(result))
+                AppInfo.ReleasesUrl + "/download/v0.12.1-beta.2/WordGit-0.12.1-beta.2-Setup.exe");
+            string ignored = null;
+            Func<string, bool> ignore = version => { ignored = version; return true; };
+            using (var dialog = new UpdateDialog(result, ignore))
             {
                 dialog.Show();
                 Application.DoEvents();
                 var versions = Descendants(dialog).OfType<Label>().Single(label => label.Name == "releaseVersions");
                 var notes = Descendants(dialog).OfType<TextBox>().Single(box => box.Name == "releaseNotes");
                 var download = Descendants(dialog).OfType<Button>().Single(button => button.Text == "下载更新");
+                var later = Descendants(dialog).OfType<Button>().Single(button => button.Text == "稍后提醒");
+                var skip = Descendants(dialog).OfType<Button>().Single(button => button.Text == "忽略此版本");
                 if (versions.Text != result.Message || !notes.ReadOnly || !notes.Text.Contains("更新日志") ||
                     !download.Visible || !download.Enabled)
                     throw new InvalidOperationException("Update popup lacks version, notes or download");
+                if (skip.Left != 0 || later.Left <= skip.Right ||
+                    download.Right != download.Parent.ClientSize.Width || download.Left <= later.Right)
+                    throw new InvalidOperationException("Update actions are not aligned to the left and right edges");
+                if (download.UseVisualStyleBackColor || download.BackColor != SystemColors.Highlight ||
+                    download.ForeColor != SystemColors.HighlightText || !later.Focused)
+                    throw new InvalidOperationException("Download must have its primary color independently of keyboard focus");
                 VerifyNoOverlap(dialog);
                 Render(dialog, Path.Combine(output, "update-dialog.png"));
+                later.PerformClick();
+                if (ignored != null || dialog.Visible)
+                    throw new InvalidOperationException("Later should close without saving a decision");
+            }
+            using (var dialog = new UpdateDialog(result, ignore))
+            {
+                dialog.Size = dialog.MinimumSize;
+                dialog.Show();
+                Application.DoEvents();
+                VerifyNoOverlap(dialog);
+                var skip = Descendants(dialog).OfType<Button>().Single(button => button.Text == "忽略此版本");
+                skip.PerformClick();
+                if (ignored != result.Version || dialog.Visible)
+                    throw new InvalidOperationException("Ignore must save the offered version and close the window");
             }
         }
         private static void VerifyAboutContent(AboutDialog dialog)

@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([switch]$Test, [switch]$KernelTest, [switch]$NoBuild)
+param([switch]$Test, [switch]$KernelTest, [switch]$NoBuild, [string]$PreviousPackageRoot)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -Test:$Test -UiTest:$Test -PaneTest:$Test -KernelTest:$KernelTest }
@@ -28,7 +28,7 @@ try {
     # Keep these entry points beside Setup.exe in the distributable ZIP.
     $bundleScripts = @('install.ps1','Install.cmd','Uninstall.cmd','Check.cmd')
     $allowlist = $bundleScripts + @('bin/WordGit.dll','bin/wordgit.exe','bin/wordgit-launcher.exe','README.md',
-        'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','docs/WPS.md','LICENSE','addin-wps/')
+        'docs/USAGE.md','docs/DEVELOPMENT.md','docs/RELEASING.md','docs/WPS.md','docs/INSTALL-DISCLAIMER.md','LICENSE','addin-wps/')
     # 目录项（以 / 结尾）展开成逐个文件，安装包里才能带上 WPS 文字加载项。
     $entries = @()
     foreach ($name in $allowlist) {
@@ -70,19 +70,22 @@ try {
     $resources = @('/resource:' + (Join-Path $package 'manifest.json') + ',WordGit.Manifest')
     foreach ($file in $files) { $resources += '/resource:' + (Join-Path $package $file.Path) + ',' + $file.Resource }
     $setup = Join-Path $package 'WordGit.Setup.exe'
-    & $compiler @options @resources /target:winexe ('/win32manifest:' + $setupManifest) ("/out:$setup") (Join-Path $repoRoot 'packaging\Setup.cs') $generated
+    $setupSources = @((Join-Path $repoRoot 'packaging\Setup.cs'), (Join-Path $repoRoot 'packaging\InstallDisclaimer.cs'), $generated)
+    & $compiler @options @resources /target:winexe ('/win32manifest:' + $setupManifest) ("/out:$setup") @setupSources
     if ($LASTEXITCODE -ne 0) { throw '安装程序构建失败。' }
     if ($Test) {
         $smoke = Join-Path $work 'SetupSmoke.exe'
-        & $compiler @options @resources /target:exe /main:WordGitSetup.SetupSmoke ("/out:$smoke") (Join-Path $repoRoot 'packaging\Setup.cs') (Join-Path $repoRoot 'packaging\SetupSmoke.cs') $generated
+        & $compiler @options @resources /target:exe /main:WordGitSetup.SetupSmoke ("/out:$smoke") @setupSources (Join-Path $repoRoot 'packaging\SetupSmoke.cs')
         if ($LASTEXITCODE -ne 0) { throw '安装界面测试构建失败。' }
-        & $smoke $bin
-        if ($LASTEXITCODE -ne 0) { throw '安装界面测试失败。' }
         $windowsPowerShell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
         # The installer targets Windows PowerShell 5.1; give it its own module path, not pwsh's.
         $modulePath = $env:PSModulePath
+        $testArguments = @('-PackageRoot', $package, '-SetupSmoke', $smoke, '-ScreenshotDirectory', $bin)
+        if ($PreviousPackageRoot) { $testArguments += @('-PreviousPackageRoot', [IO.Path]::GetFullPath($PreviousPackageRoot)) }
         Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
-        try { & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'tests\Installer.Tests.ps1') -PackageRoot $package }
+        try {
+            & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'tests\Installer.Tests.ps1') @testArguments
+        }
         finally { $env:PSModulePath = $modulePath }
         if ($LASTEXITCODE -ne 0) { throw '安装器集成测试失败。' }
     }

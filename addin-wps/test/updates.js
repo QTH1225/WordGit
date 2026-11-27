@@ -24,7 +24,11 @@ async function run() {
                 browser_download_url: "https://example.invalid/"}
         ]})
     ];
-    const files = new Map([["/addin/wordgit-config.json", '{"home":"/test"}']]);
+    const prefsPath = "/test/wps-updates.json";
+    const files = new Map([
+        ["/addin/wordgit-config.json", '{"home":"/test"}'],
+        [prefsPath, '{"shown":["0.12.1-beta.10"]}']
+    ]);
     const calls = [];
     const scheduled = [];
     const win = {
@@ -36,7 +40,6 @@ async function run() {
                 assert.equal(page, "update");
                 assert.equal(modal, false);
                 calls.push(data.result);
-                if (data.result) win.WordGit.rememberUpdate(data.result);
             }
         },
         wps: {FileSystem: {WriteFile: (name, value) => files.set(name, value)}},
@@ -75,14 +78,47 @@ async function run() {
     assert.equal(scheduled.length, 1);
     await scheduled.shift()();
     assert.equal(calls.length, 1);
+    wg.scheduleUpdateCheck();
+    assert.equal(scheduled.length, 0);
     inject(); // Simulate restarting WPS with its persisted preferences.
     assert.equal(wg.updatePreferences().beta, true);
     wg.scheduleUpdateCheck();
     await scheduled.shift()();
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2, "A reminder without a choice disappeared on the next launch");
+    wg.ignoreUpdate(calls[1].version);
+    wg.ignoreUpdate("0.12.1-beta.2");
+    assert.equal(wg.updatePreferences().ignoredVersion, "0.12.1-beta.10");
+    inject();
+    wg.scheduleUpdateCheck();
+    await scheduled.shift()();
+    assert.equal(calls.length, 2, "The explicitly ignored version was shown again");
     await wg.showUpdates();
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1], undefined);
-    console.log("PASS: WPS stable/Beta ordering, platform download, persistence, startup dedup and manual entry");
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2], undefined);
+    assert.equal((await wg.checkUpdates(true)).version, "0.12.1-beta.10", "Manual checks must include an ignored version");
+    releases.push(release("v0.12.1"));
+    inject();
+    wg.scheduleUpdateCheck();
+    await scheduled.shift()();
+    assert.equal(calls.length, 4);
+    assert.equal(calls[3].version, "0.12.1", "The stable version should follow an ignored Beta");
+    inject();
+    wg.scheduleUpdateCheck();
+    await wg.showUpdates();
+    await scheduled.shift()();
+    assert.equal(calls.length, 5, "A manual check must not be followed by a duplicate automatic popup");
+    let requested = 0;
+    const ribbon = { WordGit: {
+        app: () => ({}), showNotices: () => {}, showPane: () => {}, showUpdates: () => {},
+        scheduleUpdateCheck: () => { requested++; }
+    } };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../js/ribbon.js"), "utf8"), {window: ribbon, setTimeout: () => {}});
+    ribbon.OnAddinLoad({});
+    assert.equal(requested, 0);
+    ribbon.OnAction({Id: "WordGitUpdates"});
+    assert.equal(requested, 0);
+    ribbon.OnAction({Id: "WordGitHistory"});
+    assert.equal(requested, 1);
+    console.log("PASS: WPS stable/Beta ordering, downloads, later and ignore choices, higher releases and manual checks");
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

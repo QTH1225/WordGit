@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Security.Authentication;
@@ -7,6 +8,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using System.Xml;
 
 namespace WordGit
 {
@@ -81,7 +83,8 @@ namespace WordGit
                     {
                         if (response.StatusCode == HttpStatusCode.NotFound) return NoRelease();
                         if (response.StatusCode == HttpStatusCode.Forbidden || (int)response.StatusCode == 429)
-                            return new UpdateResult(UpdateState.RateLimited, "GitHub 暂时限制了更新查询，请稍后重试。");
+                            return await CheckPublicReleaseAsync(current, beta, client, cancellation).ConfigureAwait(false)
+                                ?? new UpdateResult(UpdateState.RateLimited, "GitHub 暂时限制了更新查询，请稍后重试。");
                         if (!response.IsSuccessStatusCode)
                             return new UpdateResult(UpdateState.Unavailable, "检查更新失败（HTTP " + (int)response.StatusCode + "）。");
                         return Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false), current, beta);
@@ -97,6 +100,92 @@ namespace WordGit
             {
                 return new UpdateResult(UpdateState.Unavailable, "无法连接 GitHub，请检查网络后重试。");
             }
+        }
+
+        // GitHub's latest-release redirect identifies the stable release. The Atom feed provides
+        // release notes and explicitly named Beta tags without using the rate-limited JSON API.
+        private static async Task<UpdateResult> CheckPublicReleaseAsync(string current, bool beta, HttpClient client, CancellationToken cancellation)
+        {
+            var installed = ReleaseVersion.Parse(current);
+            if (installed == null) return new UpdateResult(UpdateState.Unsupported, "当前版本号无法识别。");
+            string page;
+            using (var response = await client.GetAsync(AppInfo.ReleasesUrl + "/latest", cancellation).ConfigureAwait(false))
+            {
+                var location = response.Headers.Location;
+                page = (int)response.StatusCode >= 300 && (int)response.StatusCode < 400 && location != null
+                    ? new Uri(new Uri(AppInfo.ReleasesUrl + "/"), location).AbsoluteUri : null;
+            }
+            var latest = VersionFromReleasePage(page);
+            if (latest != null && latest.IsBeta && !beta) latest = null;
+            if (latest == null) page = null;
+            if (!beta && latest != null && latest.CompareTo(installed) <= 0) return VersionStatus(installed, latest);
+
+            string notes = null;
+            using (var response = await client.GetAsync(AppInfo.ReleasesUrl + ".atom", cancellation).ConfigureAwait(false))
+            {
+                if (response.IsSuccessStatusCode)
+                {
+                    try
+                    {
+                        var document = new XmlDocument { XmlResolver = null };
+                        using (var text = new StringReader(await response.Content.ReadAsStringAsync().ConfigureAwait(false)))
+                        using (var reader = XmlReader.Create(text, new XmlReaderSettings
+                        {
+                            DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 1024 * 1024
+                        })) document.Load(reader);
+                        var namespaces = new XmlNamespaceManager(document.NameTable);
+                        namespaces.AddNamespace("atom", "http://www.w3.org/2005/Atom");
+                        foreach (XmlNode entry in document.SelectNodes("/atom:feed/atom:entry", namespaces))
+                        {
+                            var link = entry.SelectSingleNode("atom:link/@href", namespaces);
+                            var candidate = VersionFromReleasePage(link == null ? null : link.Value);
+                            if (candidate == null) continue;
+                            if (link.Value == page || (beta && candidate.IsBeta && (latest == null || candidate.CompareTo(latest) > 0)))
+                            {
+                                latest = candidate;
+                                page = link.Value;
+                                var content = entry.SelectSingleNode("atom:content", namespaces);
+                                notes = content == null ? null : FormatFeedNotes(content.InnerText);
+                            }
+                        }
+                    }
+                    catch (XmlException) { }
+                }
+            }
+            if (latest == null) return null;
+            var status = VersionStatus(installed, latest);
+            if (status != null) return status;
+
+            var tag = page.Substring((AppInfo.ReleasesUrl + "/tag/").Length);
+            var installer = AppInfo.ReleasesUrl + "/download/" + tag + "/WordGit-" + latest.Text + "-Setup.exe";
+            using (var request = new HttpRequestMessage(HttpMethod.Head, installer))
+            using (var response = await client.SendAsync(request, cancellation).ConfigureAwait(false))
+            {
+                var location = response.Headers.Location;
+                if (response.Content != null && response.IsSuccessStatusCode && response.Content.Headers.ContentDisposition != null)
+                    page = installer;
+                else if ((int)response.StatusCode >= 300 && (int)response.StatusCode < 400 && location != null &&
+                    location.IsAbsoluteUri && location.Scheme == Uri.UriSchemeHttps &&
+                    (location.Host == "release-assets.githubusercontent.com" || location.Host == "objects.githubusercontent.com"))
+                    page = installer;
+            }
+            return Available(installed, latest, notes ?? "暂时无法读取此版本的更新日志。", page);
+        }
+
+        private static ReleaseVersion VersionFromReleasePage(string url)
+        {
+            var prefix = AppInfo.ReleasesUrl + "/tag/v";
+            if (url == null || !url.StartsWith(prefix, StringComparison.Ordinal)) return null;
+            var tag = url.Substring(prefix.Length);
+            var version = ReleaseVersion.Parse(tag);
+            return version != null && version.Text == tag ? version : null;
+        }
+
+        private static string FormatFeedNotes(string html)
+        {
+            var text = Regex.Replace(html, @"(?i)<li\b[^>]*>", "• ");
+            text = Regex.Replace(text, @"(?i)(</(?:li|p|h[1-6])>|<br\s*/?>)[ \t]*(?:\r?\n)?", "\n");
+            return WebUtility.HtmlDecode(Regex.Replace(text, @"<[^>]*>", "")).Trim();
         }
 
         internal static UpdateResult Parse(string json, string current, bool beta)
@@ -123,9 +212,8 @@ namespace WordGit
                     selected = release;
                 }
                 if (latest == null) return NoRelease();
-                var order = latest.CompareTo(installed);
-                if (order < 0) return new UpdateResult(UpdateState.LocalNewer, "当前版本高于此渠道的最新版本（" + latest.Text + "）。");
-                if (order == 0) return new UpdateResult(UpdateState.Current, "当前已是最新版（" + latest.Text + "）。");
+                var status = VersionStatus(installed, latest);
+                if (status != null) return status;
 
                 var name = "WordGit-" + latest.Text + "-Setup.exe";
                 var tag = (string)Field(selected, "tag_name");
@@ -136,14 +224,26 @@ namespace WordGit
                     var asset = item as Dictionary<string, object>;
                     return asset != null && (Field(asset, "name") as string) == name && (Field(asset, "state") as string) == "uploaded";
                 })) link = AppInfo.ReleasesUrl + "/download/" + tag + "/" + name;
-                var body = Field(selected, "body") as string;
-                var notes = String.IsNullOrWhiteSpace(body) ? "此版本未填写更新日志。" : body.Trim();
-                if (notes.Length > 24000) notes = notes.Substring(0, 24000) + "\n…";
-                return new UpdateResult(UpdateState.Available, "当前版本 " + installed.Text + "  →  新版本 " + latest.Text,
-                    latest.Text, notes, link);
+                return Available(installed, latest, Field(selected, "body") as string, link);
             }
             catch (ArgumentException) { return InvalidResponse(); }
             catch (InvalidOperationException) { return InvalidResponse(); }
+        }
+
+        private static UpdateResult VersionStatus(ReleaseVersion installed, ReleaseVersion latest)
+        {
+            var order = latest.CompareTo(installed);
+            if (order < 0) return new UpdateResult(UpdateState.LocalNewer, "当前版本高于此渠道的最新版本（" + latest.Text + "）。");
+            if (order == 0) return new UpdateResult(UpdateState.Current, "当前已是最新版（" + latest.Text + "）。");
+            return null;
+        }
+
+        private static UpdateResult Available(ReleaseVersion installed, ReleaseVersion latest, string body, string link)
+        {
+            var notes = String.IsNullOrWhiteSpace(body) ? "此版本未填写更新日志。" : body.Trim();
+            if (notes.Length > 24000) notes = notes.Substring(0, 24000) + "\n…";
+            return new UpdateResult(UpdateState.Available, "当前版本 " + installed.Text + "  →  新版本 " + latest.Text,
+                latest.Text, notes, link);
         }
 
         private static object Field(Dictionary<string, object> entry, string name)

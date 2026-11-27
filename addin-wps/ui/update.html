@@ -18,14 +18,16 @@
             <div id="notes" class="message"></div>
         </div>
     </div>
-    <div class="buttons">
-        <button id="close">稍后</button>
+    <div class="buttons update-actions">
+        <button id="ignore" title="等到有更高版本时再自动提醒" hidden>忽略此版本</button>
         <button id="check">检查更新</button>
+        <button id="close">关闭</button>
         <button id="download" class="primary" hidden>下载更新</button>
     </div>
     <script>
         var data = WordGit.dialogData(), $ = function (id) { return document.getElementById(id); };
-        var beta = $("beta"), message = $("message"), download = $("download"), currentLink;
+        var beta = $("beta"), message = $("message"), download = $("download"), ignore = $("ignore");
+        var currentLink, currentVersion;
         $("current").textContent = window.WORDGIT_VERSION;
         beta.checked = WordGit.updatePreferences().beta;
 
@@ -35,10 +37,12 @@
             $("new").hidden = $("log").hidden = !available;
             $("version").textContent = result.version || "";
             $("notes").textContent = result.notes || "";
+            currentVersion = result.version || null;
+            ignore.hidden = !currentVersion;
+            $("close").textContent = currentVersion ? "稍后提醒" : "关闭";
             currentLink = WordGit.isUpdateLink(result.url) ? result.url : null;
             download.hidden = !currentLink;
             download.textContent = result.direct ? "下载更新" : "打开发布页";
-            WordGit.rememberUpdate(result);
         }
 
         async function check() {
@@ -54,6 +58,15 @@
         };
         $("check").onclick = check;
         $("close").onclick = function () { WordGit.finishDialog(false); };
+        ignore.onclick = function () {
+            if (!currentVersion) return;
+            try {
+                WordGit.ignoreUpdate(currentVersion);
+                WordGit.finishDialog(false);
+            } catch (error) {
+                message.textContent = "无法保存忽略设置，请稍后再试。";
+            }
+        };
         download.onclick = function () {
             if (!WordGit.isUpdateLink(currentLink)) return;
             try { WordGit.app().OAAssist.ShellExecute(currentLink); }

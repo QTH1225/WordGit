@@ -5,6 +5,7 @@
     var releasesUrl = "https://github.com/QTH1225/WordGit/releases";
     var dialogOpen = false;
     var started = false;
+    var checkedManually = false;
 
     function version(text) {
         var match = typeof text === "string" &&
@@ -73,9 +74,9 @@
         try {
             var path = preferencesFile();
             var value = path && JSON.parse(WG.readText(path) || "{}") || {};
-            return { beta: value.beta === true, shown: Array.isArray(value.shown) ? value.shown : [] };
+            return { beta: value.beta === true, ignoredVersion: typeof value.ignoredVersion === "string" ? value.ignoredVersion : "" };
         } catch (error) {
-            return { beta: false, shown: [] };
+            return { beta: false, ignoredVersion: "" };
         }
     }
 
@@ -83,6 +84,9 @@
         var path = preferencesFile();
         if (!path) throw new Error("无法找到 WordGit 更新设置目录。");
         global.wps.FileSystem.WriteFile(path, JSON.stringify(value));
+        var saved = preferences();
+        if (saved.beta !== value.beta || saved.ignoredVersion !== value.ignoredVersion)
+            throw new Error("无法保存 WordGit 更新设置。");
     }
 
     WG.updatePreferences = preferences;
@@ -111,17 +115,19 @@
         }
     };
 
-    WG.rememberUpdate = function (result) {
-        if (!result.version) return;
-        try {
-            var settings = preferences();
-            if (settings.shown.indexOf(result.version) >= 0) return;
-            settings.shown.push(result.version);
+    WG.ignoreUpdate = function (release) {
+        var candidate = version(release);
+        if (!candidate) throw new Error("无法识别要忽略的版本。");
+        var settings = preferences();
+        var ignored = version(settings.ignoredVersion);
+        if (!ignored || compare(candidate, ignored) > 0) {
+            settings.ignoredVersion = candidate.text;
             save(settings);
-        } catch (error) { /* a non-writable preferences directory must not prevent manual updates */ }
+        }
     };
 
     WG.showUpdates = async function (result) {
+        if (!result) { started = true; checkedManually = true; }
         if (dialogOpen) return;
         dialogOpen = true;
         try {
@@ -135,10 +141,12 @@
         if (started) return;
         started = true;
         setTimeout(async function () {
+            if (checkedManually) return;
             var result = await WG.checkUpdates(preferences().beta);
             var current = preferences();
-            if (result.version && current.shown.indexOf(result.version) < 0 &&
-                (current.beta || !version(result.version).beta)) {
+            var candidate = version(result.version), ignored = version(current.ignoredVersion);
+            if (!checkedManually && candidate && (!ignored || compare(candidate, ignored) > 0) &&
+                (current.beta || !candidate.beta)) {
                 try { await WG.showUpdates(result); } catch (error) { /* host is busy or closing */ }
             }
         }, 5000);

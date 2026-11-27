@@ -67,8 +67,11 @@ namespace WordGit
         private dynamic application;
         private WordDocuments word;
         private TaskPanes panes;
+        private RibbonUpdateTrigger ribbonUpdateTrigger;
         private System.Windows.Forms.Timer updateTimer;
         private CancellationTokenSource updateRequest;
+        private UpdateResult pendingUpdate;
+        private bool updateStarted;
         private readonly OperationTracker operations = new OperationTracker();
         private readonly List<string> startupNotices = new List<string>();
 
@@ -81,14 +84,10 @@ namespace WordGit
             UiThread.EnsureContext();
             application = app;
             word = new WordDocuments(app);
+            updateStarted = false;
             AppPaths.CleanSessions(1);
             StartKernel();
-            if (!word.IsWpsHost)
-            {
-                updateTimer = new System.Windows.Forms.Timer { Interval = 4500 };
-                updateTimer.Tick += CheckStartupUpdate;
-                updateTimer.Start();
-            }
+            if (!word.IsWpsHost) ribbonUpdateTrigger = new RibbonUpdateTrigger(RequestUpdateReminder);
         }
 
         // Started in the background so Word's start-up is not delayed. The kernel finishes any
@@ -107,30 +106,61 @@ namespace WordGit
             });
         }
 
-        private async void CheckStartupUpdate(object sender, EventArgs args)
+        private void RequestUpdateReminder()
         {
-            updateTimer.Dispose();
-            updateTimer = null;
+            if (updateStarted || word == null || word.IsWpsHost) return;
+            updateStarted = true;
+            updateTimer = new System.Windows.Forms.Timer { Interval = 600 };
+            updateTimer.Tick += CheckUpdateReminder;
+            updateTimer.Start();
+        }
+
+        private async void CheckUpdateReminder(object sender, EventArgs args)
+        {
+            if (ribbonUpdateTrigger != null) { ribbonUpdateTrigger.Dispose(); ribbonUpdateTrigger = null; }
+            if (word == null || operations.Count != 0 || Application.OpenForms.Cast<Form>().Any(form => form.Modal)) return;
             UiThread.EnsureContext();
+            if (pendingUpdate != null)
+            {
+                try
+                {
+                    var owner = word.Owner;
+                    if (owner == null) return;
+                    var ready = pendingUpdate;
+                    StopUpdateReminder();
+                    UpdateDialog.ShowResult(owner, ready, false);
+                }
+                catch (COMException) { } // The editor may be switching document windows.
+                catch (Exception error) { AppPaths.LogError("show update reminder: " + error); }
+                return;
+            }
+            updateTimer.Stop();
             var source = new CancellationTokenSource();
             updateRequest = source;
             try
             {
                 var result = await UpdateChecker.CheckAsync(AppInfo.DisplayVersion, UpdatePreferences.IncludeBeta, source.Token);
-                if (!source.IsCancellationRequested && word != null)
-                    UpdateDialog.ShowResult(word.Owner, result, false);
+                if (!source.IsCancellationRequested && updateTimer != null && result.State == UpdateState.Available)
+                {
+                    pendingUpdate = result;
+                    updateTimer.Start();
+                }
             }
             catch (OperationCanceledException) { }
-            catch (Exception error) { AppPaths.LogError("startup update: " + error); }
+            catch (Exception error) { AppPaths.LogError("update reminder: " + error); }
             finally
             {
                 if (updateRequest == source) updateRequest = null;
                 source.Dispose();
+                if (pendingUpdate == null) StopUpdateReminder();
             }
         }
 
-        private void StopStartupUpdate()
+        private void StopUpdateReminder()
         {
+            updateStarted = true;
+            pendingUpdate = null;
+            if (ribbonUpdateTrigger != null) { ribbonUpdateTrigger.Dispose(); ribbonUpdateTrigger = null; }
             if (updateTimer != null) { updateTimer.Dispose(); updateTimer = null; }
             if (updateRequest != null) updateRequest.Cancel();
         }
@@ -138,7 +168,7 @@ namespace WordGit
 
         public void OnDisconnection(int mode, ref Array custom)
         {
-            StopStartupUpdate();
+            StopUpdateReminder();
             if (panes != null) panes.Dispose();
             panes = null;
             if (application != null) WordDocuments.Release((object)application);
@@ -153,7 +183,7 @@ namespace WordGit
         public void OnBeginShutdown(ref Array custom)
         {
             UiThread.EnsureContext();
-            StopStartupUpdate();
+            StopUpdateReminder();
             try { operations.WaitForCompletion(); }
             catch (Exception error) { AppPaths.LogError("shutdown wait: " + error); }
         }
@@ -239,7 +269,11 @@ namespace WordGit
         public void OnDeleteBranch(object control) { OpenHistory(HistoryAction.DeleteBranch); }
 
         public void OnAbout(object control) { Guard(() => AboutDialog.ShowWindow(word.Owner, false)); }
-        public void OnCheckUpdates(object control) { Guard(() => AboutDialog.ShowWindow(word.Owner, true)); }
+        public void OnCheckUpdates(object control)
+        {
+            StopUpdateReminder();
+            Guard(() => AboutDialog.ShowWindow(word.Owner, true));
+        }
         public void OnDataDirectory(object control) { Guard(ChangeDataDirectory); }
 
         private void ChangeDataDirectory()
@@ -1000,6 +1034,7 @@ namespace WordGit
         {
             if (word == null) return;
             UiThread.EnsureContext();
+            RequestUpdateReminder();
             ShowStartupNotices();
             string visiblePath = null;
             try

@@ -57,6 +57,13 @@ namespace WordGit
             Require(UpdateChecker.Parse(list(new[] { Release("v0.12.1") }), "0.12.1-beta.11", true).State == UpdateState.Available,
                 "Stable should supersede its own beta");
             Require(UpdateChecker.Parse(releases, "0.12.1-beta.11", true).State == UpdateState.LocalNewer, "Newer local beta would downgrade");
+            Require(!UpdatePreferences.AtOrBelowIgnoredVersion(ReleaseVersion.Parse("0.12.1-beta.10"), ""),
+                "A version without an explicit choice was suppressed");
+            Require(UpdatePreferences.AtOrBelowIgnoredVersion(ReleaseVersion.Parse("0.12.1-beta.2"), "0.12.1-beta.10") &&
+                UpdatePreferences.AtOrBelowIgnoredVersion(ReleaseVersion.Parse("0.12.1-beta.10"), "0.12.1-beta.10"),
+                "Ignored and older releases should stay quiet");
+            Require(!UpdatePreferences.AtOrBelowIgnoredVersion(ReleaseVersion.Parse("0.12.1"), "0.12.1-beta.10"),
+                "A new stable release should follow an ignored Beta");
             Require(UpdateChecker.Parse(list(new[] { Release("v0.12.1", prerelease: true) }), current, true).State == UpdateState.NoRelease,
                 "Numeric preview was offered as a regular release");
             foreach (var json in new[] { "{", "null", "{}", "[{}]", "[null]" })
@@ -74,6 +81,16 @@ namespace WordGit
             using (var handler = new StubHandler { Failure = failure })
             using (var client = new HttpClient(handler))
                 Require((await UpdateChecker.CheckAsync(current, false, client, CancellationToken.None)).State == UpdateState.Unavailable, "Network failure escaped");
+            using (var client = new HttpClient(new PublicReleaseHandler()))
+            {
+                var stable = await UpdateChecker.CheckAsync(current, false, client, CancellationToken.None);
+                Require(stable.Version == "0.13.0" && stable.Notes == "• 修复 & 优化" &&
+                    stable.DownloadUrl == AppInfo.ReleasesUrl + "/download/v0.13.0/WordGit-0.13.0-Setup.exe",
+                    "Rate-limited stable check did not display Atom notes and a verified installer");
+                var candidate = await UpdateChecker.CheckAsync(current, true, client, CancellationToken.None);
+                Require(candidate.Version == "0.14.1-beta.2" && candidate.DownloadUrl == AppInfo.ReleasesUrl + "/tag/v0.14.1-beta.2",
+                    "Unknown download redirect should leave the Beta release page available");
+            }
             using (var cancellation = new CancellationTokenSource())
             using (var client = new HttpClient(new StubHandler()))
             {
@@ -92,11 +109,53 @@ namespace WordGit
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation)
             {
                 cancellation.ThrowIfCancellationRequested();
+                if (request.RequestUri.AbsoluteUri != AppInfo.ReleasesApi)
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
                 ExpectedRequest = request.Method == HttpMethod.Get && request.RequestUri.AbsoluteUri == AppInfo.ReleasesApi &&
                     request.Headers.UserAgent.ToString().StartsWith("WordGit/") && request.Headers.Authorization == null;
                 if (Failure == 1) throw new HttpRequestException("offline");
                 if (Failure == 2) throw new TaskCanceledException("timeout");
                 return Task.FromResult(new HttpResponseMessage((HttpStatusCode)Code) { Content = new StringContent("[" + Release("v0.12.1") + "]") });
+            }
+        }
+
+        private sealed class PublicReleaseHandler : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation)
+            {
+                var url = request.RequestUri.AbsoluteUri;
+                HttpResponseMessage response;
+                if (url == AppInfo.ReleasesApi)
+                    response = new HttpResponseMessage(HttpStatusCode.Forbidden);
+                else if (url == AppInfo.ReleasesUrl + "/latest")
+                    response = Redirect(AppInfo.ReleasesUrl + "/tag/v0.13.0");
+                else if (url == AppInfo.ReleasesUrl + ".atom")
+                {
+                    response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(
+                        "<feed xmlns=\"http://www.w3.org/2005/Atom\">" +
+                        Entry("v0.13.0", "<ul><li>修复 &amp; 优化</li></ul>") +
+                        Entry("v0.14.0", "<p>数值版本的预览稿</p>") +
+                        Entry("v0.14.1-beta.2", "<p>Beta 日志</p>") + "</feed>") };
+                }
+                else if (request.Method == HttpMethod.Head && url == AppInfo.ReleasesUrl + "/download/v0.13.0/WordGit-0.13.0-Setup.exe")
+                    response = Redirect("https://release-assets.githubusercontent.com/verified-installer");
+                else if (request.Method == HttpMethod.Head && url == AppInfo.ReleasesUrl + "/download/v0.14.1-beta.2/WordGit-0.14.1-beta.2-Setup.exe")
+                    response = Redirect("https://example.invalid/untrusted-installer");
+                else throw new InvalidOperationException("Unexpected update request: " + url);
+                return Task.FromResult(response);
+            }
+
+            private static string Entry(string tag, string notes)
+            {
+                return "<entry><link href=\"" + AppInfo.ReleasesUrl + "/tag/" + tag +
+                    "\"/><content type=\"html\"><![CDATA[" + notes + "]]></content></entry>";
+            }
+
+            private static HttpResponseMessage Redirect(string target)
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.Redirect);
+                response.Headers.Location = new Uri(target);
+                return response;
             }
         }
     }

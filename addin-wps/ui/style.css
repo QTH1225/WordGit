@@ -34,6 +34,7 @@ button.danger { color: var(--danger); }
 button:disabled { opacity: .45; cursor: default; }
 button.small { padding: 2px 9px; }
 .buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap; }
+.update-actions #ignore { margin-right: auto; }
 .message { white-space: pre-wrap; word-break: break-word; }
 .error { color: var(--danger); white-space: pre-wrap; }
 .list { border: 1px solid var(--line); border-radius: 4px; overflow: auto; }

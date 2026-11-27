@@ -38,13 +38,13 @@
         var app = WG.app();
         if (app && typeof app.ribbonUI !== "object") app.ribbonUI = ribbonUI;
         setTimeout(WG.showNotices, 3000);
-        WG.scheduleUpdateCheck();
         return true;
     };
 
     global.OnAction = function (control) {
         var action = ACTIONS[control.Id];
         if (action) {
+            if (control.Id !== "WordGitUpdates") WG.scheduleUpdateCheck();
             // Ribbon callbacks must return immediately; flows run asynchronously.
             setTimeout(function () {
                 Promise.resolve(action()).catch(function (error) { WG.notify(WG.errorText(error)); });

@@ -10,6 +10,7 @@ New-Item -ItemType Directory -Path $bin -Force | Out-Null
 $sources = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'src') -Filter '*.cs' | Select-Object -ExpandProperty FullName)
 $support = Join-Path $repoRoot 'tests\TestSupport.cs'
 $references = @('System.Windows.Forms.dll','System.Drawing.dll','System.IO.Compression.dll','Microsoft.CSharp.dll','System.Net.Http.dll','System.Web.Extensions.dll')
+$references += @('UIAutomationClient.dll','UIAutomationTypes.dll','WindowsBase.dll') | ForEach-Object { Join-Path $framework "WPF\$_" }
 $options = @('/nologo','/codepage:65001','/langversion:5','/optimize+') + @($references | ForEach-Object { "/reference:$_" })
 & $compiler @options /target:library "/out:$bin\WordGit.dll" @sources
 if ($LASTEXITCODE -ne 0) { throw '插件构建失败。' }

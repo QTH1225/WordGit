@@ -72,6 +72,7 @@ namespace WordGitSetup
                     }
                     if (!String.Equals(Hash(target), file.Sha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("文件校验失败：" + file.Path);
                 }
+                if (!names.Contains(InstallDisclaimer.DocumentPath)) throw new InvalidDataException("安装免责声明缺失。");
                 File.WriteAllText(System.IO.Path.Combine(result.Root, "manifest.json"), json, new UTF8Encoding(true));
                 var identity = AssemblyName.GetAssemblyName(System.IO.Path.Combine(result.Root, "bin", "WordGit.dll"));
                 if (identity.Name != "WordGit" || identity.Version.ToString() != result.Manifest.Version) throw new InvalidDataException("安装包版本不一致。");
@@ -195,6 +196,14 @@ namespace WordGitSetup
             {
                 var selected = dataDirectory.Text.Trim();
                 if (!uninstallMode && selected.Length == 0) { dataDirectory.Focus(); return; }
+                using (var disclaimer = new InstallDisclaimer(payload.Root))
+                {
+                    if (disclaimer.ShowDialog(this) != DialogResult.OK)
+                    {
+                        Close();
+                        return;
+                    }
+                }
                 Run("", uninstallMode || String.Equals(CurrentDataDirectory(), selected, StringComparison.OrdinalIgnoreCase) ? null : selected);
             };
             browse.Click += (sender, args) => BrowseDataDirectory();

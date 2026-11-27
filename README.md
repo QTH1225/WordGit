@@ -18,7 +18,8 @@
 1. 准备 `WordGit-0.13.0-Setup.exe` 安装包。
 2. 保存文档，关闭 Word 和 WPS 文字。
 3. 运行安装程序，在 **数据目录** 中选择历史存放位置，然后点击 **安装 / 更新**。
-4. 重新打开 Word，进入顶部 **WordGit** 选项卡。没有出现时见下文 [在 Word 中载入插件](#在-word-中载入插件)。
+4. 阅读 [插件使用免责声明](docs/INSTALL-DISCLAIMER.md)。同意后勾选 **我同意**，点击 **继续安装**。
+5. 重新打开 Word，进入顶部 **WordGit** 选项卡。没有出现时见下文 [在 Word 中载入插件](#在-word-中载入插件)。
 
 ZIP 包的用法相同。完整解压 `WordGit-0.13.0-windows.zip`，运行其中的 `WordGit.Setup.exe`。也可以双击 `Install.cmd` 安装或用 `Check.cmd` 检查环境。
 
@@ -266,4 +267,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -T
 
 ## 检查更新
 
-Word 和 WPS 启动后会在后台检查已发布版本。发现新版时会显示当前版本、新版本和更新日志，同一个版本只自动提醒一次。功能区的「检查更新」可以主动查询和下载，勾选「接收 Beta 更新提醒」后也会收到试用版更新。
+在 Word 中首次进入 **WordGit** 选项卡或使用其中的功能时，插件会在后台检查更新。WPS 在首次使用 WordGit 功能时检查。发现新版会显示版本号、更新日志和下载入口。选择「稍后提醒」会在下次启动并使用 WordGit 时再提示。选择「忽略此版本」会等到有更高版本时再自动提醒。功能区的「检查更新」随时可以查看可用版本，也可单独开启 Beta 更新提醒。

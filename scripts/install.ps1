@@ -15,6 +15,7 @@ $WordGitConnectClsid = '{C5707F76-F46F-4A11-800B-18E7D98377D3}'
 $WordGitPaneClsid = '{F55EC3C1-B725-4ED8-9CA6-ED51D07C3361}'
 $WordGitConnectProgId = 'WordGit.Connect'
 $WordGitPaneProgId = 'WordGit.HistoryPane'
+$WordGitStartupKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
 
 function Get-WordGitRegistryViews {
     if ([Environment]::Is64BitOperatingSystem) { [Microsoft.Win32.RegistryView]::Registry64 }
@@ -157,7 +158,7 @@ function Remove-WordGitRegistration($Base) {
         'Software\Microsoft\Windows\CurrentVersion\Uninstall\WordGit'
     )) { $Base.DeleteSubKeyTree($path, $false) }
     try {
-        $run = $Base.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)
+        $run = $Base.OpenSubKey($WordGitStartupKey, $true)
         if ($run) { try { $run.DeleteValue('WordGit', $false) } finally { $run.Dispose() } }
     } catch [System.Security.SecurityException] { }
     Remove-WordGitLegacyWps $Base
@@ -178,7 +179,7 @@ function Stop-WordGitKernel([string]$InstallDirectory) {
 function Register-WordGitKernel($Base, [string]$InstallDirectory) {
     $destination = Assert-WordGitAppDirectory $InstallDirectory
     $kernel = Join-Path $destination 'wordgit.exe'
-    $run = $Base.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+    $run = $Base.CreateSubKey($WordGitStartupKey)
     $launcher = Join-Path $destination 'wordgit-launcher.exe'
     try { $run.SetValue('WordGit', '"' + $launcher + '"', [Microsoft.Win32.RegistryValueKind]::String) }
     finally { $run.Dispose() }
