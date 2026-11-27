@@ -31,6 +31,7 @@ namespace WordGit
                 };
                 VerifyCommitDialog(args[0]);
                 VerifyDialogPlacement();
+                VerifyDataDirectoryDialog(args[0]);
                 using (var history = new HistoryDialog("论文独创性声明.docx", items, true, one, "main",
                     new[] { "main", "review" }, branch => branch == "review" ? new List<Revision> { items[2], items[3] } : items))
                 {
@@ -138,6 +139,41 @@ namespace WordGit
                 if (body != null || subject.Multiline || branch.AcceptButton == null)
                     throw new InvalidOperationException("The branch-name dialog acquired a commit body field");
                 Render(branch, Path.Combine(output, "create-branch-input.png"));
+            }
+        }
+
+        private static void VerifyDataDirectoryDialog(string output)
+        {
+            const string path = @"F:\试验文档\WordGit 提交历史";
+            using (var dialog = new DataDirectoryDialog(path, true))
+            {
+                Render(dialog, Path.Combine(output, "data-directory-dialog.png"));
+                VerifyNoOverlap(dialog);
+                var directory = Descendants(dialog).OfType<TextBox>().Single();
+                var browse = Descendants(dialog).OfType<Button>().Single(button => button.AccessibleName == "选择文件夹");
+                var move = Descendants(dialog).OfType<Button>().Single(button => button.Text == "迁移历史");
+                if (directory.Text != path || directory.ReadOnly || directory.BackColor != SystemColors.Window ||
+                    directory.ClientSize.Height < directory.Font.Height || !browse.Enabled || browse.Left <= directory.Right ||
+                    move.Enabled || dialog.SelectedDirectory != null ||
+                    ((Button)dialog.CancelButton).DialogResult != DialogResult.Cancel)
+                    throw new InvalidOperationException("The data directory should be editable with a folder picker on the right");
+                directory.Text = path + "\\";
+                if (move.Enabled) throw new InvalidOperationException("A trailing separator should not make the directory a new destination");
+                const string target = @"F:\试验文档\新历史";
+                directory.Text = target;
+                if (!move.Enabled || dialog.SelectedDirectory != null)
+                    throw new InvalidOperationException("Editing the location should wait for an explicit migration");
+                dialog.Show();
+                move.PerformClick();
+                if (dialog.DialogResult != DialogResult.OK || dialog.SelectedDirectory != target)
+                    throw new InvalidOperationException("The migration should use the edited directory");
+            }
+            using (var dialog = new DataDirectoryDialog(path, false))
+            {
+                var directory = Descendants(dialog).OfType<TextBox>().Single();
+                if (directory.Text != path || !directory.ReadOnly ||
+                    Descendants(dialog).OfType<Button>().Single(button => button.AccessibleName == "选择文件夹").Enabled)
+                    throw new InvalidOperationException("A busy WordGit must still display the current directory");
             }
         }
 

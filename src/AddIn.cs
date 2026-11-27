@@ -274,29 +274,25 @@ namespace WordGit
             StopUpdateReminder();
             Guard(() => AboutDialog.ShowWindow(word.Owner, true));
         }
-        public void OnDataDirectory(object control) { Guard(ChangeDataDirectory); }
+        public void OnDataDirectory(object control) { Guard(ShowDataDirectory); }
 
-        private void ChangeDataDirectory()
+        private void ShowDataDirectory()
         {
-            if (operations.Count != 0) throw new InvalidOperationException("请等当前 WordGit 操作完成后再更改数据目录。");
             var current = Json.String(Kernel.Call("info", ServiceClient.Args()), "dataDirectory");
-            if (String.IsNullOrEmpty(current)) throw new InvalidOperationException("请更新 WordGit 内核后再更改数据目录。");
-            using (var picker = new FolderBrowserDialog
+            if (String.IsNullOrEmpty(current)) throw new InvalidOperationException("请更新 WordGit 内核后再查看数据目录。");
+            string target;
+            using (var dialog = new DataDirectoryDialog(current, operations.Count == 0))
             {
-                Description = "选择 WordGit 数据目录。已有提交历史会迁移到所选位置。",
-                SelectedPath = current
-            })
-            {
-                if (picker.ShowDialog(word.Owner) != DialogResult.OK) return;
-                var target = picker.SelectedPath;
-                if (String.Equals(current, target, StringComparison.OrdinalIgnoreCase)) return;
-                RunInBackground(current, "迁移数据目录",
-                    token => Task.Run(() =>
-                    {
-                        var result = Kernel.Call("settings/data-directory", ServiceClient.Args("directory", target));
-                        return Json.String(result, "message") + Environment.NewLine + Json.String(result, "dataDirectory");
-                    }), false, () => RefreshPane(VisiblePanePath()), "正在复制并校验提交历史……");
+                if (dialog.ShowDialog(DialogPlacement.Prepare(dialog, word.Owner)) != DialogResult.OK) return;
+                target = dialog.SelectedDirectory;
             }
+            if (operations.Count != 0) throw new InvalidOperationException("请等当前 WordGit 操作完成后再更改数据目录。");
+            RunInBackground(current, "迁移数据目录",
+                token => Task.Run(() =>
+                {
+                    var result = Kernel.Call("settings/data-directory", ServiceClient.Args("directory", target));
+                    return Json.String(result, "message") + Environment.NewLine + Json.String(result, "dataDirectory");
+                }), false, () => RefreshPane(VisiblePanePath()), "正在复制并校验提交历史……");
         }
 
         public void OnImportReview(object control) { OpenHistory(HistoryAction.ImportReview); }
