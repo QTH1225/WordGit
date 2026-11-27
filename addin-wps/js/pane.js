@@ -55,7 +55,7 @@ window.onerror = function (message, source, line) {
         $("compare").disabled = !ready || graphLoading || !ids.length;
         $("compare").textContent = ids.length === 2 ? "对比两版" : "对比当前稿";
         $("historyStatus").textContent = graphError || (loading || graphLoading ? "正在读取提交记录…" :
-            ids.length === 2 ? "已选中两版，可以对比。" : ids.length === 1 ? "双击预览，Ctrl 可选两版对比。" : "");
+            ids.length === 2 ? "已选中两版，可以对比。" : ids.length === 1 ? "双击预览，" + (WG.modKey || "Ctrl") + " 可选两版对比。" : "");
     }
 
     function itemKey(item) {

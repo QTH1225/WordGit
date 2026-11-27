@@ -6,6 +6,8 @@ use wordgit_core::{Error, Result};
 
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 pub const ADDIN_NAME: &str = "WordGit";
 
@@ -30,7 +32,7 @@ pub fn jsaddons_dir() -> PathBuf {
 pub fn bundled_addin() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let folder = exe.parent()?;
-    [folder.join("addin"), folder.join("../share/wordgit/addin"), folder.join("../../addin-wps")]
+    [folder.join("addin"), folder.join("addin-wps"), folder.join("../share/wordgit/addin"), folder.join("../../addin-wps")]
         .into_iter()
         .find(|candidate| candidate.join("ribbon.xml").is_file())
 }
@@ -149,15 +151,43 @@ pub fn enable_autostart(executable: &Path) -> Result<String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let agents = home_dir().join("Library/LaunchAgents");
-        std::fs::create_dir_all(&agents)?;
-        let file = agents.join("com.qth1225.wordgit.plist");
+        let file = macos::plist_path();
+        if let Some(agents) = file.parent() {
+            std::fs::create_dir_all(agents)?;
+        }
+        let installed = executable
+            .to_str()
+            .ok_or_else(|| Error::invalid("WordGit 安装路径需要使用 UTF-8。"))?;
+        let mut env_entries = vec![
+            (
+                "PATH".to_string(),
+                "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+            ),
+        ];
+        if std::env::var_os("WORDGIT_HOME").is_some_and(|root| !root.is_empty()) {
+            let home = std::fs::canonicalize(AppPaths::from_environment().root)?;
+            let home = home
+                .to_str()
+                .ok_or_else(|| Error::invalid("WordGit 运行目录需要使用 UTF-8。"))?;
+            env_entries.push(("WORDGIT_HOME".to_string(), home.to_string()));
+        }
+        if let Some(git) = std::env::var_os("WORDGIT_GIT").filter(|v| !v.is_empty()) {
+            let git = git
+                .into_string()
+                .map_err(|_| Error::invalid("WORDGIT_GIT 路径需要使用 UTF-8。"))?;
+            env_entries.push(("WORDGIT_GIT".to_string(), git));
+        }
+        let env_xml: String = env_entries
+            .iter()
+            .map(|(k, v)| format!("  <key>{}</key><string>{}</string>\n", macos::xml_escape(k), macos::xml_escape(v)))
+            .collect();
         let plist = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>com.qth1225.wordgit</string>\n<key>ProgramArguments</key><array><string>{}</string><string>serve</string></array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n</dict></plist>\n",
-            executable.display()
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{}</string>\n<key>ProgramArguments</key><array><string>{}</string><string>serve</string></array>\n<key>EnvironmentVariables</key><dict>\n{}</dict>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n</dict></plist>\n",
+            macos::LAUNCH_AGENT_LABEL,
+            macos::xml_escape(installed),
+            env_xml
         );
         std::fs::write(&file, plist)?;
-        let _ = std::process::Command::new("launchctl").arg("load").arg("-w").arg(&file).status();
         Ok(format!("已添加登录自启动：{}", file.display()))
     }
     #[cfg(windows)]
@@ -196,8 +226,8 @@ pub fn disable_autostart() -> Result<()> {
     }
     #[cfg(target_os = "macos")]
     {
-        let file = home_dir().join("Library/LaunchAgents/com.qth1225.wordgit.plist");
-        let _ = std::process::Command::new("launchctl").arg("unload").arg(&file).status();
+        let file = macos::plist_path();
+        macos::unload_launch_agent(&file);
         wordgit_core::fsutil::try_remove(&file);
     }
     #[cfg(windows)]

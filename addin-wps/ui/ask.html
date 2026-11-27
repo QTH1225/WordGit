@@ -37,7 +37,7 @@
         document.getElementById("ok").onclick = submit;
         document.getElementById("cancel").onclick = function () { WordGit.finishDialog(null); };
         document.addEventListener("keydown", function (e) {
-            if (e.key === "Enter" && (e.target === value || e.ctrlKey)) { e.preventDefault(); submit(); }
+            if (e.key === "Enter" && (e.target === value || e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); }
             if (e.key === "Escape") WordGit.finishDialog(null);
         });
         value.focus();

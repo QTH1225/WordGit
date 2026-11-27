@@ -357,6 +357,7 @@ impl Context {
             "version": env!("CARGO_PKG_VERSION"),
             "api": 1,
             "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
             "home": self.paths.root,
             "dataDirectory": self.paths.data_directory(),
             "sessions": self.paths.sessions(),

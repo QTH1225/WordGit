@@ -86,3 +86,12 @@ jobs:
           package_dir="$RUNNER_TEMP/wordgit-package"
           bash scripts/package-linux.sh target/debug/wordgit "$package_dir"
           bash scripts/test-linux-package.sh "$package_dir"/WordGit-*-linux-x86_64.tar.gz
+      - name: macOS package install, upgrade and uninstall
+        if: runner.os == 'macOS'
+        run: |
+          for f in addin-wps/js/*.js addin-wps/test/*.js; do node --check "$f"; done
+          node addin-wps/test/updates.js
+          cargo build --locked -p wordgit
+          package_dir="$RUNNER_TEMP/wordgit-package"
+          bash scripts/package-macos.sh target/debug/wordgit "$package_dir"
+          bash scripts/test-macos-package.sh "$package_dir"/WordGit-*-macos-*.tar.gz

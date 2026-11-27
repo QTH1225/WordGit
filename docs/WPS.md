@@ -43,6 +43,25 @@ cargo build --release -p wordgit
 
 WPS 内置浏览器依赖 NSS、ATK、AT-SPI、ALSA 等系统库。桌面发行版一般自带；如果 WordGit 选项卡不出现、WPS 的登录页也显示"页面加载失败"，请安装 `libnss3 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libasound2`。
 
+## 安装（macOS）
+
+需要 WPS Office for Mac（≥ 6.15，建议 12.1 或更新版本）以及 Git（`xcode-select --install` 或 Homebrew Git）。详见 [macOS 安装与使用说明](MACOS.md)。
+
+下载并解压 `WordGit-<版本>-macos-<架构>.tar.gz` 后，双击 `Install.command` 或在终端运行 `./install.sh`。从源码构建：
+
+```sh
+cargo build --release -p wordgit
+./target/release/wordgit install --addin addin-wps
+```
+
+`wordgit install` 会在 macOS 上：
+
+1. 将加载项复制到 `~/Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons/WordGit_<版本>/` 并更新 `publish.xml`；
+2. 将内核安装到 `~/Library/Containers/com.kingsoft.wpsoffice.mac/Data/WordGit/app/wordgit`；
+3. 写入并加载当前用户的 LaunchAgent `~/Library/LaunchAgents/com.qth1225.wordgit.plist`，关闭旧服务并启动新版内核。
+
+卸载可运行 `./uninstall.sh`（或双击 `Uninstall.command`），或执行 `~/Library/Containers/com.kingsoft.wpsoffice.mac/Data/WordGit/app/wordgit uninstall`，已有历史与审阅稿保留。
+
 ## 数据位置
 
 | 系统 | 目录 |

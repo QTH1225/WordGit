@@ -31,7 +31,7 @@
         var id = WG.newOperationId();
         var key = "wordgit.progress." + id;
         app.PluginStorage.setItem(key, JSON.stringify({ title: title, status: status, operation: id, done: false }));
-        var scale = global.devicePixelRatio || 1;
+        var scale = WG.dialogScale ? WG.dialogScale() : (global.devicePixelRatio || 1);
         app.ShowDialog(WG.baseUrl() + "ui/progress.html?key=" + key, "WordGit · " + title, 420 * scale, 190 * scale, false);
         try {
             return await operation(id);
@@ -145,7 +145,7 @@
             var ctx = await currentStatus(false);
             requireHead(ctx.status);
             if (!revision) {
-                var picked = await pickRevision(ctx.status, "对比版本", "选一版与当前稿对比，或按 Ctrl 选两个历史版本对比。", { multi: true, action: "对比" });
+                var picked = await pickRevision(ctx.status, "对比版本", "选一版与当前稿对比，或按 " + (WG.modKey || "Ctrl") + " 选两个历史版本对比。", { multi: true, action: "对比" });
                 if (!picked) return null;
                 revision = picked.revision;
                 other = picked.other;
@@ -367,7 +367,7 @@
     };
 
     WG.mergeTwoVersions = async function (ctx) {
-        var picked = await pickRevision(ctx.status, "合并两版", "按 Ctrl 选择两个历史版本，较早的一版作为基准。", { multi: true, requireTwo: true, action: "合并两版" });
+        var picked = await pickRevision(ctx.status, "合并两版", "按 " + (WG.modKey || "Ctrl") + " 选择两个历史版本，较早的一版作为基准。", { multi: true, requireTwo: true, action: "合并两版" });
         if (!picked) return null;
         var plan = await WG.call("merge/versions", { document: ctx.path, revision: picked.revision, other: picked.other });
         return buildMergeDraft(plan);

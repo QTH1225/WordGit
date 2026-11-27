@@ -96,7 +96,9 @@ impl Git {
                 folders.push(PathBuf::from(base).join(suffix));
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        folders.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from));
+        #[cfg(all(not(windows), not(target_os = "macos")))]
         folders.extend(["/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"].map(PathBuf::from));
         for folder in folders {
             let folder = PathBuf::from(folder.to_string_lossy().trim().trim_matches('"'));
@@ -107,6 +109,8 @@ impl Git {
         }
         Err(Error::invalid(if cfg!(windows) {
             "找不到 Git for Windows。请安装 Git，或用 WORDGIT_GIT 指定 git.exe。"
+        } else if cfg!(target_os = "macos") {
+            "找不到 git。请先安装 Xcode 命令行工具（xcode-select --install）或通过 Homebrew 安装 Git，或用 WORDGIT_GIT 指定 git 的路径。"
         } else {
             "找不到 git。请先安装 Git（例如 sudo apt install git），或用 WORDGIT_GIT 指定 git 的路径。"
         }))
