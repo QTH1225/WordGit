@@ -14,14 +14,18 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.metadata.outputs.version }}
       prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
       - name: Validate tag and extract changelog
         id: metadata
         env:
@@ -29,7 +33,7 @@ jobs:
         run: |
           git merge-base --is-ancestor HEAD origin/main
           python3 scripts/prepare-release.py "$RELEASE_TAG" release-notes.md
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: release-notes.md
@@ -42,18 +46,15 @@ jobs:
   linux-package:
     needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Build Linux x86_64 distribution
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          rustup target add x86_64-unknown-linux-musl
-          cargo build --locked --release --target x86_64-unknown-linux-musl -p wordgit
-          bash scripts/package-linux.sh target/x86_64-unknown-linux-musl/release/wordgit dist
-      - uses: actions/upload-artifact@v4
+        # Same container as local development and CI; see scripts/dev.sh.
+        run: bash scripts/dev.sh package
+      - uses: actions/upload-artifact@v7
         with:
           name: wordgit-linux
           path: dist/
@@ -62,18 +63,20 @@ jobs:
   macos-package:
     needs: validate
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Build macOS universal distribution
         run: |
+          rustup install
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           cargo build --locked --release --target aarch64-apple-darwin -p wordgit
           cargo build --locked --release --target x86_64-apple-darwin -p wordgit
           lipo -create target/aarch64-apple-darwin/release/wordgit target/x86_64-apple-darwin/release/wordgit -output target/wordgit-universal
           bash scripts/package-macos.sh target/wordgit-universal dist universal
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wordgit-macos
           path: dist/
@@ -82,25 +85,26 @@ jobs:
   publish:
     needs: [validate, test, linux-package, macos-package]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wordgit-package
           path: windows
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wordgit-linux
           path: linux
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wordgit-macos
           path: macos
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-notes
       - name: Assemble and verify release assets

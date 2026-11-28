@@ -1,0 +1,8 @@
+# One Rust version for local development, CI, releases and docker/wps-linux/Dockerfile (`rust:` image).
+# Pinned so a new stable release (and its new clippy lints) cannot turn CI red on its own.
+# Upgrade deliberately: bump the version here and in the Dockerfile, then run
+# `cargo clippy --workspace --all-targets -- -D warnings`.
+[toolchain]
+channel = "1.96.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

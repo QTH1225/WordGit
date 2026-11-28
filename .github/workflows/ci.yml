@@ -2,22 +2,45 @@ name: CI
 
 on:
   push:
-    branches: [main, rust-core]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
   workflow_call:
 
 permissions:
   contents: read
 
+# A newer push to the same pull request supersedes the old run; pushes to main/dev and releases
+# always run to completion.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  linux:
+    # The same container and commands developers run locally with scripts/dev.ps1 or scripts/dev.sh:
+    # PowerShell encoding, WPS add-in scripts, clippy, tests and the Linux package test.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Linux checks in the development container
+        run: bash scripts/dev.sh check
+
   build-and-test:
     # Needs .NET Framework 4.8 (csc), Windows PowerShell 5.1 and Git for Windows.
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: rustup install && rustc --version
 
       - name: Build the add-in and kernel, run update-check tests
         shell: powershell
@@ -51,46 +74,40 @@ jobs:
           & (Join-Path $payload.FullName 'bin\wordgit.exe') version
           if ($LASTEXITCODE -ne 0) { throw 'Packaged kernel could not start.' }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wordgit-package
           path: dist/
           if-no-files-found: error
 
   rust:
-    # Rust core and service: unit tests, real-git integration tests and the HTTP service tests.
+    # Native platforms Docker cannot cover: unit tests, real-git integration tests and the HTTP
+    # service tests on Windows and macOS (Linux runs in the `linux` job's container).
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - name: Toolchain
-        run: rustup component add clippy
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        # The macOS package install test uses python3 as a JSON helper.
+        if: runner.os == 'macOS'
+        with:
+          python-version-file: .python-version
+      - name: Install the pinned Rust toolchain
+        # rust-toolchain.toml selects the version and components.
+        run: rustup install && rustc --version && cargo clippy --version
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked --workspace
-      - name: Add-in scripts parse
-        if: runner.os == 'Linux'
-        run: for f in addin-wps/js/*.js addin-wps/test/*.js; do node --check "$f"; done
-      - name: WPS update tests
-        if: runner.os == 'Linux'
-        run: node addin-wps/test/updates.js
-      - name: Linux package install, upgrade and uninstall
-        if: runner.os == 'Linux'
-        run: |
-          cargo build --locked -p wordgit
-          package_dir="$RUNNER_TEMP/wordgit-package"
-          bash scripts/package-linux.sh target/debug/wordgit "$package_dir"
-          bash scripts/test-linux-package.sh "$package_dir"/WordGit-*-linux-x86_64.tar.gz
       - name: macOS package install, upgrade and uninstall
         if: runner.os == 'macOS'
         run: |
-          for f in addin-wps/js/*.js addin-wps/test/*.js; do node --check "$f"; done
-          node addin-wps/test/updates.js
           cargo build --locked -p wordgit
           package_dir="$RUNNER_TEMP/wordgit-package"
           bash scripts/package-macos.sh target/debug/wordgit "$package_dir"
