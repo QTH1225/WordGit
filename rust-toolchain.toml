@@ -1,0 +1,7 @@
+# Pinned so a new stable release (and its new clippy lints) cannot turn CI red on its own.
+# Upgrade deliberately: bump the version here and run `cargo clippy --workspace --all-targets -- -D warnings`.
+# docker/wps-linux/Dockerfile does not copy this file; its `rust:` image tag is pinned separately.
+[toolchain]
+channel = "1.100.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
