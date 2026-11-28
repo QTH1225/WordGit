@@ -25,17 +25,11 @@
         return left.beta - right.beta;
     }
 
-    function assetNames(value, platform) {
-        if (/^Win/.test(platform)) return ["WordGit-" + value + "-windows.zip"];
-        if (/^Linux (x86_64|amd64)$/.test(platform)) return ["WordGit-" + value + "-linux-x86_64.tar.gz"];
-        if (/^Mac/i.test(platform)) {
-            return [
-                "WordGit-" + value + "-macos-universal.tar.gz",
-                "WordGit-" + value + "-macos-arm64.tar.gz",
-                "WordGit-" + value + "-macos-x86_64.tar.gz"
-            ];
-        }
-        return [];
+    function assetName(value, platform) {
+        if (/^Win/.test(platform)) return "WordGit-" + value + "-windows.zip";
+        if (/^Linux (x86_64|amd64)$/.test(platform)) return "WordGit-" + value + "-linux-x86_64.tar.gz";
+        if (/^Mac/i.test(platform)) return "WordGit-" + value + "-macos-universal.tar.gz";
+        return null;
     }
 
     function selectRelease(releases, current, beta, platform) {
@@ -58,18 +52,16 @@
         var order = compare(latest, installed);
         if (order < 0) return { message: "当前版本高于此渠道的最新版本（" + latest.text + "）。" };
         if (!order) return { message: "当前已是最新版（" + latest.text + "）。" };
-        var names = assetNames(latest.text, platform);
-        var matched = Array.isArray(selected.assets) ? names.find(function (name) {
-            return selected.assets.some(function (asset) {
-                return asset && asset.name === name && asset.state === "uploaded";
-            });
-        }) : null;
+        var name = assetName(latest.text, platform);
+        var available = name && Array.isArray(selected.assets) && selected.assets.some(function (asset) {
+            return asset && asset.name === name && asset.state === "uploaded";
+        });
         var notes = typeof selected.body === "string" ? selected.body.trim() : "";
         return {
             version: latest.text,
             notes: notes.length > 24000 ? notes.slice(0, 24000) + "\n…" : notes || "此版本未填写更新日志。",
-            url: matched ? releasesUrl + "/download/" + selected.tag_name + "/" + matched : releasesUrl + "/tag/" + selected.tag_name,
-            direct: !!matched
+            url: available ? releasesUrl + "/download/" + selected.tag_name + "/" + name : releasesUrl + "/tag/" + selected.tag_name,
+            direct: !!available
         };
     }
 
@@ -167,6 +159,6 @@
         var parsed = version(parts[1]);
         if (!parsed) return false;
         return (parts[0] === "tag" && parts.length === 2) ||
-            (parts[0] === "download" && parts.length === 3 && assetNames(parsed.text, global.navigator.platform).indexOf(parts[2]) >= 0);
+            (parts[0] === "download" && parts.length === 3 && parts[2] === assetName(parsed.text, global.navigator.platform));
     };
 })(window);

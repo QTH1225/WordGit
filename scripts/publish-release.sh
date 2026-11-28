@@ -2,7 +2,8 @@
 set -euo pipefail
 
 assets=(release/*)
-[[ ${#assets[@]} -eq 6 ]]
+expected_asset_count=8
+[[ ${#assets[@]} -eq $expected_asset_count ]]
 release_id() {
     gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
         --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .id"
@@ -34,7 +35,7 @@ for file in "${assets[@]}"; do
 done
 
 state=$(gh api "$endpoint")
-jq -e '.assets | length == 6' <<< "$state" >/dev/null
+jq -e --argjson expected "$expected_asset_count" '.assets | length == $expected' <<< "$state" >/dev/null
 for file in "${assets[@]}"; do
     digest=$(sha256sum "$file")
     digest="sha256:${digest%% *}"

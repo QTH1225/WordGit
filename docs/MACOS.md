@@ -19,7 +19,7 @@
 
 ### 方式一：使用打包好的 macOS 发布包（推荐）
 
-1. 解压 `WordGit-<版本>-macos-<架构>.tar.gz`（例如 `WordGit-0.14.0-macos-arm64.tar.gz`）。
+1. 从 [GitHub Releases](https://github.com/QTH1225/WordGit/releases) 下载并解压 `WordGit-<版本>-macos-universal.tar.gz`。同一个安装包适用于 Apple Silicon 和 Intel Mac。
 2. 保存文档并完全退出 WPS Office（`⌘ + Q`）。
 3. 双击解压目录中的 **`Install.command`**，或在终端运行：
 

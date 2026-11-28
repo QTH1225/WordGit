@@ -72,9 +72,9 @@ async function run() {
     releases[3].assets.push({name: "WordGit-0.12.1-beta.10-macos-arm64.tar.gz", state: "uploaded",
         browser_download_url: "https://example.invalid/"});
     result = await wg.checkUpdates(true);
-    assert.equal(result.direct, true);
-    assert.equal(result.url, "https://github.com/QTH1225/WordGit/releases/download/v0.12.1-beta.10/WordGit-0.12.1-beta.10-macos-arm64.tar.gz");
-    assert.equal(wg.isUpdateLink(result.url), true);
+    assert.equal(result.direct, false);
+    assert.ok(result.url.endsWith("/tag/v0.12.1-beta.10"));
+    assert.equal(wg.isUpdateLink("https://github.com/QTH1225/WordGit/releases/download/v0.12.1-beta.10/WordGit-0.12.1-beta.10-macos-arm64.tar.gz"), false);
     releases[3].assets.push({name: "WordGit-0.12.1-beta.10-macos-universal.tar.gz", state: "uploaded",
         browser_download_url: "https://example.invalid/"});
     result = await wg.checkUpdates(true);

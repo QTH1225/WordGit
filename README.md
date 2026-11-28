@@ -92,7 +92,7 @@ WordGit 为 Word 和 WPS 文字的 `.docx` 稿件提供 Git 版本管理。你�
 | --- | --- | --- |
 | Windows 10 / 11 x64 | `WordGit-0.14.0-Setup.exe` 或 `WordGit-0.14.0-windows.zip` | 图形安装程序或 [WPS 独立安装](docs/WPS.md#安装windows) |
 | Linux x86_64 | `WordGit-0.14.0-linux-x86_64.tar.gz` | 解压后运行 `./install.sh`，详见 [Linux WPS 安装](docs/WPS.md#安装linux) |
-| macOS (Apple Silicon / Intel) | `WordGit-0.14.0-macos-arm64.tar.gz` / `universal.tar.gz` | 解压后双击 `Install.command` 或运行 `./install.sh`，详见 [macOS 安装说明](docs/MACOS.md) |
+| macOS 12+（Apple Silicon / Intel） | `WordGit-0.14.0-macos-universal.tar.gz` | 适用于 WPS 文字。解压后双击 `Install.command` 或运行 `./install.sh`，详见 [macOS 安装说明](docs/MACOS.md) |
 
 ### Windows 安装要求
 
