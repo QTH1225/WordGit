@@ -12,6 +12,10 @@
 
     var WG = global.WordGit = global.WordGit || {};
     var DEFAULT_PORT = 47821;
+    var isMac = /^Mac/i.test((global.navigator && global.navigator.platform) || "");
+    WG.isMac = isMac;
+    WG.modKey = isMac ? "⌘" : "Ctrl";
+    WG.dialogScale = function () { return isMac ? 1 : (global.devicePixelRatio || 1); };
 
     WG.app = function () {
         return global.Application || (global.wps && global.wps.WpsApplication && global.wps.WpsApplication());
@@ -87,6 +91,10 @@
         }
         var profile = folder.replace(/[\\/]AppData[\\/]Roaming[\\/].*$/i, "");
         if (profile !== folder) files.push(profile + "/AppData/Local/WordGit/service.json");
+        var macContainer = folder.replace(/\/\.kingsoft\/wps\/jsaddons(?:\/.*)?$/, "");
+        if (macContainer !== folder) files.push(macContainer + "/WordGit/service.json");
+        var linuxShare = folder.replace(/\/Kingsoft\/wps\/jsaddons(?:\/.*)?$/, "");
+        if (linuxShare !== folder) files.push(linuxShare + "/WordGit/service.json");
         return files;
     }
 
@@ -167,7 +175,7 @@
     function samePath(a, b) {
         a = String(a || "").replace(/\\/g, "/");
         b = String(b || "").replace(/\\/g, "/");
-        return /^[A-Za-z]:/.test(a) || /^\/Users\//.test(a) ? a.toLowerCase() === b.toLowerCase() : a === b;
+        return isMac || /^[A-Za-z]:/.test(a) || /^\/Users\//.test(a) ? a.toLowerCase() === b.toLowerCase() : a === b;
     }
     WG.samePath = samePath;
 
@@ -588,7 +596,7 @@
         var app = WG.app();
         var key = "wordgit.dialog." + WG.newOperationId();
         app.PluginStorage.setItem(key, JSON.stringify({ data: data || {}, result: null }));
-        var scale = global.devicePixelRatio || 1;
+        var scale = WG.dialogScale();
         app.ShowDialog(WG.baseUrl() + "ui/" + page + ".html?key=" + key, title, width * scale, height * scale, modal !== false);
         return new Promise(function (resolve) {
             var timer = setInterval(function () {

@@ -6,3 +6,4 @@ dist/
 /target/
 docker/wps-linux/cache/
 docker/wps-linux/out/
+.DS_Store

@@ -28,6 +28,7 @@
     function assetName(value, platform) {
         if (/^Win/.test(platform)) return "WordGit-" + value + "-windows.zip";
         if (/^Linux (x86_64|amd64)$/.test(platform)) return "WordGit-" + value + "-linux-x86_64.tar.gz";
+        if (/^Mac/i.test(platform)) return "WordGit-" + value + "-macos-universal.tar.gz";
         return null;
     }
 

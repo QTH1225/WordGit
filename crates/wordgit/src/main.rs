@@ -136,13 +136,17 @@ fn install(args: &[String]) -> Result<(), String> {
     let source = option(args, "--addin").map(PathBuf::from).or_else(install::bundled_addin).ok_or("找不到加载项文件，请用 --addin 指定。")?;
     let autostart = !args.iter().any(|a| a == "--no-autostart");
     #[cfg(target_os = "linux")]
+    use install::linux as platform;
+    #[cfg(target_os = "macos")]
+    use install::macos as platform;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let _installation = {
         if !source.join("ribbon.xml").is_file() {
             return Err(format!("找不到加载项文件：{}", source.display()));
         }
-        let lock = install::linux::lock_installation(&paths).map_err(|error| error.to_string())?;
+        let lock = platform::lock_installation(&paths).map_err(|error| error.to_string())?;
         if autostart {
-            install::linux::stop_service(&paths).and_then(|()| install::linux::ensure_default_port()).map_err(|error| error.to_string())?;
+            platform::stop_service(&paths).and_then(|()| platform::ensure_default_port()).map_err(|error| error.to_string())?;
         }
         lock
     };
@@ -153,10 +157,20 @@ fn install(args: &[String]) -> Result<(), String> {
     println!("已安装 WPS 加载项：{}", folder.display());
     if autostart {
         let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-        #[cfg(target_os = "linux")]
-        let executable = install::linux::install_executable(&executable, &paths).map_err(|error| error.to_string())?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let executable = platform::install_executable(&executable, &paths).map_err(|error| error.to_string())?;
         println!("{}", install::enable_autostart(&executable).map_err(|e| e.to_string())?);
-        if cfg!(target_os = "linux") || !service::service_running(service::DEFAULT_PORT) {
+        #[cfg(target_os = "macos")]
+        let started_by_launchd = if platform::load_launch_agent(&platform::plist_path()) {
+            platform::wait_for_launchd_service(&paths).map_err(|error| error.to_string())?;
+            println!("WordGit 服务已启动。");
+            true
+        } else {
+            false
+        };
+        #[cfg(not(target_os = "macos"))]
+        let started_by_launchd = false;
+        if !started_by_launchd && (cfg!(any(target_os = "linux", target_os = "macos")) || !service::service_running(service::DEFAULT_PORT)) {
             let mut command = std::process::Command::new(&executable);
             command.arg("serve").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
             #[cfg(windows)]
@@ -170,10 +184,10 @@ fn install(args: &[String]) -> Result<(), String> {
                 command.process_group(0);
             }
             let _child = command.spawn().map_err(|e| format!("无法启动服务：{e}"))?;
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 let mut child = _child;
-                install::linux::wait_for_service(&mut child, &paths).map_err(|error| error.to_string())?;
+                platform::wait_for_service(&mut child, &paths).map_err(|error| error.to_string())?;
             }
             println!("WordGit 服务已启动。");
         }
@@ -184,16 +198,20 @@ fn install(args: &[String]) -> Result<(), String> {
 
 fn uninstall() -> Result<(), String> {
     #[cfg(target_os = "linux")]
+    use install::linux as platform;
+    #[cfg(target_os = "macos")]
+    use install::macos as platform;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let (paths, _installation) = {
         let paths = AppPaths::from_environment();
-        let lock = install::linux::lock_installation(&paths).map_err(|error| error.to_string())?;
-        install::linux::stop_service(&paths).map_err(|error| error.to_string())?;
+        let lock = platform::lock_installation(&paths).map_err(|error| error.to_string())?;
+        platform::stop_service(&paths).map_err(|error| error.to_string())?;
         (paths, lock)
     };
     install::uninstall_addin().map_err(|e| e.to_string())?;
     install::disable_autostart().map_err(|e| e.to_string())?;
-    #[cfg(target_os = "linux")]
-    install::linux::uninstall_executable(&paths).map_err(|error| error.to_string())?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    platform::uninstall_executable(&paths).map_err(|error| error.to_string())?;
     println!("已移除 WPS 加载项与自启动。稿件历史（repositories）保留不动。");
     Ok(())
 }
