@@ -23,6 +23,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
       - name: Validate tag and extract changelog
         id: metadata
         env:
@@ -52,6 +55,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
+          rustup install
           rustup target add x86_64-unknown-linux-musl
           cargo build --locked --release --target x86_64-unknown-linux-musl -p wordgit
           bash scripts/package-linux.sh target/x86_64-unknown-linux-musl/release/wordgit dist
@@ -71,6 +75,7 @@ jobs:
           persist-credentials: false
       - name: Build macOS universal distribution
         run: |
+          rustup install
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           cargo build --locked --release --target aarch64-apple-darwin -p wordgit
           cargo build --locked --release --target x86_64-apple-darwin -p wordgit

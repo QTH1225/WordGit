@@ -38,6 +38,9 @@ jobs:
             fi
           done < <(git ls-files -z -- '*.ps1' '*.psm1' '*.psd1')
           exit $bad
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
       - name: Add-in scripts parse
         run: for f in addin-wps/js/*.js addin-wps/test/*.js; do node --check "$f"; done
       - name: WPS update tests
@@ -53,7 +56,7 @@ jobs:
           persist-credentials: false
 
       - name: Install the pinned Rust toolchain
-        run: rustc --version
+        run: rustup install && rustc --version
 
       - name: Build the add-in and kernel, run update-check tests
         shell: powershell
@@ -105,9 +108,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v7
+        # The package install tests use python3 as a JSON helper.
+        with:
+          python-version-file: .python-version
       - name: Install the pinned Rust toolchain
-        # rust-toolchain.toml selects the version and components; rustup installs it on first use.
-        run: rustc --version && cargo clippy --version
+        # rust-toolchain.toml selects the version and components.
+        run: rustup install && rustc --version && cargo clippy --version
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test

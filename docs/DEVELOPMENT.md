@@ -2,7 +2,15 @@
 
 需要 Windows、.NET Framework 4.8、[Rust 工具链](https://rustup.rs/)（编译内核 `wordgit.exe`），以及 Git for Windows 2.51+。真机测试还需要桌面版 Microsoft Word。
 
-Rust 版本由仓库根目录的 `rust-toolchain.toml` 固定，本地与 CI 一致；首次在仓库内运行 `cargo` 时 rustup 会自动安装该版本。升级 Rust 时修改该文件，并确认 `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+本地开发与 CI 使用同一套工具版本，由仓库根目录的版本文件固定：
+
+| 工具 | 版本文件 | 说明 |
+|---|---|---|
+| Rust | `rust-toolchain.toml` | 在仓库目录运行 `rustup install` 安装；`docker/wps-linux/Dockerfile` 的 `rust:` 镜像需同步 |
+| Node.js | `.node-version` | WPS 加载项脚本检查与 `addin-wps/test/updates.js` |
+| Python | `.python-version` | 发布说明提取与 Linux/macOS 安装包测试 |
+
+升级任一工具时修改对应文件，Rust 升级还需确认 `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 普通用户应使用预编译发布包。以下步骤供开发者使用，PowerShell 5.1 或 PowerShell 7 均可。
 

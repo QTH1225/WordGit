@@ -50,7 +50,10 @@ jobs:
       - name: Build the Windows add-in and installer
         if: matrix.language == 'csharp'
         shell: powershell
-        run: .\scripts\package.ps1
+        run: |
+          rustup install
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          .\scripts\package.ps1
 
       - uses: github/codeql-action/analyze@v4
         with:
