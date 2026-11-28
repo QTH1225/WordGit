@@ -97,7 +97,7 @@ jobs:
         # The macOS package install test uses python3 as a JSON helper.
         if: runner.os == 'macOS'
         with:
-          python-version-file: .python-version
+          python-version-file: toolchains/.python-version
       - name: Install the pinned Rust toolchain
         # rust-toolchain.toml selects the version and components.
         run: rustup install && rustc --version && cargo clippy --version

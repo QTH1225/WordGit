@@ -12,10 +12,10 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
-inputs=(docker/dev/Dockerfile rust-toolchain.toml .node-version .python-version)
+inputs=(docker/dev/Dockerfile rust-toolchain.toml toolchains/.node-version toolchains/.python-version)
 rust=$(sed -n 's/^channel *= *"\(.*\)".*/\1/p' rust-toolchain.toml | tr -d '\r')
-node=$(tr -d ' \r\n' < .node-version)
-python=$(tr -d ' \r\n' < .python-version)
+node=$(tr -d ' \r\n' < toolchains/.node-version)
+python=$(tr -d ' \r\n' < toolchains/.python-version)
 if command -v sha256sum >/dev/null; then hash=sha256sum; else hash='shasum -a 256'; fi
 tag=$(cat "${inputs[@]}" | tr -d '\r' | $hash | cut -c1-12)
 image="wordgit-dev:$tag"

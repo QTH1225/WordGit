@@ -24,11 +24,11 @@ function Read-RepositoryFile([string]$name) { [IO.File]::ReadAllText((Join-Path 
 $toolchain = Read-RepositoryFile 'rust-toolchain.toml'
 if ($toolchain -notmatch '(?m)^channel\s*=\s*"([^"]+)"') { throw 'rust-toolchain.toml does not name a channel.' }
 $rust = $Matches[1]
-$node = (Read-RepositoryFile '.node-version').Trim()
-$python = (Read-RepositoryFile '.python-version').Trim()
+$node = (Read-RepositoryFile 'toolchains/.node-version').Trim()
+$python = (Read-RepositoryFile 'toolchains/.python-version').Trim()
 
 # Same tag as scripts/dev.sh: the first 12 hex digits of SHA-256 over the version inputs without CR.
-$inputs = @('docker/dev/Dockerfile', 'rust-toolchain.toml', '.node-version', '.python-version')
+$inputs = @('docker/dev/Dockerfile', 'rust-toolchain.toml', 'toolchains/.node-version', 'toolchains/.python-version')
 $text = (($inputs | ForEach-Object { Read-RepositoryFile $_ }) -join '').Replace("`r", '')
 $sha = [Security.Cryptography.SHA256]::Create()
 $digest = -join ($sha.ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($text)) | ForEach-Object { $_.ToString('x2') })

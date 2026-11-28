@@ -25,7 +25,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v7
         with:
-          python-version-file: .python-version
+          python-version-file: toolchains/.python-version
       - name: Validate tag and extract changelog
         id: metadata
         env:
