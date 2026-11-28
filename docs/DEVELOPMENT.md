@@ -6,11 +6,43 @@
 
 | 工具 | 版本文件 | 说明 |
 |---|---|---|
-| Rust | `rust-toolchain.toml` | 在仓库目录运行 `rustup install` 安装；`docker/wps-linux/Dockerfile` 的 `rust:` 镜像需同步 |
-| Node.js | `.node-version` | WPS 加载项脚本检查与 `addin-wps/test/updates.js` |
-| Python | `.python-version` | 发布说明提取与 Linux/macOS 安装包测试 |
+| Rust | `rust-toolchain.toml` | Windows/macOS 本机在仓库目录运行 `rustup install` 安装；Linux 容器构建时读取；`docker/wps-linux/Dockerfile` 的 `rust:` 镜像需同步 |
+| Node.js | `.node-version` | Linux 容器内的 WPS 加载项脚本检查与 `addin-wps/test/updates.js` |
+| Python | `.python-version` | Linux 容器、macOS 安装包测试与发布说明提取；容器基于 Debian trixie，构建时会核对其 Python 主次版本 |
 
 升级任一工具时修改对应文件，Rust 升级还需确认 `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+
+## 分工：哪些在 Docker 里，哪些在 Windows 本机
+
+| 在哪里 | 命令 | 产出 / 用途 |
+|---|---|---|
+| Windows 本机 | `scripts\build.ps1`、`scripts\package.ps1`（见下文） | `bin\WordGit.dll`、`bin\wordgit.exe`、`dist\WordGit-<版本>-Setup.exe` 与 `-windows.zip`，装到本机 Word / WPS 实测 |
+| Linux 开发容器 | `scripts\dev.ps1 check`（Windows）或 `scripts/dev.sh check`（Linux/macOS） | 编码检查、WPS 加载项脚本检查、clippy、内核测试、Linux 安装包安装/升级/卸载测试，与 CI 的 `linux` 任务完全相同 |
+| Linux 开发容器 | `scripts\dev.ps1 package` | `dist/WordGit-<版本>-linux-x86_64.tar.gz`（musl 静态版，与发布流程相同） |
+| Linux WPS 容器 | 见 [docker/wps-linux/README.md](../docker/wps-linux/README.md) | 在 Linux WPS 文字中端到端实测 |
+| macOS 本机 | 见 [MACOS.md](MACOS.md) | macOS 安装包 |
+
+Word 加载项依赖 Windows 自带的 .NET Framework 编译器和桌面版 Word，内核 `wordgit.exe` 需要 MSVC 工具链，这些只能在 Windows 本机构建和测试。
+
+### Linux 开发容器
+
+需要 Docker（Windows 上为 Docker Desktop 的 Linux 容器模式）。镜像由 `docker/dev/Dockerfile` 在本地构建，不推送到任何镜像仓库；标签取自 Dockerfile 与三个版本文件的哈希，版本文件一改，下次运行自动重建并清理旧镜像。
+
+```powershell
+.\scripts\dev.ps1 check                         # 与 CI 相同的 Linux 检查
+.\scripts\dev.ps1 cargo test -p wordgit-core    # 在容器中运行任意命令
+.\scripts\dev.ps1                               # 进入容器 shell
+```
+
+源码以 `/work` 挂载进容器；构建产物、crate 缓存放在名为 `wordgit-dev-cache` 的 Docker 卷中，不会与 Windows 本机的 `target\` 混用。需要清空缓存时运行 `docker volume rm wordgit-dev-cache`。
+
+国内网络构建镜像较慢时，可在运行前设置下载镜像（只影响下载来源，不影响版本）：
+
+```powershell
+$env:WORDGIT_APT_MIRROR = 'https://mirrors.huaweicloud.com'
+$env:WORDGIT_NODE_MIRROR = 'https://registry.npmmirror.com/-/binary/node'
+$env:WORDGIT_DOCKER_REGISTRY = '<Docker Hub 镜像地址>/library/'   # 可选，基础镜像前缀
+```
 
 普通用户应使用预编译发布包。以下步骤供开发者使用，PowerShell 5.1 或 PowerShell 7 均可。
 
@@ -34,7 +66,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Tes
 | `-KernelTest` | KernelSmoke（经内核完成提交、预览、恢复、分支合并与多版本合并） | 桌面版 Word |
 | `cargo test --workspace --release` | 内核单元与集成测试（存储格式、分支、返稿冲突、崩溃恢复、双客户端远程、服务安全） | Rust 工具链 |
 
-GitHub Actions 在每次推送和 PR 时运行 `-Test`、`-UiTest` 并生成发布包（`.github/workflows/ci.yml`）；CodeQL 每周及推送时扫描 C# 源码与工作流。
+GitHub Actions 在每次推送和 PR 时运行 `-Test`、`-UiTest` 并生成发布包，Linux 部分通过 `scripts/dev.sh check` 在同一个开发容器中检查，Windows 与 macOS 另在本机运行内核测试（`.github/workflows/ci.yml`）；CodeQL 每周及推送时扫描 C# 源码与工作流。
 
 真机测试会自己启动隐藏的 Word 实例，新建独立测试文档与会话：
 

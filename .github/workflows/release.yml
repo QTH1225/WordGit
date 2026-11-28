@@ -52,13 +52,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Build Linux x86_64 distribution
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          rustup install
-          rustup target add x86_64-unknown-linux-musl
-          cargo build --locked --release --target x86_64-unknown-linux-musl -p wordgit
-          bash scripts/package-linux.sh target/x86_64-unknown-linux-musl/release/wordgit dist
+        # Same container as local development and CI; see scripts/dev.sh.
+        run: bash scripts/dev.sh package
       - uses: actions/upload-artifact@v7
         with:
           name: wordgit-linux

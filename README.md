@@ -209,10 +209,14 @@ WordGit/
 │  ├─ package.ps1        打包 Windows EXE 和 ZIP
 │  ├─ install.ps1        安装、升级和卸载
 │  ├─ Install.cmd、Check.cmd、Uninstall.cmd
+│  ├─ dev.ps1、dev.sh    在 Linux 开发容器中检查、测试和打包（与 CI 相同）
 │  └─ Linux 打包、发布说明生成和 GitHub 发布脚本
+├─ docker/
+│  ├─ dev/              Linux 开发容器（版本取自仓库根目录的版本文件）
+│  └─ wps-linux/        Linux WPS 文字端到端测试环境
 ├─ bin/                 编译与测试输出（生成）
 ├─ dist/                发布包（生成）
-├─ Cargo.toml、Cargo.lock
+├─ Cargo.toml、Cargo.lock、rust-toolchain.toml、.node-version、.python-version
 ├─ README.md
 └─ LICENSE
 ```

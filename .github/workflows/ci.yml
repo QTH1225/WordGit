@@ -18,33 +18,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  checks:
-    # Fast, platform-independent checks that fail before the long builds finish.
+  linux:
+    # The same container and commands developers run locally with scripts/dev.ps1 or scripts/dev.sh:
+    # PowerShell encoding, WPS add-in scripts, clippy, tests and the Linux package test.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: PowerShell scripts are UTF-8 with BOM
-        # Windows PowerShell 5.1 reads BOM-less scripts as the ANSI code page (GBK on Chinese
-        # Windows), which breaks any non-ASCII string literal.
-        run: |
-          bad=0
-          while IFS= read -r -d '' f; do
-            if [ "$(head -c3 -- "$f" | od -An -tx1 | tr -d ' \n')" != "efbbbf" ] && LC_ALL=C grep -q $'[\x80-\xff]' -- "$f"; then
-              echo "::error file=$f::含非 ASCII 字符但缺少 UTF-8 BOM，Windows PowerShell 5.1 会按 GBK 解析。"
-              bad=1
-            fi
-          done < <(git ls-files -z -- '*.ps1' '*.psm1' '*.psd1')
-          exit $bad
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .node-version
-      - name: Add-in scripts parse
-        run: for f in addin-wps/js/*.js addin-wps/test/*.js; do node --check "$f"; done
-      - name: WPS update tests
-        run: node addin-wps/test/updates.js
+      - name: Linux checks in the development container
+        run: bash scripts/dev.sh check
 
   build-and-test:
     # Needs .NET Framework 4.8 (csc), Windows PowerShell 5.1 and Git for Windows.
@@ -97,11 +81,12 @@ jobs:
           if-no-files-found: error
 
   rust:
-    # Rust core and service: unit tests, real-git integration tests and the HTTP service tests.
+    # Native platforms Docker cannot cover: unit tests, real-git integration tests and the HTTP
+    # service tests on Windows and macOS (Linux runs in the `linux` job's container).
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -109,7 +94,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-python@v7
-        # The package install tests use python3 as a JSON helper.
+        # The macOS package install test uses python3 as a JSON helper.
+        if: runner.os == 'macOS'
         with:
           python-version-file: .python-version
       - name: Install the pinned Rust toolchain
@@ -119,13 +105,6 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked --workspace
-      - name: Linux package install, upgrade and uninstall
-        if: runner.os == 'Linux'
-        run: |
-          cargo build --locked -p wordgit
-          package_dir="$RUNNER_TEMP/wordgit-package"
-          bash scripts/package-linux.sh target/debug/wordgit "$package_dir"
-          bash scripts/test-linux-package.sh "$package_dir"/WordGit-*-linux-x86_64.tar.gz
       - name: macOS package install, upgrade and uninstall
         if: runner.os == 'macOS'
         run: |
